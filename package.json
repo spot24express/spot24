@@ -13,6 +13,7 @@
     "build:only": "vite build",
     "preview": "vite preview --port 3000 --host",
     "typecheck": "tsc --noEmit",
+    "typecheck:netlify": "tsc -p netlify/functions/tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run --exclude 'src/tests/rules/**'",
     "test:rules": "firebase emulators:exec --only firestore 'vitest run src/tests/rules'",
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@eslint/js": "^9.30.0",
     "@firebase/rules-unit-testing": "^5.0.2",
+    "@netlify/functions": "^6.0.0",
     "@types/node": "^24.0.0",
     "@types/react": "^18.3.23",
     "@types/react-dom": "^18.3.7",

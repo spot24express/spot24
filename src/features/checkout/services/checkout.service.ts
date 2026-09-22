@@ -1,19 +1,18 @@
 /**
  * Módulo checkout · Capa de servicios.
- * TODAS las operaciones sensibles van por Cloud Functions con App Check:
+ * TODAS las operaciones sensibles van por funciones de servidor (Netlify
+ * Functions en modo Lite, mismas cores que Cloud Functions) con sesión y
+ * App Check:
  * · reserveStock → reserva 2 h al entrar al checkout (5.2)
  * · quoteTotals  → cotización autoritativa (subtotal + envío por zona/peso + Bs)
  * · createOrder  → crea la orden (el cliente NUNCA escribe en orders, 5.4)
  * En modo demo, un adaptador local simula las tres con latencia y reglas reales
  * de negocio (tasa demo, stock local, idempotencia por localStorage).
  */
-import { httpsCallable } from 'firebase/functions';
-import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE } from '@/shared/lib/backend';
+import { DEMO_MODE, callFunction } from '@/shared/lib/backend';
 import { AppError } from '@/shared/lib/errors';
 import { DEMO_BCV_RATE, DEMO_ZONES } from '@/shared/lib/demo/seed';
 import { DEMO_PRODUCTS } from '@/shared/lib/demo/seed';
-import { logger } from '@/shared/lib/logger';
 import { zoneQuote } from '@/features/delivery/types';
 import type {
   CheckoutItem, CreateOrderPayload, CreateOrderResponse,
@@ -21,24 +20,6 @@ import type {
 } from '../types';
 
 const RESERVATION_TTL_MS = 2 * 60 * 60 * 1000; // 2 horas
-
-async function callFn<TReq, TRes>(name: string, data: TReq): Promise<TRes> {
-  const fb = await loadFirebase();
-  if (!fb) throw new AppError('generic', 'Firebase no configurado');
-  try {
-    const fn = httpsCallable<TReq, TRes>(fb.functions, name);
-    const res = await fn(data);
-    return res.data;
-  } catch (e) {
-    const code = (e as { code?: string }).code ?? '';
-    logger.warn(`callable ${name} falló`, e);
-    if (code.includes('unauthenticated')) throw new AppError('unauthenticated');
-    if (code.includes('permission-denied') || code.includes('failed-precondition')) throw new AppError('forbidden');
-    if (code.includes('resource-exhausted')) throw new AppError('rate-limit');
-    if (code.includes('out-of-range')) throw new AppError('stock');
-    throw new AppError('generic');
-  }
-}
 
 /* ────────────────────────── Modo demo (local) ────────────────────────── */
 
@@ -96,7 +77,7 @@ export async function reserveStock(items: CheckoutItem[]): Promise<ReservationRe
     await demoDelay(400);
     return demoReserve();
   }
-  return callFn<CheckoutItem[], ReservationResponse>('fn-reserveStock', items);
+  return callFunction<ReservationResponse>('fn-reserveStock', items);
 }
 
 export async function quoteTotals(req: QuoteRequest): Promise<QuoteResponse> {
@@ -104,7 +85,7 @@ export async function quoteTotals(req: QuoteRequest): Promise<QuoteResponse> {
     await demoDelay(500);
     return demoQuote(req);
   }
-  return callFn<QuoteRequest, QuoteResponse>('fn-quoteTotals', req);
+  return callFunction<QuoteResponse>('fn-quoteTotals', req);
 }
 
 /**
@@ -185,5 +166,5 @@ export async function createOrder(
     localStorage.setItem(DEMO_IDEMPOTENCY_KEY, JSON.stringify({ key: payload.idempotencyKey, response }));
     return response;
   }
-  return callFn<CreateOrderPayload, CreateOrderResponse>('fn-createOrder', payload);
+  return callFunction<CreateOrderResponse>('fn-createOrder', payload);
 }

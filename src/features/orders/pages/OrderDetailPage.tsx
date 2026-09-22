@@ -10,6 +10,7 @@ import { SpeedDivider } from '@/shared/components/brand/Logo';
 import { ListSkeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState } from '@/shared/components/ui/States';
 import { subscribeOrder, listOrderEvents, cancelOrder, uploadReceipt } from '../services/orders.service';
+import { STORAGE_AVAILABLE } from '@/shared/lib/backend';
 import type { Order, OrderEvent } from '../types';
 import { STATUS_CUSTOMER_TEXT, STATUS_LABELS, PAYMENT_METHOD_LABELS } from '@/shared/constants/orders';
 import { formatBs, formatUsd, maskReference } from '@/shared/lib/format';
@@ -64,7 +65,8 @@ export default function OrderDetailPage() {
   }
 
   const canCancel = canTransition(order.status, 'cancelado');
-  const needsReceipt = !order.payment.hasReceipt && order.payment.method !== 'efectivo' && order.status !== 'entregado' && order.status !== 'cancelado';
+  const needsReceipt = STORAGE_AVAILABLE && !order.payment.hasReceipt && order.payment.method !== 'efectivo' && order.status !== 'entregado' && order.status !== 'cancelado';
+  const verificationOnly = !STORAGE_AVAILABLE && order.payment.method !== 'efectivo' && ['pendiente', 'en_verificacion'].includes(order.status);
 
   const onUpload = async (file: File) => {
     setBusy(true);
@@ -161,6 +163,11 @@ export default function OrderDetailPage() {
                   Subir comprobante
                 </Button>
               </>
+            )}
+            {verificationOnly && (
+              <p className="mt-4 rounded-brand border-2 border-line bg-ink p-3 text-sm text-muted">
+                Verificación por referencia: con la referencia de tu pago, el equipo confirma y tu pedido sigue su curso. No necesitas subir imagen.
+              </p>
             )}
           </section>
 

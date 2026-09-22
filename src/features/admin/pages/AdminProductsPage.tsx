@@ -8,7 +8,7 @@ import { Input, Select, Textarea } from '@/shared/components/ui/Input';
 import { Modal } from '@/shared/components/ui/Modal';
 import {
   adminListProducts, adminSaveProduct, adminAdjustStock,
-  adminGetVariants, adminUploadProductImage,
+  adminGetVariants, adminSetProductImages,
 } from '../services/admin.service';
 import type { Product, ProductVariant } from '@/features/catalog/types';
 import { CATEGORIES } from '@/shared/constants/categories';
@@ -120,10 +120,12 @@ function ProductModal({
     active: product?.active ?? true,
   });
   const [variants, setVariants] = useState<Array<{ name: string; sku: string; priceUsd: number; stock: number; weightKg: number }>>([]);
+  const [imageUrl, setImageUrl] = useState('');
   const [busy, setBusy] = useState(false);
 
   // Carga variantes al abrir con producto existente.
   useEffect(() => {
+    setImageUrl(product?.images?.[0] ?? '');
     if (!product) {
       setVariants([{ name: '', sku: '', priceUsd: 0, stock: 0, weightKg: 0 }]);
       return;
@@ -165,14 +167,17 @@ function ProductModal({
     }
   };
 
-  const uploadImage = async (file: File) => {
+  const applyImage = async () => {
     if (!product) return;
+    setBusy(true);
     try {
-      const url = await adminUploadProductImage(product.id, file);
-      toast.success('Imagen subida a Storage.');
-      void url;
+      await adminSetProductImages(product.id, imageUrl ? [imageUrl.trim()] : []);
+      toast.success('Imagen actualizada.');
+      onSaved();
     } catch (e) {
       toast.error(userMessage(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -218,17 +223,29 @@ function ProductModal({
 
         {product && (
           <div>
-            <p className="mb-2 spot-label">Imagen de producto (Storage · jpg/png/webp · máx. 5 MB)</p>
-            <input
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              aria-label="Subir imagen"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void uploadImage(f);
-              }}
-              className="text-sm text-muted file:mr-3 file:rounded-brand file:border-2 file:border-line file:bg-surface-2 file:px-4 file:py-2 file:text-paper"
-            />
+            <p className="mb-2 spot-label">Imagen del producto (archivo del repo o URL https)</p>
+            <div className="flex items-start gap-4">
+              <img
+                src={imageUrl || product.images[0] || '/img/products/lubricantes.svg'}
+                alt="Vista previa"
+                className="h-20 w-20 shrink-0 rounded-brand border-2 border-line object-cover"
+              />
+              <div className="min-w-0 flex-1">
+                <Input
+                  label="Ruta o URL"
+                  value={imageUrl}
+                  onChange={(e) => setImageUrl(e.target.value)}
+                  placeholder="/img/products/mi-foto.jpg  ·  https://…"
+                />
+                <p className="mt-1 text-xs text-muted">
+                  Para subir una foto: GitHub → tu repo → Add file → Upload files → carpeta public/img/products/ → Commit.
+                  En 1-2 min queda servida por el CDN; pega aquí el nombre del archivo y aplica.
+                </p>
+                <Button variant="secondary" size="sm" className="mt-3" loading={busy} onClick={() => void applyImage()}>
+                  Aplicar imagen
+                </Button>
+              </div>
+            </div>
           </div>
         )}
 

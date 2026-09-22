@@ -1,75 +1,59 @@
-# SPOT 24 · Guía de despliegue (GitHub + Firebase + Netlify)
+# SPOT 24 · Guía de despliegue (GitHub + Firebase Spark + Netlify)
 
-Pasos manuales obligatorios. **Ningún secreto va al repositorio.**
+Camino **Lite sin tarjeta** (plan Firebase Spark, $0/mes). **Ningún secreto va al repositorio.**
 
-## 1 · Firebase Console (proyecto)
+## 1 · Firebase Console (proyecto, plan Spark gratis)
 
-1. Crea el proyecto (producción) y un segundo proyecto **staging** para deploy previews de Netlify.
-2. **Authentication → Sign-in method**: activa *Correo/contraseña* y *Teléfono*. En *Authorized domains* añade: dominio de producción Netlify (`<site>.netlify.app` y tu dominio propio) y el subdominio staging.
-3. **Firestore**: crea la base en modo producción (las reglas se despliegan en el paso 3). Ejecuta el semilla mínimo si quieres: `categories/01..08`.
-4. **Storage**: crea el bucket por defecto.
-5. **Cloud Messaging → Web Push certificates**: genera la **clave VAPID** (se usará como `VITE_FCM_VAPID_KEY`).
+1. Crea el proyecto (producción) en `console.firebase.google.com` — no necesitas tarjeta: el plan **Spark** es suficiente.
+2. Registra una **Web app** (`</>` nombre "spot24-web") y copia la configuración SDK → serán las variables `VITE_FIREBASE_*` (deja `storageBucket` VACÍO: sin Storage no hay subida de comprobantes y la verificación es por referencia).
+3. **Authentication → Sign-in method**: activa *Correo/contraseña*. En *Authorized domains* añade el dominio de producción (`<site>.netlify.app` y tu dominio propio).
+4. **Firestore Database**: crea la base en *modo producción* (las reglas se despliegan en el paso 3).
+5. **Cloud Messaging → Web Push certificates**: genera la **clave VAPID** (`VITE_FCM_VAPID_KEY`).
+6. **Project settings → Service accounts → Generate new private key**: descarga el JSON. Es la credencial de las Netlify Functions (nunca al repo): la pegarás en Netlify como `FIREBASE_SERVICE_ACCOUNT`.
 
-## 2 · App Check con reCAPTCHA Enterprise (sección 6.2)
+## 2 · App Check con reCAPTCHA v3 (gratis)
 
-1. En **Google Cloud Console → reCAPTCHA Enterprise**, crea una clave de tipo *Website* para el dominio de producción.
-2. **Firebase Console → App Check → Apps → Web**: registra la app con la clave reCAPTCHA Enterprise.
-3. Copia la clave del sitio a `VITE_RECAPTCHA_ENTERPRISE_SITE_KEY`.
-4. Para desarrollo local: registra en *Apps → Manage debug tokens* el token de debug que imprime la consola (o define `VITE_APPCHECK_DEBUG_TOKEN`).
-5. Tras el primer deploy, activa **Enforce** en Firestore, Storage y Functions.
+1. **Firebase Console → App Check → Apps → Web**: registra la app con proveedor **reCAPTCHA v3**; copia la clave del sitio → `VITE_RECAPTCHA_V3_SITE_KEY`.
+2. El backend arranca en **modo monitoreo** (`APPCHECK_ENFORCE=false`): registra el header sin exigirlo. Tras unos días de tráfico legítimo, activa **Enforce** en Firestore y pon `APPCHECK_ENFORCE=true` en Netlify.
+3. Desarrollo local: registra el *debug token* que imprime la consola (o define `VITE_APPCHECK_DEBUG_TOKEN`).
 
-## 3 · Desplegar Functions, reglas e índices
+## 3 · Desplegar reglas e índices de Firestore (sin tarjeta)
 
 ```bash
 npm i -g firebase-tools@14
 firebase login
-firebase use --add                     # selecciona proyecto prod y staging
-
-# Secret de cifrado AES-256-GCM (64 hex = 32 bytes):
-openssl rand -hex 32
-firebase functions:secrets:set ENC_KEY_HEX   # pega el hex generado
-
-firebase deploy --only functions,firestore:rules,firestore:indexes,storage
+firebase use --add                    # selecciona tu proyecto
+firebase deploy --only firestore:rules,firestore:indexes
 ```
 
-Funciones desplegadas: `fn-reserveStock`, `fn-quoteTotals`, `fn-createOrder`, `fn-cancelOrder`, `fn-verifyPayment`, `fn-updateOrderStatus`, `fn-adjustStock`, `fn-setUserRole`, `fn-revokeUserSessions`, `fn-getAdminMetrics`, `fn-getBcvRate`, `updateBcvRate` (programada cada hora).
+> Las funciones de servidor NO se despliegan a Firebase: viven en Netlify (paso 4). Si algún día activas plan Blaze, los mismos cores se exponen como Cloud Functions (`functions/src/index.ts`) con `firebase deploy --only functions`.
 
-## 4 · GitHub
+## 4 · Netlify (hosting + funciones + secretos)
 
-```bash
-git init && git remote add origin git@github.com:<org>/spot24-pwa.git
-git add . && git commit -m "feat: SPOT 24 PWA inicial" && git push -u origin main
-```
+1. *Add new site → Import from GitHub* → selecciona el repo. Build y funciones ya vienen en `netlify.toml` (instala `functions/` para el bundling de los cores).
+2. **Site configuration → Environment variables**:
 
-- En *Settings → Branches*: protege `main` (PR obligatorio + checks `web`, `functions`, `rules` requeridos en verde).
-- En *Settings → Secrets and variables → Actions*: no se necesitan tokens para el CI actual (no usa claves); si añades tareas de deploy desde CI, crea `FIREBASE_SERVICE_ACCOUNT` ahí — jamás en archivos.
-- Dependabot queda activo con `.github/dependabot.yml`.
+| Variable | Valor |
+|---|---|
+| `VITE_FIREBASE_API_KEY` / `_AUTH_DOMAIN` / `_PROJECT_ID` / `_MESSAGING_SENDER_ID` / `_APP_ID` | Config SDK web (paso 1.2) |
+| `VITE_FIREBASE_STORAGE_BUCKET` | **vacío** (Lite) |
+| `VITE_RECAPTCHA_V3_SITE_KEY` | clave v3 (paso 2.1) |
+| `VITE_FCM_VAPID_KEY` | clave VAPID (paso 1.5) |
+| `VITE_ANALYTICS_ENABLED` | `false` |
+| `FIREBASE_SERVICE_ACCOUNT` | contenido **completo** del JSON del paso 1.6 |
+| `ENC_KEY_HEX` | `openssl rand -hex 32` (64 hex) — cifrado AES-256-GCM |
+| `APPCHECK_ENFORCE` | `false` (monitoreo) → `true` tras validar tráfico |
 
-## 5 · Netlify
+3. Deploy. Las 12 funciones quedan en `/.netlify/functions/*` del propio dominio (sin CORS, sin Cloud Functions, 125 000 llamadas/mes gratis): `fn-reserveStock`, `fn-quoteTotals`, `fn-createOrder`, `fn-cancelOrder`, `fn-verifyPayment`, `fn-updateOrderStatus`, `fn-adjustStock`, `fn-setUserRole`, `fn-revokeUserSessions`, `fn-getAdminMetrics`, `fn-getBcvRate` y la programada `update-bcv-rate` (tasa BCV cada hora).
 
-1. *Add new site → Import from GitHub* → selecciona el repo.
-2. Build command y public ya vienen en `netlify.toml`.
-3. **Site configuration → Environment variables** (por entorno):
-
-| Variable | Producción | Deploy preview |
-|---|---|---|
-| `VITE_FIREBASE_*` (6) | proyecto prod | proyecto **staging** |
-| `VITE_RECAPTCHA_ENTERPRISE_SITE_KEY` | clave prod | clave staging (o vacía + debug token) |
-| `VITE_APPCHECK_DEBUG_TOKEN` | — | token de debug staging |
-| `VITE_FCM_VAPID_KEY` | prod | staging |
-| `VITE_ANALYTICS_ENABLED` | true (con consentimiento) | false |
-
-4. Activa *Deploy previews* (ya configurado con `VITE_USE_STAGING_FIREBASE=true`).
-5. Conecta el dominio personalizado y habilita HTTPS (Netlify emite certificado).
-
-## 6 · Primer admin
+## 5 · Primer admin
 
 1. Regístrate en la app de producción con tu correo.
-2. En Firebase Console copia tu **UID**.
-3. Otorga el rol (una sola vez, desde tu máquina):
+2. En Firebase Console copia tu **UID** (Authentication → Users).
+3. Desde tu máquina (requiere `firebase login` del paso 3):
 
 ```bash
-cd functions && npm run build
+cd functions && npm install
 node -e "
 const admin=require('firebase-admin');
 admin.initializeApp({credential:admin.credential.applicationDefault()});
@@ -77,9 +61,15 @@ admin.auth().setCustomUserClaims('TU_UID',{role:'admin'}).then(()=>console.log('
 "
 ```
 
-(Requiere `GOOGLE_APPLICATION_CREDENTIALS` o `firebase login:ci` local. Alternativa: desde la función `fn-setUserRole` con un admin inicial otorgado por consola.)
+4. Cierra sesión, inicia sesión de nuevo (el claim viaja en el token) → aparece el acceso a `/admin`. Los demás admins ya se asignan desde el panel (`fn-setUserRole`).
 
-## 7 · Verificación post-deploy con curl (sección 10.6)
+## 6 · Datos reales
+
+1. **Zonas de entrega**: panel admin → Zonas → crea tus zonas con tarifa, peso máximo y ventana.
+2. **Productos**: panel admin → Productos → nuevo producto con variantes (precio USD, stock, peso). Imagen: sube la foto a GitHub (Add file → Upload files → `public/img/products/`) y pega su ruta en el editor (`/img/products/foto.jpg`).
+3. **Tasa BCV**: la publica sola la función programada cada hora; forzar manual: abre `https://tu-dominio.com/.netlify/functions/fn-getBcvRate` tras el primer ciclo.
+
+## 7 · Verificación post-deploy con curl
 
 ```bash
 URL=https://tu-dominio.com
@@ -89,6 +79,9 @@ curl -sI $URL | grep -iE 'content-security-policy|strict-transport|x-frame|x-con
 
 # SPA redirect correcto (200 + index.html)
 curl -sI $URL/admin/pagos | head -1
+
+# Función pública de tasa BCV
+curl -s $URL/.netlify/functions/fn-getBcvRate
 
 # Manifest con íconos del escudo
 curl -s $URL/manifest.webmanifest | grep -o 'icon-512.png'
@@ -103,11 +96,11 @@ curl -sI $URL/sw.js | grep -i 'cache-control'
    ```bash
    npm i -g lighthouse && lighthouse $URL --preset=perf --form-factor=mobile --view
    ```
-2. **Bundle inicial < 200 KB gzip**: revisa el informe del CI (`du -ck dist/assets/*.js`) y aplica `gzip -k` sobre los chunks iniciales para confirmar.
+2. **Bundle inicial < 200 KB gzip**: revisa el informe del CI y confirma con `gzip -k` sobre los chunks iniciales.
 3. **Instalable**: Chrome DevTools → Application → Manifest (sin errores) → "Install app".
 4. **Offline**: carga el catálogo, corta la red, recarga → el catálogo y el carrito siguen; la cola de acciones del carrito reintenta al volver la red.
 5. Pipeline en verde + App Check en Enforce + dominios autorizados = lanzamiento.
 
 ## Rollback
 
-Netlify → *Deploys* → **Instant rollback** a cualquier deploy previo (atómico). Para Functions: `firebase functions:rollback` o re-desplegar la revisión anterior desde CI.
+Netlify → *Deploys* → **Instant rollback** a cualquier deploy previo (atómico). Las funciones se despliegan con el sitio, así que el rollback las incluye.

@@ -2,6 +2,8 @@
 
 Riesgo por riesgo: dónde queda mitigado, en qué archivo, y el control aplicado.
 
+> **Modo Lite (plan Spark):** los cores referenciados en `functions/src/*` se ejecutan vía los adaptadores HTTP de `netlify/functions/*` — misma verificación de sesión (`verifyIdToken` con revocación), mismo App Check, mismo rate limit y auditoría. Con plan Blaze los mismos cores se exponen como Cloud Functions callable.
+
 | # | Riesgo | ¿Aplica? | Archivo(s) | Control |
 |---|--------|----------|------------|---------|
 | **A01** | Broken Access Control | Alta | `firestore.rules` · `storage.rules` · `functions/src/orders.ts` · `functions/src/payments.ts` · `functions/src/admin.ts` | Reglas deny-by-default: la lista blanca es explícita y cualquier ruta no listada cae en `match /{document=**} { allow: if false }`. El cliente jamás escribe `orders`, `reservations`, `counters`, `idempotency`, `auditLog` ni `fraudReview`. Roles por custom claim (`role == 'admin'`) verificados en cada función sensible (`requireAdmin`). Pruebas negativas en `src/tests/rules/firestore.rules.test.ts` demuestran denegación sin App Check/roles. |

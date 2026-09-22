@@ -1,42 +1,24 @@
 /**
  * Módulo admin · Capa de servicios del panel.
  * · Metadatos de producto, zonas: escritura directa por admin (reglas con claim).
- * · Stock, verificación de pago, estados, métricas, roles: SOLO Cloud Functions (6.3).
+ * · Stock, verificación de pago, estados, métricas, roles: SOLO funciones de
+ *   servidor (Netlify Functions en modo Lite, mismas cores que Cloud Functions) (6.3).
+ * · Imágenes de producto: ruta/URL administrada por el admin; el archivo vive
+ *   en el repo (public/img/products) servido por el CDN, o URL externa.
  */
 import {
   addDoc, collection, deleteDoc, doc, getDocs, limit as fbLimit, orderBy,
   query, serverTimestamp, setDoc, where, updateDoc,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { httpsCallable } from 'firebase/functions';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE } from '@/shared/lib/backend';
+import { DEMO_MODE, callFunction } from '@/shared/lib/backend';
 import { AppError } from '@/shared/lib/errors';
-import { logger } from '@/shared/lib/logger';
 import { DEMO_PRODUCTS } from '@/shared/lib/demo/seed';
 import { DEMO_ZONES } from '@/shared/lib/demo/seed';
 import { demoGetOrder, demoRead, demoUpsertOrder } from '@/features/orders/services/orders.service';
-import { PRODUCT_IMAGE_TYPES, isAllowedUploadSize, isAllowedUploadType, sanitizeFileName } from '@/shared/lib/validation';
 import type { Product, ProductVariant } from '@/features/catalog/types';
 import type { Zone } from '@/features/delivery/types';
 import type { Order, OrderStatus } from '@/features/orders/types';
-
-async function callFn<TReq, TRes>(name: string, data: TReq): Promise<TRes> {
-  const fb = await loadFirebase();
-  if (!fb) throw new AppError('generic', 'Firebase no configurado');
-  try {
-    const fn = httpsCallable<TReq, TRes>(fb.functions, name);
-    const res = await fn(data);
-    return res.data;
-  } catch (e) {
-    logger.warn(`admin callable ${name} falló`, e);
-    const code = (e as { code?: string }).code ?? '';
-    if (code.includes('unauthenticated')) throw new AppError('unauthenticated');
-    if (code.includes('permission-denied')) throw new AppError('forbidden');
-    if (code.includes('resource-exhausted')) throw new AppError('rate-limit');
-    throw new AppError('generic');
-  }
-}
 
 /* ── Productos ── */
 
@@ -141,23 +123,29 @@ export async function adminAdjustStock(
     await new Promise((r) => setTimeout(r, 300));
     return;
   }
-  await callFn<{ productId: string; variantId: string; delta: number; reason: string }, { ok: boolean }>(
-    'fn-adjustStock',
+  await callFunction<{ ok: boolean }>('fn-adjustStock',
     { productId, variantId, delta: Math.trunc(delta), reason: reason.slice(0, 200) },
   );
 }
 
-/** Sube imagen de producto a Storage con validación de tipo y tamaño (5.6). */
-export async function adminUploadProductImage(productId: string, file: File): Promise<string> {
-  if (!isAllowedUploadType(file.type, PRODUCT_IMAGE_TYPES)) throw new AppError('generic', 'tipo no permitido');
-  if (!isAllowedUploadSize(file.size)) throw new AppError('generic', 'máximo 5 MB');
-  if (DEMO_MODE) return URL.createObjectURL(file);
+/**
+ * Asigna las imágenes de un producto por ruta/URL (sin Storage).
+ * Rutas válidas: '/img/products/…' (archivo del repo) o URL https externa.
+ */
+export async function adminSetProductImages(productId: string, images: string[]): Promise<void> {
+  const clean = images
+    .map((u) => u.trim())
+    .filter((u) => /^\/img\/products\/[A-Za-z0-9._-]+$/.test(u) || /^https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/.test(u))
+    .slice(0, 6);
+  if (DEMO_MODE) {
+    const p = DEMO_PRODUCTS.find((x) => x.id === productId);
+    if (p) p.images = clean.length ? clean : p.images;
+    await new Promise((r) => setTimeout(r, 250));
+    return;
+  }
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
-  const path = `products/${productId}/${Date.now()}-${sanitizeFileName(file.name)}`;
-  const r = ref(fb.storage, path);
-  const snap = await uploadBytes(r, file, { contentType: file.type });
-  return getDownloadURL(snap.ref);
+  await updateDoc(doc(fb.db, 'products', productId), { images: clean, updatedAt: Date.now() });
 }
 
 /* ── Pedidos (colas de pagos y despacho) ── */
@@ -195,7 +183,7 @@ export async function adminVerifyPayment(orderId: string, approve: boolean, note
     await new Promise((r) => setTimeout(r, 400));
     return;
   }
-  await callFn<{ orderId: string; approve: boolean; note: string }, { ok: boolean }>('fn-verifyPayment', {
+  await callFunction<{ ok: boolean }>('fn-verifyPayment', {
     orderId,
     approve,
     note: note.slice(0, 300),
@@ -213,7 +201,7 @@ export async function adminSetOrderStatus(orderId: string, to: OrderStatus, note
     await new Promise((r) => setTimeout(r, 300));
     return;
   }
-  await callFn<{ orderId: string; to: OrderStatus; note: string }, { ok: boolean }>('fn-updateOrderStatus', {
+  await callFunction<{ ok: boolean }>('fn-updateOrderStatus', {
     orderId,
     to,
     note: note.slice(0, 300),
@@ -276,7 +264,7 @@ export async function adminGetMetrics(): Promise<AdminMetrics> {
       topProducts: [...productQty.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, qty]) => ({ name, qty })),
     };
   }
-  return callFn<Record<string, never>, AdminMetrics>('fn-getAdminMetrics', {} as Record<string, never>);
+  return callFunction<AdminMetrics>('fn-getAdminMetrics', {});
 }
 
 /** Catálogo de variantes de un producto (para el editor admin). */

@@ -10,7 +10,7 @@
 import * as admin from 'firebase-admin';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
-import { defineSecret } from 'firebase-functions/params';
+import { getAdminApp, type CoreCtx } from './lib/ctx';
 import { encryptField, hashReference } from './lib/crypto';
 import { enforceRateLimit, tryRateLimit } from './lib/ratelimit';
 import { assessRisk, MAX_ORDERS_PER_HOUR } from './lib/fraud';
@@ -21,10 +21,7 @@ void encryptField;
 void hashReference;
 void canTransition;
 
-const app = admin.initializeApp();
-const db = () => admin.firestore(app);
-
-const ENC_KEY_HEX = defineSecret('ENC_KEY_HEX');
+const db = () => admin.firestore(getAdminApp());
 
 const RESERVATION_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_QTY_PER_LINE = 20;
@@ -38,17 +35,19 @@ interface AuthedCtx {
   token: DecodedIdToken;
 }
 
-function requireAuth(ctx: CallableRequest): AuthedCtx {
+function requireAuth(ctx: CoreCtx): AuthedCtx {
   if (!ctx.auth) {
     throw new HttpsError('unauthenticated', 'Sesión requerida.');
   }
   return { uid: ctx.auth.uid, token: ctx.auth.token };
 }
 
-function requireAppCheck(ctx: CallableRequest): void {
-  // App Check obligatorio (6.2): callable con consumeAppCheckToken=true ya
-  // lo exige; esta función está por si se invoca sin la opción activada.
-  if (!ctx.app) {
+function requireAppCheck(ctx: CoreCtx): void {
+  // App Check (6.2): en Cloud Functions consumeAppCheckToken=true ya verifica.
+  // En el adaptador HTTP (Netlify Lite) solo se exige si APPCHECK_ENFORCE=true;
+  // en modo monitoreo la petición continúa y queda registrada en logs.
+  if (ctx.app) return;
+  if (process.env['APPCHECK_ENFORCE'] === 'true') {
     throw new HttpsError('failed-precondition', 'App Check requerido.');
   }
 }
@@ -82,9 +81,8 @@ interface ReserveItem {
   qty: unknown;
 }
 
-export const fnReserveStock = onCall(
-  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 20 },
-  async (ctx) => {
+export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
+  {
     const { uid } = requireAuth(ctx);
     requireAppCheck(ctx);
     await tryRateLimit({ bucket: 'reserve', identity: uid, max: 30, windowMs: 60 * 60 * 1000 });
@@ -134,7 +132,12 @@ export const fnReserveStock = onCall(
     });
 
     return { reservationId: reservationRef.id, expiresAt };
-  },
+  }
+}
+
+export const fnReserveStock = onCall(
+  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 20 },
+  (req: CallableRequest) => coreReserveStock(req as unknown as CoreCtx),
 );
 
 /* ──────────────────── cotización autoritativa ──────────────────── */
@@ -144,9 +147,8 @@ interface QuoteReq {
   items: unknown;
 }
 
-export const fnQuoteTotals = onCall(
-  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 40 },
-  async (ctx) => {
+export async function coreQuoteTotals(ctx: CoreCtx): Promise<unknown> {
+  {
     const { uid } = requireAuth(ctx);
     requireAppCheck(ctx);
     await tryRateLimit({ bucket: 'quote', identity: uid, max: 120, windowMs: 60 * 60 * 1000 });
@@ -164,7 +166,12 @@ export const fnQuoteTotals = onCall(
       zoneName: zoneSnap.get('name') ?? zoneId,
       freeShipping: totals.shippingUsd === 0,
     };
-  },
+  }
+}
+
+export const fnQuoteTotals = onCall(
+  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 40 },
+  (req: CallableRequest) => coreQuoteTotals(req as unknown as CoreCtx),
 );
 
 interface ValidLine {
@@ -293,15 +300,8 @@ interface CreateOrderReq {
 
 const PAYMENT_METHODS = new Set(['pago_movil', 'transferencia', 'zelle', 'efectivo']);
 
-export const fnCreateOrder = onCall(
+export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
   {
-    region: 'us-central1',
-    consumeAppCheckToken: true,
-    cors: true,
-    maxInstances: 30,
-    secrets: [ENC_KEY_HEX],
-  },
-  async (ctx) => {
     const { uid, token } = requireAuth(ctx);
     requireAppCheck(ctx);
     // Límite duro de pedidos por hora (6.4 + 6.8).
@@ -475,7 +475,17 @@ export const fnCreateOrder = onCall(
 
     const after = await db().collection('orders').doc(orderId).get();
     return buildCreateResponse(orderId, after.data() ?? {});
+  }
+}
+
+export const fnCreateOrder = onCall(
+  {
+    region: 'us-central1',
+    consumeAppCheckToken: true,
+    cors: true,
+    maxInstances: 30,
   },
+  (req: CallableRequest) => coreCreateOrder(req as unknown as CoreCtx),
 );
 
 function buildCreateResponse(orderId: string, data: admin.firestore.DocumentData) {
@@ -582,9 +592,8 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
 
 /* ─────────────────────────── cancelar orden ─────────────────────────── */
 
-export const fnCancelOrder = onCall(
-  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 20 },
-  async (ctx) => {
+export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
+  {
     const { uid } = requireAuth(ctx);
     requireAppCheck(ctx);
     await tryRateLimit({ bucket: 'cancel', identity: uid, max: 20, windowMs: 60 * 60 * 1000 });
@@ -645,5 +654,10 @@ export const fnCancelOrder = onCall(
 
     void ORDER_NOTIFICATIONS.send(ownerUid, orderCode, 'cancelado');
     return { ok: true };
-  },
+  }
+}
+
+export const fnCancelOrder = onCall(
+  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 20 },
+  (req: CallableRequest) => coreCancelOrder(req as unknown as CoreCtx),
 );

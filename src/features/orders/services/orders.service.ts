@@ -1,14 +1,15 @@
 /**
  * Módulo orders · Capa de servicios.
  * Lectura de pedidos propios (owner) con listener acotado (5.5).
- * Cancelación vía Cloud Function. Comprobantes a Storage con validación.
+ * Cancelación vía función de servidor. Comprobantes a Storage solo si hay
+ * bucket configurado (plan Blaze); en Lite la verificación es por referencia.
  */
 import {
   collection, doc, getDocs, limit as fbLimit, onSnapshot, orderBy, query, startAfter,
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE } from '@/shared/lib/backend';
+import { DEMO_MODE, STORAGE_AVAILABLE, callFunction } from '@/shared/lib/backend';
 import { AppError } from '@/shared/lib/errors';
 import { logger } from '@/shared/lib/logger';
 import { isAllowedUploadSize, isAllowedUploadType, RECEIPT_TYPES, sanitizeFileName } from '@/shared/lib/validation';
@@ -161,19 +162,14 @@ export async function cancelOrder(orderId: string, reason: string): Promise<void
     demoUpsertOrder(o);
     return;
   }
-  const fb = await loadFirebase();
-  if (!fb) throw new AppError('generic');
-  const { httpsCallable } = await import('firebase/functions');
-  const fn = httpsCallable<{ orderId: string; reason: string }, { ok: boolean }>(fb.functions, 'fn-cancelOrder');
-  try {
-    await fn({ orderId, reason });
-  } catch (e) {
-    logger.warn('cancelOrder falló', e);
-    throw new AppError('generic');
-  }
+  await callFunction<{ ok: boolean }>('fn-cancelOrder', { orderId, reason: reason.slice(0, 300) });
 }
 
-/** Sube comprobante a Storage: orders/{uid}/{orderId}/{nombre} (5.4). */
+/**
+ * Sube comprobante a Storage: orders/{uid}/{orderId}/{nombre} (5.4).
+ * En Lite (plan Spark sin bucket) se informa con claridad: la verificación
+ * del pago se hace con la referencia del Pago Móvil/transferencia/Zelle.
+ */
 export async function uploadReceipt(orderId: string, file: File): Promise<string> {
   if (!isAllowedUploadType(file.type, RECEIPT_TYPES)) {
     throw new AppError('generic', 'tipo de archivo no permitido');
@@ -185,8 +181,11 @@ export async function uploadReceipt(orderId: string, file: File): Promise<string
     // En demo guardamos la URL local del archivo (objectURL) para el visor.
     return URL.createObjectURL(file);
   }
+  if (!STORAGE_AVAILABLE) {
+    throw new AppError('generic', 'Subida de comprobantes no disponible: envía la referencia de pago.');
+  }
   const fb = await loadFirebase();
-  if (!fb) throw new AppError('generic');
+  if (!fb?.storage) throw new AppError('generic');
   const path = `orders/${fb.auth.currentUser?.uid ?? 'anon'}/${orderId}/${Date.now()}-${sanitizeFileName(file.name)}`;
   const r = ref(fb.storage, path);
   try {

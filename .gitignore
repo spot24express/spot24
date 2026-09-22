@@ -5,6 +5,7 @@ node_modules/
 dist/
 dist-ssr/
 *.local
+functions/lib/
 
 # Entorno y secretos — JAMÁS versionar credenciales
 .env

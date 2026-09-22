@@ -3,13 +3,16 @@
  * · updateBcvRate: programada cada hora, consulta bcv.org.ve, parsea el USD
  *   y publica rates/bcv. Ante error conserva la última tasa (fallback).
  * · fn-getBcvRate: lectura conveniente para el cliente (también vía Firestore).
+ * Cores agnósticos del runtime: onSchedule/onCall y el scheduled function de
+ * Netlify reutilizan coreUpdateBcvRate/coreGetBcvRate.
  */
 import * as admin from 'firebase-admin';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
-import { HttpsError, onCall } from 'firebase-functions/v2/https';
+import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
+import { getAdminApp, type CoreCtx } from './lib/ctx';
 
-const db = () => admin.firestore();
+const db = () => admin.firestore(getAdminApp());
 
 const BCV_URL = 'https://www.bcv.org.ve/';
 
@@ -52,6 +55,42 @@ async function fetchBcvUsdRate(): Promise<number | null> {
   }
 }
 
+/** Cuerpo de la tarea programada: actualiza rates/bcv con fallback fail-open. */
+export async function coreUpdateBcvRate(): Promise<void> {
+  const rate = await fetchBcvUsdRate();
+  const ref = db().collection('rates').doc('bcv');
+  if (rate === null) {
+    // Fallback: marca la fuente y conserva el último valor (fail-open con flag).
+    await ref.set(
+      { source: 'fallback', lastAttemptAt: Date.now() },
+      { merge: true },
+    );
+    logger.warn('BCV no disponible: se conserva la última tasa.');
+    return;
+  }
+  await ref.set(
+    {
+      usdToVes: rate,
+      updatedAt: Date.now(),
+      source: 'bcv.org.ve',
+      lastAttemptAt: Date.now(),
+    },
+    { merge: true },
+  );
+  logger.info('BCV actualizada:', rate);
+}
+
+export async function coreGetBcvRate(_ctx: CoreCtx): Promise<unknown> {
+  const snap = await db().collection('rates').doc('bcv').get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Tasa no publicada aún.');
+  const data = snap.data()!;
+  return {
+    usdToVes: Number(data['usdToVes'] ?? 0),
+    updatedAt: Number(data['updatedAt'] ?? 0),
+    source: String(data['source'] ?? 'fallback'),
+  };
+}
+
 export const updateBcvRate = onSchedule(
   {
     schedule: 'every 60 minutes',
@@ -60,41 +99,10 @@ export const updateBcvRate = onSchedule(
     memory: '256MiB',
     retryCount: 1,
   },
-  async () => {
-    const rate = await fetchBcvUsdRate();
-    const ref = db().collection('rates').doc('bcv');
-    if (rate === null) {
-      // Fallback: marca la fuente y conserva el último valor (fail-open con flag).
-      await ref.set(
-        { source: 'fallback', lastAttemptAt: Date.now() },
-        { merge: true },
-      );
-      logger.warn('BCV no disponible: se conserva la última tasa.');
-      return;
-    }
-    await ref.set(
-      {
-        usdToVes: rate,
-        updatedAt: Date.now(),
-        source: 'bcv.org.ve',
-        lastAttemptAt: Date.now(),
-      },
-      { merge: true },
-    );
-    logger.info('BCV actualizada:', rate);
-  },
+  () => coreUpdateBcvRate(),
 );
 
 export const fnGetBcvRate = onCall(
   { region: 'us-central1', cors: true, maxInstances: 20 },
-  async () => {
-    const snap = await db().collection('rates').doc('bcv').get();
-    if (!snap.exists) throw new HttpsError('not-found', 'Tasa no publicada aún.');
-    const data = snap.data()!;
-    return {
-      usdToVes: Number(data['usdToVes'] ?? 0),
-      updatedAt: Number(data['updatedAt'] ?? 0),
-      source: String(data['source'] ?? 'fallback'),
-    };
-  },
+  (req: CallableRequest) => coreGetBcvRate(req as unknown as CoreCtx),
 );

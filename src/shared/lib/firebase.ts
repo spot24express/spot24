@@ -4,6 +4,10 @@
  * · Cero credenciales en código: todo entra por variables VITE_*.
  * · Carga perezosa por import dinámico: en modo demo (sin env vars) Firebase
  *   nunca se inicializa ni se descarga el chunk 'firebase-vendor'.
+ * · Sin SDK de Cloud Functions en el cliente: las operaciones sensibles van
+ *   por HTTP a /.netlify/functions/* (ver shared/lib/backend.ts).
+ * · Storage solo se inicializa si VITE_FIREBASE_STORAGE_BUCKET está presente
+ *   (plan Blaze); en Lite no hay bucket y la UI oculta las subidas.
  * · Ningún componente importa esto directamente: solo las capas de servicios
  *   de cada feature (arquitectura modular, sección 4.3 del prompt maestro).
  */
@@ -24,21 +28,18 @@ export function isFirebaseConfigured(): boolean {
   );
 }
 
-/** Región única de despliegue de Cloud Functions. */
-export const FUNCTIONS_REGION = 'us-central1';
-
 export interface FirebaseBundle {
   app: import('firebase/app').FirebaseApp;
   auth: import('firebase/auth').Auth;
   db: import('firebase/firestore').Firestore;
-  storage: import('firebase/storage').FirebaseStorage;
-  functions: import('firebase/functions').Functions;
+  /** null en plan Spark/Lite: no hay bucket → la UI oculta subidas. */
+  storage: import('firebase/storage').FirebaseStorage | null;
 }
 
 let bundlePromise: Promise<FirebaseBundle | null> | null = null;
 
 /**
- * Carga (una sola vez) el bundle completo de Firebase.
+ * Carga (una sola vez) el bundle de Firebase.
  * Devuelve null cuando el proyecto no está configurado → la capa de servicios
  * activa su adaptador demo correspondiente.
  */
@@ -51,21 +52,18 @@ export function loadFirebase(): Promise<FirebaseBundle | null> {
         { getAuth },
         { getFirestore },
         { getStorage },
-        { getFunctions },
       ] = await Promise.all([
         import('firebase/app'),
         import('firebase/auth'),
         import('firebase/firestore'),
         import('firebase/storage'),
-        import('firebase/functions'),
       ]);
       const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
       return {
         app,
         auth: getAuth(app),
         db: getFirestore(app),
-        storage: getStorage(app),
-        functions: getFunctions(app, FUNCTIONS_REGION),
+        storage: firebaseConfig.storageBucket ? getStorage(app) : null,
       };
     })();
   }
