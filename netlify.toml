@@ -1,0 +1,80 @@
+# SPOT 24 · Netlify — build, SPA redirect y cabeceras de seguridad (sección 6.6)
+# CSP estricta: sin scripts inline. Dominios de Firebase/app como única excepción.
+
+[build]
+  command = "npm ci && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+  NPM_FLAGS = "--include=dev"
+
+[functions]
+  node_bundler = "esbuild"
+
+# ── Redirect SPA: todas las rutas a /index.html (200) ──
+# force=false por defecto: los archivos estáticos de dist/ se sirven primero.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# ── Cabeceras globales de seguridad ──
+# script-src: 'self' + dominios del SDK de Firebase/App Check (reCAPTCHA Enterprise).
+# style-src: 'self' 'unsafe-inline' — requerido por los atributos style de React;
+#   la frontera dura está en script-src (nunca hay JS inline).
+# connect-src: Firestore, Auth, Storage, Installations, App Check, Functions,
+#   Messaging y telemetría de Firebase.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://firebasestorage.googleapis.com https://lh3.googleusercontent.com; font-src 'self'; connect-src 'self' blob: https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebasestorage.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://recaptchaenterprise.googleapis.com https://cloudfunctions.net https://*.cloudfunctions.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+    Strict-Transport-Security = "max-age=63072000; includeSubDomains; preload"
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(self), payment=(), usb=(), bluetooth=(), interest-cohort=()"
+    Cross-Origin-Opener-Policy = "same-origin"
+    X-DNS-Prefetch-Control = "off"
+
+# ── index.html nunca cacheado (el bundle referenciado cambia en cada deploy) ──
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+# ── Service worker y manifiesto siempre frescos ──
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/workbox-*.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+# ── Assets con hash y fuentes woff2: caché inmutable en el CDN ──
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/icons/*"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"
+
+# ── Deploy previews: apuntan a proyecto/alias Firebase separado vía variables ──
+[context.deploy-preview.environment]
+  NODE_ENV = "development"
+  VITE_USE_STAGING_FIREBASE = "true"
+
+[context.branch-deploy.environment]
+  NODE_ENV = "development"
+  VITE_USE_STAGING_FIREBASE = "true"

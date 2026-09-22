@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Tokens SOLO en GitHub Secrets (10.2): nunca en este archivo.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web · lint + tipos + pruebas + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Comprobación de tipos
+        run: npm run typecheck
+
+      - name: Pruebas unitarias
+        run: npm test
+
+      - name: Build de producción
+        run: npm run build:only
+
+      - name: Presupuesto de bundle (7.3) — informe del build
+        run: |
+          TOTAL=$(du -ck dist/assets/*.js | tail -1 | cut -f1)
+          echo "JS total en dist/assets: ${TOTAL} KB (sin gzip)"
+          INITIAL=$(du -ck dist/assets/react-vendor-*.js dist/assets/index-*.js 2>/dev/null | tail -1 | cut -f1 || echo 0)
+          echo "JS inicial (entry + react-vendor): ${INITIAL} KB (sin gzip)"
+          # El gate duro (LCP < 2,5 s, < 200 KB gzip, Lighthouse ≥ 95) se verifica
+          # en producción con Lighthouse: ver docs/DESPLIEGUE.md paso 8.
+
+  functions:
+    name: Functions · tipos + pruebas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: functions/package-lock.json
+
+      - name: Instalar dependencias
+        run: npm --prefix functions ci
+
+      - name: Build TypeScript
+        run: npm --prefix functions run build
+
+      - name: Pruebas unitarias (estado, crypto)
+        run: npm --prefix functions test
+
+  rules:
+    name: Firestore Rules · suite con emulador
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Instalar Firebase CLI
+        run: npm i -g firebase-tools@14
+
+      - name: Pruebas de reglas con emulador de Firestore
+        run: firebase emulators:exec --only firestore "npm run test:rules:only"

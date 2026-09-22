@@ -1,0 +1,52 @@
+rules_version = '2';
+
+/*
+ * SPOT 24 · Storage Security Rules — DENY BY DEFAULT (6.1)
+ * ═══════════════════════════════════════════════════════════
+ * · Imágenes de producto: lectura pública, escritura solo admin.
+ * · Comprobantes: escritura por el dueño de la orden, tamaño/tipo validado;
+ *   lectura solo admin (el visor del panel usa acceso admin; el cliente no
+ *   vuelve a leer su comprobante desde Storage para no exponer URLs).
+ * · Nada más: denegado.
+ */
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.role == 'admin';
+    }
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function okImageType() {
+      return request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+    function okReceiptType() {
+      return request.resource.contentType.matches('image/(jpeg|png|webp)|application/pdf');
+    }
+    function underMaxSize() {
+      return request.resource.size <= 5 * 1024 * 1024; // 5 MB
+    }
+
+    /* Imágenes de producto: products/{productId}/{fileName} */
+    match /products/{productId}/{fileName} {
+      allow read: if true;
+      allow write: if isAdmin() && okImageType() && underMaxSize();
+      allow delete: if isAdmin();
+    }
+
+    /* Comprobantes: orders/{uid}/{orderId}/{fileName} */
+    match /orders/{uid}/{orderId}/{fileName} {
+      allow read: if isAdmin() || (isSignedIn() && request.auth.uid == uid);
+      allow create: if isSignedIn() && request.auth.uid == uid
+        && okReceiptType() && underMaxSize();
+      // Sin update/delete para el cliente: inmutabilidad del comprobante.
+      allow update, delete: if isAdmin();
+    }
+
+    /* DENY BY DEFAULT */
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

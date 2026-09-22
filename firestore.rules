@@ -1,0 +1,149 @@
+rules_version = '2';
+
+/*
+ * SPOT 24 · Firestore Security Rules — DENY BY DEFAULT (6.1)
+ * ═══════════════════════════════════════════════════════════
+ * · Ninguna colección abierta: todo lo no listado queda DENEGADO.
+ * · El cliente NUNCA escribe en orders, reservations, counters,
+ *   idempotency, auditLog, fraudReview ni rates (solo Cloud Functions).
+ * · Roles vía custom claim `role == 'admin'`.
+ * · Validación de tipos/tamaños en cada write permitido (6.5).
+ */
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    /* ── Helpers ── */
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return signedIn() && request.auth.token.role == 'admin';
+    }
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    function str(v, minLen, maxLen) {
+      return v is string && v.size() >= minLen && v.size() <= maxLen;
+    }
+
+    /* ── products: lectura pública, escritura solo admin ── */
+    match /products/{productId} {
+      function productValid(d) {
+        return d.keys().hasAll(['name', 'brand', 'slug', 'categoryId', 'active'])
+          && str(d.name, 2, 120)
+          && str(d.brand, 1, 60)
+          && str(d.slug, 2, 140)
+          && str(d.categoryId, 2, 60)
+          && d.active is bool
+          && (!('basePriceUsd' in d) || (d.basePriceUsd is number && d.basePriceUsd >= 0 && d.basePriceUsd <= 10000))
+          && (!('stockTotal' in d) || (d.stockTotal is int && d.stockTotal >= 0))
+          && (!('description' in d) || str(d.description, 0, 1000))
+          && (!('images' in d) || (d.images is list && d.images.size() <= 10));
+      }
+      allow read: if true;
+      allow create, update: if isAdmin() && productValid(request.resource.data);
+      allow delete: if isAdmin();
+
+      /* Variantes: lectura pública; escritura SOLO Cloud Functions/admin
+         (el ajuste de stock se hace por fn-adjustStock, 6.3). */
+      match /variants/{variantId} {
+        allow read: if true;
+        allow write: if isAdmin()
+          && request.resource.data.keys().hasAll(['name', 'sku', 'priceUsd', 'stock', 'weightKg'])
+          && str(request.resource.data.name, 1, 80)
+          && str(request.resource.data.sku, 3, 40)
+          && request.resource.data.priceUsd is number
+          && request.resource.data.priceUsd >= 0
+          && request.resource.data.priceUsd <= 10000
+          && request.resource.data.stock is int
+          && request.resource.data.stock >= 0
+          && request.resource.data.stock <= 100000
+          && request.resource.data.weightKg is number
+          && request.resource.data.weightKg >= 0;
+      }
+    }
+
+    /* ── categories y zones: lectura pública, escritura admin ── */
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /zones/{zoneId} {
+      allow read: if true;
+      allow create, update: if isAdmin()
+        && request.resource.data.keys().hasAll(['name', 'state', 'feeUsd', 'active'])
+        && str(request.resource.data.name, 2, 120)
+        && request.resource.data.feeUsd is number
+        && request.resource.data.feeUsd >= 0
+        && request.resource.data.feeUsd <= 1000
+        && request.resource.data.active is bool;
+      allow delete: if isAdmin();
+    }
+
+    /* ── settings: lectura pública (cuentas de pago), escritura admin ── */
+    match /settings/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    /* ── rates/bcv: SOLO lectura para clientes; escritura por Cloud Functions ── */
+    match /rates/{rateId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    /* ── users: el dueño lee/escribe campos propios SIN roles ni época ── */
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid)
+        && request.resource.data.role == 'customer'
+        && (!('sessionEpoch' in request.resource.data) || request.resource.data.sessionEpoch is number);
+      allow update: if isOwner(uid)
+        // El cliente no puede cambiar role ni sessionEpoch (claims mandan).
+        && (!request.resource.data.diff(resource.data).affectedKeys()
+              .hasAny(['role', 'sessionEpoch']));
+      allow delete: if false;
+
+      /* Tokens FCM del propio usuario (5.5). */
+      match /fcmTokens/{tokenId} {
+        allow read, write: if isOwner(uid)
+          && request.resource.data.keys().hasAll(['token'])
+          && str(request.resource.data.token, 20, 4096);
+      }
+    }
+
+    /* ── carts: dueño únicamente, tamaño acotado (5.2) ── */
+    match /carts/{uid} {
+      allow read, write: if isOwner(uid)
+        && (!('items' in request.resource.data) || (
+          request.resource.data.items is list
+          && request.resource.data.items.size() <= 50
+        ));
+    }
+
+    /* ── orders: SOLO Cloud Functions escribe (5.4, 6.3) ── */
+    match /orders/{orderId} {
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create, update, delete: if false;
+
+      /* Timeline del pedido: solo lectura para dueño/admin. */
+      match /events/{eventId} {
+        allow read: if isAdmin() || (signedIn() && get(/databases/$(database)/documents/orders/$(orderId)).data.uid == request.auth.uid);
+        allow write: if false;
+      }
+    }
+
+    /* ── Colecciones internas: NADA de acceso cliente ── */
+    match /reservations/{id}              { allow read, write: if false; }
+    match /idempotency/{id}               { allow read, write: if false; }
+    match /counters/{id}                  { allow read, write: if false; }
+    match /auditLog/{id}                  { allow read, write: if false; }
+    match /fraudReview/{id}               { allow read, write: if false; }
+
+    /* ── DENY BY DEFAULT: cualquier otra ruta queda bloqueada ── */
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

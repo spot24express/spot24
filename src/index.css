@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── SPOT 24 · Base: negro domina, blanco lee, rojo señala ── */
+@layer base {
+  html {
+    background-color: #000000;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-ink font-body text-paper text-body-base antialiased;
+    min-height: 100dvh;
+  }
+
+  /* Foco visible WCAG 2.1 AA */
+  :focus-visible {
+    outline: 3px solid #f40901;
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: #f40901;
+    color: #ffffff;
+  }
+
+  /* Títulos: Saira itálica MAYÚSCULAS, máx. cuatro palabras por línea */
+  h1, h2, h3 {
+    @apply font-display font-extrabold italic uppercase tracking-tight;
+  }
+
+  /* Etiquetas de formulario: mayúsculas + interletrado ampliado */
+  label {
+    @apply font-body text-sm font-semibold uppercase tracking-label text-muted;
+  }
+
+  input, select, textarea {
+    @apply font-body;
+  }
+
+  /* Scrollbar sobrio sobre negro */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: #0a0a0a; }
+  ::-webkit-scrollbar-thumb { background: #262626; border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: #404040; }
+
+  /* Áreas seguras iOS */
+  .safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 0px); }
+  .safe-top { padding-top: max(env(safe-area-inset-top), 0px); }
+}
+
+@layer components {
+  /* Contenedor estándar de página */
+  .spot-container {
+    @apply mx-auto w-full max-w-6xl px-4 sm:px-6;
+  }
+
+  /* Titular de sección: Saira 800 itálica, corto y afirmativo */
+  .spot-title {
+    @apply font-display text-3xl font-extrabold italic uppercase text-paper sm:text-4xl;
+  }
+
+  /* Subtítulo de sección */
+  .spot-subtitle {
+    @apply font-body text-body-base text-muted;
+  }
+
+  /* Etiqueta pequeña mayúscula con interletrado ampliado */
+  .spot-label {
+    @apply font-body text-xs font-semibold uppercase tracking-label text-muted;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
