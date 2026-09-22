@@ -109,14 +109,16 @@ export default defineConfig({
       output: {
         entryFileNames: (chunk) =>
           chunk.name === 'firebase-messaging-sw' ? '[name].js' : 'assets/[name]-[hash].js',
-        // Partición de vendors: firebase solo baja cuando se usa (demo mode no lo carga).
+        // Partición de vendors: UN solo chunk para todas las dependencias
+        // estáticas y otro para Firebase (lazy: demo no lo descarga).
+        // ⚠️ No separar react/react-router de @remix-run/router ni de notistack:
+        // al partirlos en chunks distintos se crea un ciclo vendor ↔ react-vendor
+        // y el TDZ "Cannot access 'CB' before initialization" rompe la app en
+        // producción (el bundler evalúa vendor antes de que exista React).
         manualChunks(id) {
-          if (id.includes('node_modules')) {
-            if (id.includes('firebase')) return 'firebase-vendor';
-            if (id.includes('@tanstack')) return 'query-vendor';
-            if (id.includes('react') || id.includes('scheduler')) return 'react-vendor';
-            return 'vendor';
-          }
+          if (!id.includes('node_modules')) return;
+          if (id.includes('firebase')) return 'firebase-vendor';
+          return 'vendor';
         },
       },
     },
