@@ -142,3 +142,64 @@ export const fnGetAdminMetrics = onCall(
   { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 10 },
   (req: CallableRequest) => coreGetAdminMetrics(req as unknown as CoreCtx),
 );
+
+/* ── Bootstrap único del primer admin (FASE 4, modo Lite sin terminal) ──
+ * Invocación HTTP con ?key=ADMIN_SETUP_KEY&email=...  Un solo uso: marcador
+ * en settings/bootstrapAdmin. Tras usarlo se elimina ADMIN_SETUP_KEY en
+ * Netlify. El usuario destino DEBE existir (se registra antes en la PWA). */
+
+/** Comparación igual a igual sin fugas de tiempo (sin dependencias). */
+function safeEq(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+export async function coreBootstrapFirstAdmin(ctx: CoreCtx): Promise<unknown> {
+  const dbRef = db();
+
+  // 1) Un solo uso: si el marcador existe, rechazar SIEMPRE.
+  const marker = await dbRef.collection('settings').doc('bootstrapAdmin').get();
+  if (marker.exists) {
+    throw new HttpsError('already-exists', 'El bootstrap ya fue utilizado.');
+  }
+
+  // 2) Clave secreta ADMIN_SETUP_KEY (comparación sin fugas de tiempo).
+  const setupKey = process.env['ADMIN_SETUP_KEY'] ?? '';
+  const provided = sanitizeStr(ctx.data?.['key'], 128);
+  if (!setupKey || !safeEq(setupKey, provided)) {
+    throw new HttpsError('permission-denied', 'Clave inválida.');
+  }
+
+  // 3) El usuario debe estar registrado previamente en la PWA.
+  const email = sanitizeStr(ctx.data?.['email'], 320).toLowerCase();
+  if (!email || !email.includes('@')) {
+    throw new HttpsError('invalid-argument', 'Email inválido.');
+  }
+  let uid: string;
+  try {
+    uid = (await admin.auth(getAdminApp()).getUserByEmail(email)).uid;
+  } catch {
+    throw new HttpsError(
+      'not-found',
+      'No existe cuenta con ese email. Regístrate primero en la app.',
+    );
+  }
+
+  // 4) Rol admin + época nueva (invalida las sesiones previas del usuario).
+  await admin.auth(getAdminApp()).setCustomUserClaims(uid, { role: 'admin' });
+  const epoch = Date.now();
+  await dbRef.collection('users').doc(uid).set(
+    { role: 'admin', sessionEpoch: epoch },
+    { merge: true },
+  );
+
+  // 5) Marcador de un solo uso + auditoría.
+  await dbRef.collection('settings').doc('bootstrapAdmin').set({
+    usedAt: epoch,
+    uid,
+  });
+  await writeAudit({ action: 'bootstrap_primer_admin', adminUid: uid, targetId: uid });
+  return { ok: true, uid };
+}
