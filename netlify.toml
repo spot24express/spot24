@@ -2,10 +2,12 @@
 # CSP estricta: sin scripts inline. Dominios de Firebase/app como única excepción.
 
 [build]
+  # npm install (NO npm ci): así Netlify instala las deps nuevas de package.json
+  # (firebase-admin/firebase-functions) sin exigir package-lock actualizado.
   # npm --prefix functions ci: el backend Lite (netlify/functions) importa el
   # código de functions/src, que resuelve firebase-admin/firebase-functions
-  # desde functions/node_modules durante el bundling con esbuild.
-  command = "npm ci && npm --prefix functions ci && npm run build"
+  # durante el bundling con esbuild.
+  command = "npm install && npm --prefix functions ci && npm run build"
   publish = "dist"
 
 [build.environment]
@@ -15,6 +17,10 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
+  # CRÍTICO: firebase-admin se deja sin empaquetar pero Netlify lo INCLUYE
+  # en el zip de cada función desde node_modules de la raíz. Sin esta línea
+  # la función falla en runtime con "Cannot find package 'firebase-admin'".
+  external_node_modules = ["firebase-admin", "firebase-functions"]
 
 # ── Redirect SPA: todas las rutas a /index.html (200) ──
 # force=false por defecto: los archivos estáticos de dist/ se sirven primero.
