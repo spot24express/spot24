@@ -4,7 +4,7 @@
  * transiciona estados, notifica al cliente y escribe auditoría (6.9).
  * Core agnóstico del runtime + wrapper onCall (modo Cloud Functions).
  */
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { getAdminApp, type CoreCtx } from './lib/ctx';
 import { canTransition } from './domain/order-state';

@@ -6,7 +6,7 @@
  * · fn-getAdminMetrics: métricas agregadas calculadas en el backend.
  * Cores agnósticos del runtime + wrappers onCall (modo Cloud Functions).
  */
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { getAdminApp, type CoreCtx } from './lib/ctx';
 import { writeAudit } from './payments';

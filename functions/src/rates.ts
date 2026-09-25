@@ -6,7 +6,7 @@
  * Cores agnósticos del runtime: onSchedule/onCall y el scheduled function de
  * Netlify reutilizan coreUpdateBcvRate/coreGetBcvRate.
  */
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';

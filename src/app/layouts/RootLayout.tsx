@@ -30,21 +30,22 @@ function TopBar() {
               Admin
             </NavLink>
           )}
-          {user ? (
-            <NavLink
-              to="/cuenta"
-              className="rounded-brand px-3 py-2 spot-label hover:bg-surface-2"
-            >
-              Cuenta
-            </NavLink>
-          ) : (
-            <NavLink
-              to="/cuenta/login"
-              className="rounded-brand px-3 py-2 spot-label hover:bg-surface-2"
-            >
-              Entrar
-            </NavLink>
-          )}
+          <a
+            href="https://www.instagram.com/spot24ve?stkn=bzdpOHBqcWRrZnl1"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="SPOT 24 en Instagram"
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-brand border-2 border-line hover:border-signal"
+          >
+            <InstagramIcon size={20} />
+          </a>
+          <NavLink
+            to={user ? '/cuenta' : '/cuenta/login'}
+            aria-label={user ? 'Mi cuenta' : 'Entrar'}
+            className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-brand border-2 border-line hover:border-signal"
+          >
+            <UserIcon size={20} />
+          </NavLink>
           <NavLink
             to="/carrito"
             aria-label={`Carrito, ${count} artículos`}
@@ -276,6 +277,15 @@ function UserIcon({ size }: NavIconProps) {
     <Icon size={size}>
       <circle cx="12" cy="8" r="4" />
       <path d="M4 21c1.5-4 5-5.5 8-5.5s6.5 1.5 8 5.5" />
+    </Icon>
+  );
+}
+function InstagramIcon({ size }: NavIconProps) {
+  return (
+    <Icon size={size}>
+      <rect x="2.5" y="2.5" width="19" height="19" rx="5.5" />
+      <circle cx="12" cy="12" r="4.2" />
+      <circle cx="17.4" cy="6.6" r="1.1" fill="currentColor" stroke="none" />
     </Icon>
   );
 }

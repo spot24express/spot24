@@ -10,7 +10,7 @@
  *  · Errores: HttpsError → HTTP status + JSON { error: { code, message } }.
  * Sin CORS abierto: la PWA y las funciones viven en el mismo dominio.
  */
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import { HttpsError } from 'firebase-functions/v2/https';
 import { getAdminApp, type CoreCtx } from './ctx';

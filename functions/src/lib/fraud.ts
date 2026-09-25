@@ -4,7 +4,7 @@
  * · Límite de pedidos por usuario por hora.
  * · Puntaje de riesgo → cola de revisión (status en_verificacion + riskFlags).
  */
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 
 const db = () => admin.firestore();
 

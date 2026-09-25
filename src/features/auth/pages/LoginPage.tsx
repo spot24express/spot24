@@ -41,8 +41,23 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="spot-container flex min-h-[70dvh] items-center justify-center py-10">
-      <div className="w-full max-w-md rounded-brand-lg border-2 border-line bg-surface-1 p-8">
+    <div className="relative flex min-h-[75dvh] items-center justify-center overflow-hidden py-10">
+      {/* Fondo: la insignia SPOT 24 pintada en el asfalto */}
+      <img
+        src="/img/local-insignia.jpg"
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        decoding="async"
+        className="absolute inset-0 h-full w-full object-cover"
+      />
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 bg-gradient-to-t from-ink via-ink/75 to-ink/55"
+      />
+
+      <div className="spot-container relative flex justify-center">
+      <div className="w-full max-w-md rounded-brand-lg border-2 border-line bg-surface-1/95 p-8 backdrop-blur">
         <SpeedLines className="mb-6" />
         <h1 className="font-display text-2xl font-extrabold italic uppercase text-paper">Entrar</h1>
         <p className="mt-1 text-muted">Para. Resuelve. Sigue.</p>
@@ -111,6 +126,7 @@ export default function LoginPage() {
             Crea tu cuenta
           </Link>
         </p>
+      </div>
       </div>
     </div>
   );

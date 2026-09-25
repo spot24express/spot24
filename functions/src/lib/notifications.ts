@@ -2,7 +2,7 @@
  * SPOT 24 · Notificaciones FCM por cambio de estado (5.5).
  * Voz de marca: afirmativa y corta. Sin datos personales en el payload.
  */
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 
 const db = () => admin.firestore();
 

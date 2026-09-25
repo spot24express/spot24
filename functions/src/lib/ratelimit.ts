@@ -5,7 +5,7 @@
  * Documentos en counters/ratelimit_{bucket}_{windowStart}: bajo costo por
  * escritura; se recomienda TTL policy en Console (expireAt).
  */
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 import { HttpsError } from 'firebase-functions/v2/https';
 
 const db = () => admin.firestore();

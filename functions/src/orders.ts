@@ -7,7 +7,7 @@
  * · fn-cancelOrder: liberación de reserva y reposición de stock.
  * El cliente NUNCA calcula precios ni escribe en orders.
  */
-import * as admin from 'firebase-admin';
+import admin from 'firebase-admin';
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { getAdminApp, type CoreCtx } from './lib/ctx';
