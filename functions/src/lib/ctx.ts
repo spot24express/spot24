@@ -7,7 +7,8 @@
  * disponible si en el futuro se activa el plan Blaze.
  */
 import type { DecodedIdToken } from 'firebase-admin/auth';
-import { cert, getApp, getApps, initializeApp, type App } from 'firebase-admin/app';
+import type { App } from 'firebase-admin/app';
+import admin from 'firebase-admin';
 
 /** Datos de App Check verificados por el runtime/adaptador. */
 export interface CoreAppCheckData {
@@ -34,7 +35,12 @@ let adminApp: App | null = null;
  */
 export function getAdminApp(): App {
   if (adminApp) return adminApp;
-  const existing = getApps().length > 0 ? getApp() : null;
+  // IMPORTANTE: inicializar vía el namespace legacy (no por el subpath
+  // 'firebase-admin/app'). El namespace ejecuta extendApp(), que inyecta los
+  // métodos de servicio (firestore(), auth(), ...) sobre la instancia App.
+  // Con la app "cruda" del subpath, admin.firestore(app) falla en runtime con
+  // "this.ensureApp(...).firestore is not a function" (esbuild ESM + externo).
+  const existing = admin.apps.length > 0 ? admin.app() : null;
   if (existing) {
     adminApp = existing;
     return adminApp;
@@ -42,9 +48,11 @@ export function getAdminApp(): App {
   const raw = process.env['FIREBASE_SERVICE_ACCOUNT'];
   if (raw) {
     const json = raw.trim().startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
-    adminApp = initializeApp({ credential: cert(JSON.parse(json) as Parameters<typeof cert>[0]) });
+    adminApp = admin.initializeApp({
+      credential: admin.credential.cert(JSON.parse(json) as Parameters<typeof admin.credential.cert>[0]),
+    });
     return adminApp;
   }
-  adminApp = initializeApp();
+  adminApp = admin.initializeApp();
   return adminApp;
 }

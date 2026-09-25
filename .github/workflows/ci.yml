@@ -24,7 +24,9 @@ jobs:
           cache: npm
 
       - name: Instalar dependencias
-        run: npm ci
+        # npm install (no npm ci): tolerante al drift del lock, igual que el
+        # build de Netlify (que sí funciona con este mismo árbol).
+        run: npm install
 
       - name: Instalar dependencias del backend (functions/)
         run: npm --prefix functions ci
@@ -85,7 +87,8 @@ jobs:
           cache: npm
 
       - name: Instalar dependencias
-        run: npm ci
+        # Igual que el job web: npm install tolerante al drift del lock.
+        run: npm install
 
       - name: Instalar Firebase CLI
         run: npm i -g firebase-tools@14

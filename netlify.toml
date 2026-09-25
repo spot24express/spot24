@@ -2,11 +2,9 @@
 # CSP estricta: sin scripts inline. Dominios de Firebase/app como única excepción.
 
 [build]
-  # npm install (NO npm ci): así Netlify instala las deps nuevas de package.json
-  # (firebase-admin/firebase-functions) sin exigir package-lock actualizado.
   # npm --prefix functions ci: el backend Lite (netlify/functions) importa el
   # código de functions/src, que resuelve firebase-admin/firebase-functions
-  # durante el bundling con esbuild.
+  # desde functions/node_modules durante el bundling con esbuild.
   command = "npm install && npm --prefix functions ci && npm run build"
   publish = "dist"
 
@@ -17,9 +15,6 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
-  # CRÍTICO: firebase-admin se deja sin empaquetar pero Netlify lo INCLUYE
-  # en el zip de cada función desde node_modules de la raíz. Sin esta línea
-  # la función falla en runtime con "Cannot find package 'firebase-admin'".
   external_node_modules = ["firebase-admin", "firebase-functions"]
 
 # ── Redirect SPA: todas las rutas a /index.html (200) ──
@@ -31,7 +26,8 @@
 
 # ── Cabeceras globales de seguridad ──
 # script-src: 'self' + dominios del SDK de Firebase/App Check (reCAPTCHA v3/Enterprise)
-#   + hash del bootstrap inline de reCAPTCHA dentro de su iframe srcdoc.
+#   + hashes de los scripts inline que el SDK de Auth/reCAPTCHA inyecta dentro
+#   de su iframe srcdoc (los iframes srcdoc heredan la CSP del sitio).
 # frame-src: iframes del SDK de Auth (<authDomain>/__/auth/iframe) y de reCAPTCHA.
 # style-src: 'self' 'unsafe-inline' — requerido por los atributos style de React;
 #   la frontera dura está en script-src (nunca hay JS inline).
@@ -40,7 +36,7 @@
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://firebasestorage.googleapis.com https://lh3.googleusercontent.com; font-src 'self'; connect-src 'self' blob: https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://firebasestorage.googleapis.com https://lh3.googleusercontent.com; font-src 'self'; connect-src 'self' blob: https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
     Strict-Transport-Security = "max-age=63072000; includeSubDomains; preload"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"

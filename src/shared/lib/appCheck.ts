@@ -4,8 +4,10 @@
  * Se inicializa una sola vez tras cargar Firebase. Prioridad de proveedores:
  *  1. reCAPTCHA Enterprise (VITE_RECAPTCHA_ENTERPRISE_SITE_KEY) — plan Blaze.
  *  2. reCAPTCHA v3 (VITE_RECAPTCHA_V3_SITE_KEY) — plan Spark/Lite, gratis.
- *  3. Debug token (VITE_APPCHECK_DEBUG_TOKEN) — desarrollo local/previews.
- *  4. Sin atestación — la app sigue funcionando en modo monitoreo.
+ *  3. Debug token (VITE_APPCHECK_DEBUG_TOKEN) junto a una llave — desarrollo local.
+ *  4. Sin llave configurada — NO se inicializa nada: la app funciona normal y
+ *     @firebase/auth no intenta pedir tokens a un proveedor inexistente
+ *     (antes esto llenaba la consola de "Error while retrieving App Check token").
  * La exigencia del token en el backend se activa con APPCHECK_ENFORCE=true
  * (Console → App Check → Enforce) después de validar el tráfico (6.2).
  */
@@ -19,13 +21,6 @@ export async function initAppCheck(): Promise<void> {
   if (!fb || initialized) return;
   initialized = true;
 
-  const {
-    initializeAppCheck,
-    ReCaptchaEnterpriseProvider,
-    ReCaptchaV3Provider,
-    CustomProvider,
-  } = await import('firebase/app-check');
-
   const enterpriseKey = import.meta.env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY;
   const v3Key = import.meta.env.VITE_RECAPTCHA_V3_SITE_KEY;
   const debugToken = import.meta.env.VITE_APPCHECK_DEBUG_TOKEN;
@@ -34,6 +29,13 @@ export async function initAppCheck(): Promise<void> {
     // Desarrollo local / deploy preview: token de debug registrado en Console.
     self.FIREBASE_APPCHECK_DEBUG_TOKEN = debugToken;
   }
+
+  // Sin llave de reCAPTCHA no hay App Check: sin instancia, ni Auth ni el
+  // backend intentan obtener token y la consola queda limpia.
+  if (!enterpriseKey && !v3Key) return;
+
+  const { initializeAppCheck, ReCaptchaEnterpriseProvider, ReCaptchaV3Provider } =
+    await import('firebase/app-check');
 
   if (enterpriseKey) {
     instance = initializeAppCheck(fb.app, {
@@ -48,25 +50,7 @@ export async function initAppCheck(): Promise<void> {
       provider: new ReCaptchaV3Provider(v3Key),
       isTokenAutoRefreshEnabled: true,
     });
-    return;
   }
-
-  if (debugToken) {
-    instance = initializeAppCheck(fb.app, {
-      provider: new CustomProvider({ getToken: () => Promise.reject(new Error('appcheck-noop')) }),
-      isTokenAutoRefreshEnabled: false,
-    });
-    return;
-  }
-
-  // Sin key ni debug token: se registra en modo "sin atestación" para que la
-  // app siga funcionando mientras se completa la configuración de Console.
-  instance = initializeAppCheck(fb.app, {
-    provider: new CustomProvider({
-      getToken: () => Promise.reject(new Error('App Check sin proveedor configurado')),
-    }),
-    isTokenAutoRefreshEnabled: false,
-  });
 }
 
 /** Token App Check actual; null si no hay proveedor activo (no bloquea). */
