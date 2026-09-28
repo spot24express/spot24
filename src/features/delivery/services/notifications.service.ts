@@ -5,12 +5,10 @@
  */
 import { doc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE } from '@/shared/lib/backend';
 import { logger } from '@/shared/lib/logger';
 
 export async function isPushSupported(): Promise<boolean> {
   return (
-    !DEMO_MODE &&
     typeof window !== 'undefined' &&
     'serviceWorker' in navigator &&
     'PushManager' in window &&
@@ -62,7 +60,6 @@ export async function enableOrderNotifications(uid: string): Promise<boolean> {
 }
 
 export async function disableOrderNotifications(uid: string): Promise<void> {
-  if (DEMO_MODE) return;
   const fb = await loadFirebase();
   if (!fb) return;
   try {
@@ -89,7 +86,6 @@ async function hashToken(token: string): Promise<string> {
 
 /** Comprueba si el token del dispositivo ya está registrado para el usuario. */
 export async function hasRegisteredToken(uid: string): Promise<boolean> {
-  if (DEMO_MODE) return false;
   const fb = await loadFirebase();
   if (!fb) return false;
   try {

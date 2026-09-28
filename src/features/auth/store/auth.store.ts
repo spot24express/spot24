@@ -15,8 +15,6 @@ interface AuthState {
   signUp: (name: string, email: string, password: string, phoneE164: string) => Promise<SpotUser>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  /** Solo modo demo: sesión local sin Firebase. */
-  signInDemo: (role: 'customer' | 'admin') => void;
   setUser: (u: SpotUser | null) => void;
 }
 
@@ -45,11 +43,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   resetPassword: async (email) => {
     await authService.sendReset(email);
-  },
-
-  signInDemo: (role) => {
-    const user = authService.demoSignIn(role);
-    set({ user });
   },
 
   setUser: (u) => set({ user: u, ready: true }),

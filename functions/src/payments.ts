@@ -1,6 +1,6 @@
 /**
  * SPOT 24 · Verificación manual de pagos (5.4).
- * Solo admins (custom claim). Ejecuta antifraude de referencia duplicada,
+ * Admin o cajero (custom claim). Ejecuta antifraude de referencia duplicada,
  * transiciona estados, notifica al cliente y escribe auditoría (6.9).
  * Core agnóstico del runtime + wrapper onCall (modo Cloud Functions).
  */
@@ -14,12 +14,14 @@ import { hashReference } from './lib/crypto';
 
 const db = () => admin.firestore(getAdminApp());
 
-function requireAdmin(ctx: CoreCtx): { uid: string } {
+/** Exige sesión con uno de los roles indicados (custom claim). */
+function requireStaff(ctx: CoreCtx, roles: readonly string[]): { uid: string; role: string } {
   if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
-  if (ctx.auth.token['role'] !== 'admin') {
-    throw new HttpsError('permission-denied', 'Solo administración.');
+  const role = String(ctx.auth.token['role'] ?? '');
+  if (!roles.includes(role)) {
+    throw new HttpsError('permission-denied', 'No tienes permiso para esta acción.');
   }
-  return { uid: ctx.auth.uid };
+  return { uid: ctx.auth.uid, role };
 }
 
 function sanitizeStr(v: unknown, max: number): string {
@@ -43,7 +45,7 @@ export async function writeAudit(entry: {
 }
 
 export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
-  const admin = requireAdmin(ctx);
+  const staff = requireStaff(ctx, ['admin', 'cajero']);
 
   const orderId = sanitizeStr(ctx.data?.['orderId'], 120);
   const approve = ctx.data?.['approve'] === true;
@@ -79,14 +81,14 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
       status: 'pagado',
       'payment.status': 'pagado',
       'payment.verifiedAt': Date.now(),
-      'payment.verifiedBy': admin.uid,
+      'payment.verifiedBy': staff.uid,
       updatedAt: Date.now(),
       riskFlags: [],
     });
     await ref.collection('events').add({
       status: 'pagado',
       at: Date.now(),
-      by: 'admin',
+      by: staff.role,
       note: note || 'Pago verificado.',
     });
     void ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), 'pagado');
@@ -96,13 +98,13 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
         status: 'cancelado',
         'payment.status': 'rechazado',
         'payment.verifiedAt': Date.now(),
-        'payment.verifiedBy': admin.uid,
+        'payment.verifiedBy': staff.uid,
         updatedAt: Date.now(),
       });
       tx.set(ref.collection('events').doc(), {
         status: 'cancelado',
         at: Date.now(),
-        by: 'admin',
+        by: staff.role,
         note: note || 'Pago rechazado.',
       });
       // Repone stock.
@@ -120,7 +122,7 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
 
   await writeAudit({
     action: approve ? 'verificar_pago_aprobado' : 'verificar_pago_rechazado',
-    adminUid: admin.uid,
+    adminUid: staff.uid,
     targetId: orderId,
     note,
   });

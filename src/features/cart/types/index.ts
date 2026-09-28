@@ -12,7 +12,6 @@ export interface CartItem {
   qty: number;
   image: string;
   categoryId: string;
-  weightKg: number;
   /** Stock visto al agregar: para validar increments sin ir al backend. */
   stockAtAdd: number;
 }

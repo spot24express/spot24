@@ -7,7 +7,6 @@ export interface ProductVariant {
   sku: string;
   priceUsd: number;
   stock: number;
-  weightKg: number;
   active: boolean;
 }
 
@@ -20,7 +19,7 @@ export interface Product {
   categoryId: string;
   /** Precio base desde (mínimo de variantes activas); variantes guardan el real. */
   basePriceUsd: number;
-  images: string[]; // URLs de Storage o placeholders locales en demo
+  images: string[]; // URLs externas o placeholders locales en public/img/products
   /** Tokens de búsqueda: nombre + marca + categoría en minúsculas (sin acentos). */
   searchTerms: string[];
   stockTotal: number; // agregado de variantes activas

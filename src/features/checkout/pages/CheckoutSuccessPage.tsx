@@ -1,16 +1,23 @@
+import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Button } from '@/shared/components/ui/Button';
 import { SpeedLines } from '@/shared/components/brand/Logo';
 import { PAYMENT_METHOD_LABELS } from '@/shared/constants/orders';
 import { formatBs, formatUsd } from '@/shared/lib/format';
-import { demoGetOrder } from '@/features/orders/services/orders.service';
+import { subscribeOrder } from '@/features/orders/services/orders.service';
+import type { Order } from '@/features/orders/types';
 
 /** Pantalla de éxito tras crear la orden (paso 4 dedicado desde enlaces). */
 export default function CheckoutSuccessPage() {
   const { orderId } = useParams<{ orderId: string }>();
   useDocumentTitle('Pedido confirmado');
-  const order = orderId ? demoGetOrder(orderId) : null;
+  const [order, setOrder] = useState<Order | null>(null);
+
+  useEffect(() => {
+    if (!orderId) return;
+    return subscribeOrder(orderId, setOrder);
+  }, [orderId]);
 
   return (
     <div className="spot-container py-12">

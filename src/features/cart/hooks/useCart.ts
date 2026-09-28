@@ -1,6 +1,6 @@
 /** Hooks públicos del módulo carrito (única puerta desde componentes). */
 import { useCartStore } from '../store/cart.store';
-import { itemCount, subtotalRef, totalWeight } from '../lib/cartLogic';
+import { itemCount, subtotalRef } from '../lib/cartLogic';
 
 export function useCart() {
   const items = useCartStore((s) => s.items);
@@ -16,7 +16,6 @@ export function useCart() {
     clear,
     count: itemCount(items),
     subtotalRef: subtotalRef(items),
-    weightKg: totalWeight(items),
     isEmpty: items.length === 0,
   };
 }

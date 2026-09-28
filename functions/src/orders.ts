@@ -1,7 +1,7 @@
 /**
  * SPOT 24 · Operaciones sensibles de pedidos (5.2/5.4, 6.3).
  * · fn-reserveStock: reserva de stock 2 h al entrar al checkout.
- * · fn-quoteTotals: cotización autoritativa (subtotal + envío por zona/peso + Bs).
+ * · fn-quoteTotals: cotización autoritativa (subtotal + envío por zona + Bs).
  * · fn-createOrder: ÚNICO escritor de orders. Idempotente, con App Check,
  *   validación de stock, montos calculados SOLO aquí y antifraude.
  * · fn-cancelOrder: liberación de reserva y reposición de stock.
@@ -162,7 +162,6 @@ export async function coreQuoteTotals(ctx: CoreCtx): Promise<unknown> {
       totalUsd: totals.totalUsd,
       totalVes: totals.totalVes,
       rateUsed: totals.rateUsed,
-      weightKg: totals.weightKg,
       zoneName: zoneSnap.get('name') ?? zoneId,
       freeShipping: totals.shippingUsd === 0,
     };
@@ -204,7 +203,7 @@ async function computeTotals(
   _uid: string,
   lines: ValidLine[],
   zoneId: string,
-): Promise<{ subtotalUsd: number; shippingUsd: number; totalUsd: number; totalVes: number; rateUsed: number; weightKg: number; linesSnapshot: ValidLineWithPrice[] }> {
+): Promise<{ subtotalUsd: number; shippingUsd: number; totalUsd: number; totalVes: number; rateUsed: number; linesSnapshot: ValidLineWithPrice[] }> {
   const [zoneSnap, rateSnap] = await Promise.all([
     db().collection('zones').doc(zoneId).get(),
     db().collection('rates').doc('bcv').get(),
@@ -218,7 +217,6 @@ async function computeTotals(
   }
 
   let subtotal = 0;
-  let weight = 0;
   const linesSnapshot: ValidLineWithPrice[] = [];
 
   for (const line of lines) {
@@ -231,13 +229,11 @@ async function computeTotals(
       throw new HttpsError('out-of-range', 'Producto no disponible.');
     }
     const price = Number(vsnap.data()?.['priceUsd'] ?? 0);
-    const w = Number(vsnap.data()?.['weightKg'] ?? 0);
     if (!isFinitePositive(price) || price > MAX_PRICE_USD) {
       throw new HttpsError('out-of-range', 'Precio inválido.');
     }
     const lineTotal = round2(price * line.qty);
     subtotal += lineTotal;
-    weight += w * line.qty;
     linesSnapshot.push({
       ...line,
       name: sanitizeStr(psnap.data()?.['name'], 120),
@@ -245,7 +241,6 @@ async function computeTotals(
       sku: sanitizeStr(vsnap.data()?.['sku'], 40),
       unitPriceUsd: price,
       lineTotalUsd: lineTotal,
-      weightKg: w,
       image: Array.isArray(psnap.data()?.['images']) ? String(psnap.data()!['images'][0] ?? '') : '',
       categoryId: sanitizeStr(psnap.data()?.['categoryId'], 60),
       slug: sanitizeStr(psnap.data()?.['slug'], 140),
@@ -253,24 +248,16 @@ async function computeTotals(
   }
 
   subtotal = round2(subtotal);
-  weight = round2(weight);
 
-  // Envío por zona y peso (regla 5.5).
+  // Envío por zona: tarifa plana definida por el admin (5.5). El peso no participa.
   const fee = Number(zoneSnap.data()?.['feeUsd'] ?? 0);
   const freeFrom = Number(zoneSnap.data()?.['freeFromUsd'] ?? 0);
-  const perKg = Number(zoneSnap.data()?.['weightRateUsdPerKg'] ?? 0);
-  const baseWeight = Number(zoneSnap.data()?.['baseWeightKg'] ?? 5);
-  const maxWeight = Number(zoneSnap.data()?.['maxWeightKg'] ?? 40);
-  if (weight > maxWeight) {
-    throw new HttpsError('out-of-range', 'Peso fuera de cobertura.');
-  }
-  const extraKg = Math.max(0, Math.ceil(weight - baseWeight));
-  let shipping = round2(fee + extraKg * perKg);
+  let shipping = round2(fee);
   if (freeFrom > 0 && subtotal >= freeFrom) shipping = 0;
 
   const totalUsd = round2(subtotal + shipping);
   const totalVes = round2(totalUsd * rate);
-  return { subtotalUsd: subtotal, shippingUsd: shipping, totalUsd, totalVes, rateUsed: rate, weightKg: weight, linesSnapshot };
+  return { subtotalUsd: subtotal, shippingUsd: shipping, totalUsd, totalVes, rateUsed: rate, linesSnapshot };
 }
 
 interface ValidLineWithPrice extends ValidLine {
@@ -279,7 +266,6 @@ interface ValidLineWithPrice extends ValidLine {
   sku: string;
   unitPriceUsd: number;
   lineTotalUsd: number;
-  weightKg: number;
   image: string;
   categoryId: string;
   slug: string;
@@ -298,7 +284,7 @@ interface CreateOrderReq {
   paymentDetails: unknown;
 }
 
-const PAYMENT_METHODS = new Set(['pago_movil', 'transferencia', 'zelle', 'efectivo']);
+const PAYMENT_METHODS = new Set(['pago_movil']);
 
 export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
   {
@@ -397,7 +383,6 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
         totalUsd: totals.totalUsd,
         totalVes: totals.totalVes,
         rateUsed: totals.rateUsed,
-        weightKg: totals.weightKg,
       },
       payment: {
         method: req.paymentMethod,
@@ -499,7 +484,6 @@ function buildCreateResponse(orderId: string, data: admin.firestore.DocumentData
       totalUsd: Number(totals?.['totalUsd'] ?? 0),
       totalVes: Number(totals?.['totalVes'] ?? 0),
       rateUsed: Number(totals?.['rateUsed'] ?? 0),
-      weightKg: Number(totals?.['weightKg'] ?? 0),
     },
     riskFlags: Array.isArray(data['riskFlags']) ? (data['riskFlags'] as string[]) : [],
   };

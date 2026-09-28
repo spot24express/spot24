@@ -11,7 +11,8 @@ import {
   adminGetVariants, adminSetProductImages,
 } from '../services/admin.service';
 import type { Product, ProductVariant } from '@/features/catalog/types';
-import { CATEGORIES } from '@/shared/constants/categories';
+import { listCategories } from '@/features/catalog/services/catalog.service';
+import type { CategoryDef } from '@/shared/constants/categories';
 import { userMessage } from '@/shared/lib/errors';
 
 /** Gestión de productos, variantes, stock y precios (5.6). */
@@ -115,29 +116,39 @@ function ProductModal({
   const [form, setForm] = useState({
     name: product?.name ?? '',
     brand: product?.brand ?? '',
-    categoryId: product?.categoryId ?? 'lubricantes',
+    categoryId: product?.categoryId ?? '',
     description: product?.description ?? '',
     active: product?.active ?? true,
   });
-  const [variants, setVariants] = useState<Array<{ name: string; sku: string; priceUsd: number; stock: number; weightKg: number }>>([]);
+  const [variants, setVariants] = useState<Array<{ name: string; sku: string; priceUsd: number; stock: number }>>([]);
+  const [categories, setCategories] = useState<CategoryDef[]>([]);
   const [imageUrl, setImageUrl] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // Categorías vigentes (las que gestiona el admin, con respaldo local).
+  useEffect(() => {
+    void listCategories().then(setCategories).catch(() => setCategories([]));
+  }, []);
 
   // Carga variantes al abrir con producto existente.
   useEffect(() => {
     setImageUrl(product?.images?.[0] ?? '');
     if (!product) {
-      setVariants([{ name: '', sku: '', priceUsd: 0, stock: 0, weightKg: 0 }]);
+      setVariants([{ name: '', sku: '', priceUsd: 0, stock: 0 }]);
       return;
     }
     void adminGetVariants(product.id).then((vs) => {
       setVariants(
-        vs.map((v: ProductVariant) => ({ name: v.name, sku: v.sku, priceUsd: v.priceUsd, stock: v.stock, weightKg: v.weightKg })),
+        vs.map((v: ProductVariant) => ({ name: v.name, sku: v.sku, priceUsd: v.priceUsd, stock: v.stock })),
       );
     });
   }, [product]);
 
   const save = async () => {
+    if (!form.categoryId) {
+      toast.error('Elige una categoría para el producto.');
+      return;
+    }
     setBusy(true);
     try {
       await adminSaveProduct({
@@ -187,9 +198,10 @@ function ProductModal({
         <div className="grid gap-4 sm:grid-cols-2">
           <Input label="Nombre" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
           <Input label="Marca" value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} required />
-          <Select label="Categoría" value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))}>
-            {CATEGORIES.map((c) => (
-              <option key={c.id} value={c.id}>{c.code} · {c.name}</option>
+          <Select label="Categoría" value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))} required>
+            <option value="">Selecciona…</option>
+            {categories.map((c) => (
+              <option key={c.id} value={c.id}>{c.code ? `${c.code} · ` : ''}{c.name}</option>
             ))}
           </Select>
           <Select label="Estado" value={form.active ? '1' : '0'} onChange={(e) => setForm((f) => ({ ...f, active: e.target.value === '1' }))}>
@@ -203,7 +215,7 @@ function ProductModal({
           <p className="mb-2 spot-label">Variantes</p>
           <ul className="space-y-3">
             {variants.map((v, i) => (
-              <li key={i} className="grid gap-3 rounded-brand border-2 border-line bg-ink p-4 sm:grid-cols-[1.4fr_1fr_0.8fr_0.8fr_auto]">
+              <li key={i} className="grid gap-3 rounded-brand border-2 border-line bg-ink p-4 sm:grid-cols-[1.4fr_1fr_0.8fr_0.8fr]">
                 <input aria-label="Variante nombre" placeholder="5W-30 · 4 L" value={v.name} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} className="rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none" />
                 <input aria-label="SKU" placeholder="SKU" value={v.sku} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, sku: e.target.value.toUpperCase() } : x)))} className="rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none" />
                 <input aria-label="Precio USD" type="number" step="0.5" min="0" placeholder="USD" value={v.priceUsd || ''} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, priceUsd: Number(e.target.value) } : x)))} className="rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none" />
@@ -212,11 +224,10 @@ function ProductModal({
                   <input aria-label="Stock" type="number" min="0" value={v.stock || 0} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, stock: Math.max(0, Number(e.target.value)) } : x)))} className="w-16 rounded-brand border-2 border-line bg-surface-1 px-2 py-2 text-center text-paper focus:border-signal focus:outline-none" />
                   <button type="button" aria-label="Sumar stock" onClick={() => void adjust(i, 1)} className="min-h-[40px] w-9 rounded-brand border-2 border-line font-bold text-paper hover:bg-surface-2">+</button>
                 </div>
-                <input aria-label="Peso kg" type="number" step="0.1" min="0" placeholder="kg" value={v.weightKg || ''} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, weightKg: Number(e.target.value) } : x)))} className="rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none sm:w-20" />
               </li>
             ))}
           </ul>
-          <Button variant="ghost" size="sm" className="mt-3" onClick={() => setVariants((vs) => [...vs, { name: '', sku: '', priceUsd: 0, stock: 0, weightKg: 0 }])}>
+          <Button variant="ghost" size="sm" className="mt-3" onClick={() => setVariants((vs) => [...vs, { name: '', sku: '', priceUsd: 0, stock: 0 }])}>
             + Añadir variante
           </Button>
         </div>

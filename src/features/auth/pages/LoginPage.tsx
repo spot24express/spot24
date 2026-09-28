@@ -7,8 +7,6 @@ import { SpeedLines } from '@/shared/components/brand/Logo';
 import { useAuth } from '../hooks/useAuth';
 import { userMessage } from '@/shared/lib/errors';
 import { isValidEmail } from '@/shared/lib/validation';
-import { DEMO_MODE } from '@/shared/lib/backend';
-import { useAuthStore } from '../store/auth.store';
 
 /** Inicio de sesión: correo/contraseña (5.3). */
 export default function LoginPage() {
@@ -90,35 +88,6 @@ export default function LoginPage() {
             Entrar
           </Button>
         </form>
-
-        {DEMO_MODE && (
-          <div className="mt-6 rounded-brand border-2 border-dashed border-signal/50 bg-signal/5 p-4">
-            <p className="spot-label mb-2 text-signal">Modo demo activo</p>
-            <p className="text-sm text-muted">
-              Sin Firebase configurado puedes explorar todo con una sesión local.
-            </p>
-            <div className="mt-3 flex flex-col gap-2">
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  useAuthStore.getState().signInDemo('customer');
-                  navigate('/checkout');
-                }}
-              >
-                Entrar como cliente (demo)
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  useAuthStore.getState().signInDemo('admin');
-                  navigate('/admin');
-                }}
-              >
-                Entrar como admin (demo)
-              </Button>
-            </div>
-          </div>
-        )}
 
         <p className="mt-6 text-center text-body-base text-muted">
           ¿Primera vez?{' '}

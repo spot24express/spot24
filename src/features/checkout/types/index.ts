@@ -27,7 +27,6 @@ export interface OrderTotals {
   totalUsd: number;
   totalVes: number; // total en Bs con la tasa BCV del momento
   rateUsed: number;
-  weightKg: number;
 }
 
 export interface QuoteRequest {

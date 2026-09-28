@@ -1,21 +1,16 @@
 /**
- * SPOT 24 · Modo de backend y transporte de funciones.
+ * SPOT 24 · Transporte de funciones de servidor.
  * ────────────────────────────────────────────────────────────────────
- * · DEMO_MODE se activa cuando no hay credenciales VITE_FIREBASE_*: la app
- *   navega completa con datos semilla locales (catálogo, carrito, checkout
- *   simulado) para desarrollo, previews y demostraciones sin datos reales.
- * · En modo real, TODAS las operaciones sensibles van por HTTP a las
- *   Netlify Functions del propio dominio (/.netlify/functions/*), que
- *   ejecutan la misma lógica de negocio que los callables de Cloud Functions:
- *   token de sesión Bearer + header App Check + errores canónicos.
+ * TODAS las operaciones sensibles van por HTTP a las Netlify Functions del
+ * propio dominio (/.netlify/functions/*), que ejecutan la misma lógica de
+ * negocio que los callables de Cloud Functions: token de sesión Bearer +
+ * header App Check + errores canónicos.
  * · STORAGE_AVAILABLE indica si hay bucket de Storage configurado; en el
  *   plan Spark (sin tarjeta) no lo hay y la UI oculta la subida de archivos.
  */
-import { isFirebaseConfigured, loadFirebase, type FirebaseBundle } from './firebase';
+import { loadFirebase, type FirebaseBundle } from './firebase';
 import { AppError } from './errors';
 import { logger } from './logger';
-
-export const DEMO_MODE: boolean = !isFirebaseConfigured();
 
 /** true solo si hay bucket de Storage (plan Blaze). En Lite es false. */
 export const STORAGE_AVAILABLE: boolean = Boolean(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET);

@@ -7,15 +7,28 @@ import { StatusBadge } from '@/shared/components/ui/Badge';
 import { adminListOrders, adminSetOrderStatus } from '../services/admin.service';
 import type { Order, OrderStatus } from '@/features/orders/types';
 import { STATUS_LABELS, STATUS_TRANSITIONS } from '@/shared/constants/orders';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 import { userMessage } from '@/shared/lib/errors';
 
 /**
  * Panel de despacho (5.5): cola de pedidos activos, cambio de estado con
  * máquina de transiciones del backend y notificación FCM automática al cliente.
+ * Los botones se filtran por rol (el backend re-valida): cajero prepara,
+ * delivery lleva y entrega, admin puede todo.
  */
 const QUEUE: OrderStatus[] = ['pagado', 'preparado', 'en_camino'];
 
+/** Botones visibles por rol además de las transiciones válidas. */
+const ROLE_MOVES: Partial<Record<string, ReadonlyArray<readonly [OrderStatus, OrderStatus]>>> = {
+  cajero: [
+    ['pendiente', 'en_verificacion'], ['en_verificacion', 'pagado'], ['pagado', 'preparado'],
+  ],
+  delivery: [['preparado', 'en_camino'], ['en_camino', 'entregado']],
+};
+
 export default function AdminDispatchPage() {
+  const { user } = useAuth();
+  const role = user?.role ?? 'customer';
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -97,7 +110,14 @@ export default function AdminDispatchPage() {
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  {(STATUS_TRANSITIONS[o.status] ?? []).filter((s) => s !== 'cancelado').map((next) => (
+                  {(STATUS_TRANSITIONS[o.status] ?? [])
+                    .filter(
+                      (s) =>
+                        s !== 'cancelado' &&
+                        (role === 'admin' ||
+                          (ROLE_MOVES[role] ?? []).some(([f, t]) => f === o.status && t === s)),
+                    )
+                    .map((next) => (
                     <Button
                       key={next}
                       size="sm"

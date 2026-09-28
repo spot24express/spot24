@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { validateAdd, clampSetQty, mergeCarts, totalWeight, subtotalRef, itemCount } from '../lib/cartLogic';
+import { validateAdd, clampSetQty, mergeCarts, subtotalRef, itemCount } from '../lib/cartLogic';
 import type { CartItem } from '../types';
 
-const item = (variantId: string, qty: number, stockAtAdd = 10, unitPriceUsd = 5, weightKg = 1): CartItem => ({
+const item = (variantId: string, qty: number, stockAtAdd = 10, unitPriceUsd = 5): CartItem => ({
   productId: 'p1',
   variantId,
   slug: 'p1',
@@ -13,7 +13,6 @@ const item = (variantId: string, qty: number, stockAtAdd = 10, unitPriceUsd = 5,
   qty,
   image: '/img/products/lubricantes.svg',
   categoryId: 'lubricantes',
-  weightKg,
   stockAtAdd,
 });
 
@@ -78,10 +77,9 @@ describe('fusión de carritos al iniciar sesión', () => {
 });
 
 describe('totales referenciales', () => {
-  it('subtotal, peso y conteo', () => {
-    const items = [item('v1', 2, 10, 12.5, 2), item('v2', 1, 10, 3.25, 0.5)];
+  it('subtotal y conteo', () => {
+    const items = [item('v1', 2, 10, 12.5), item('v2', 1, 10, 3.25)];
     expect(subtotalRef(items)).toBe(28.25);
-    expect(totalWeight(items)).toBe(4.5);
     expect(itemCount(items)).toBe(3);
   });
 });

@@ -9,7 +9,7 @@ import { adminListZones, adminSaveZone, adminDeleteZone } from '../services/admi
 import type { Zone } from '@/features/delivery/types';
 import { userMessage } from '@/shared/lib/errors';
 
-/** Gestión de zonas de cobertura con tarifas y ventanas (5.5/5.6). */
+/** Gestión de zonas de cobertura con tarifas planas y ventanas (5.5/5.6). */
 export default function AdminZonesPage() {
   const [zones, setZones] = useState<Zone[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,7 +35,7 @@ export default function AdminZonesPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-xl font-bold italic uppercase text-paper">Zonas de cobertura</h2>
-          <p className="spot-subtitle mt-1">Tarifas por zona, recargo por peso y ventanas 24/7.</p>
+          <p className="spot-subtitle mt-1">Tarifa plana por zona y ventanas 24/7. El envío no depende del peso.</p>
         </div>
         <Button onClick={() => setCreating(true)}>Nueva zona</Button>
       </div>
@@ -51,7 +51,7 @@ export default function AdminZonesPage() {
               <div>
                 <p className="font-semibold text-paper">{z.name}</p>
                 <p className="spot-label mt-0.5">
-                  ${z.feeUsd.toFixed(2)} · gratis desde ${z.freeFromUsd.toFixed(2)} · +${z.weightRateUsdPerKg.toFixed(2)}/kg sobre {z.baseWeightKg} kg · {z.etaMinMinutes}-{z.etaMaxMinutes} min · {z.windows.length} ventanas
+                  ${z.feeUsd.toFixed(2)} · gratis desde ${z.freeFromUsd.toFixed(2)} · {z.etaMinMinutes}-{z.etaMaxMinutes} min · {z.windows.length} ventanas
                 </p>
               </div>
               <div className="flex gap-2">
@@ -109,9 +109,6 @@ function ZoneModal({
     state: zone?.state ?? 'Distrito Capital',
     feeUsd: zone?.feeUsd ?? 2.5,
     freeFromUsd: zone?.freeFromUsd ?? 40,
-    weightRateUsdPerKg: zone?.weightRateUsdPerKg ?? 0.4,
-    baseWeightKg: zone?.baseWeightKg ?? 5,
-    maxWeightKg: zone?.maxWeightKg ?? 40,
     etaMinMinutes: zone?.etaMinMinutes ?? 45,
     etaMaxMinutes: zone?.etaMaxMinutes ?? 90,
     active: zone?.active ?? true,
@@ -158,12 +155,13 @@ function ZoneModal({
         <div className="grid gap-4 sm:grid-cols-2">
           {num('Tarifa base USD', 'feeUsd')}
           {num('Envío gratis desde USD', 'freeFromUsd')}
-          {num('Recargo por kg USD', 'weightRateUsdPerKg')}
-          {num('Kilos base sin recargo', 'baseWeightKg')}
-          {num('Peso máximo kg', 'maxWeightKg')}
           {num('ETA mínimo (min)', 'etaMinMinutes', 5)}
           {num('ETA máximo (min)', 'etaMaxMinutes', 5)}
         </div>
+        <p className="rounded-brand border-2 border-dashed border-line bg-ink p-3 text-xs text-muted">
+          La tarifa es fija por zona: el cliente paga ese monto de envío (o nada si su
+          compra supera el mínimo de envío gratis). No hay recargos por peso.
+        </p>
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
           <Button className="flex-1" loading={busy} onClick={() => void save()}>

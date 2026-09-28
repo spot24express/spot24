@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { SpeedDivider, SpeedLines } from '@/shared/components/brand/Logo';
-import { ProductGridSkeleton, Skeleton } from '@/shared/components/ui/Skeleton';
+import { ProductGridSkeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState, ErrorState } from '@/shared/components/ui/States';
-import { useCategories, useCategoryCount, useProductList } from '../hooks/useCatalog';
+import { useCategories, useProductList } from '../hooks/useCatalog';
 import { CategoryCard } from '../components/CategoryCard';
 import { ProductCard } from '../components/ProductCard';
 import { SearchBar } from '../components/SearchBar';
@@ -147,15 +147,15 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* CATEGORÍAS 01–08 */}
+      {/* CATEGORÍAS — bahías según la cantidad que gestione el admin */}
       <section className="mt-12" aria-labelledby="cats-title">
         <h2 id="cats-title" className="spot-title mb-2">
-          Las ocho bahías
+          {categories && categories.length === 1 ? 'La bahía' : categories && categories.length > 1 ? `${categories.length} bahías` : 'Las bahías'}
         </h2>
         <p className="spot-subtitle mb-6">Elige tu categoría. Todo en el mismo pit stop.</p>
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           {categories?.map((c) => (
-            <CategoryCardItem key={c.id} id={c.id} />
+            <CategoryCard key={c.id} category={c} />
           ))}
         </div>
       </section>
@@ -187,13 +187,4 @@ export default function HomePage() {
       <p className="mt-4 text-center spot-label">{VOICE.thanks}</p>
     </div>
   );
-}
-
-/** Item con contador por categoría (consulta count agregada). */
-function CategoryCardItem({ id }: { id: string }) {
-  const { data: categories } = useCategories();
-  const category = categories?.find((c) => c.id === id);
-  const { data: count } = useCategoryCount(id);
-  if (!category) return <Skeleton className="min-h-[120px]" />;
-  return <CategoryCard category={category} count={count} />;
 }

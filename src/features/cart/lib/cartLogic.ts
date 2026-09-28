@@ -54,11 +54,6 @@ export function mergeCarts(
   return [...byVariant.values()];
 }
 
-/** Peso total aproximado del pedido (para cotización de envío en UI). */
-export function totalWeight(items: CartItem[]): number {
-  return Math.round(items.reduce((acc, i) => acc + i.weightKg * i.qty, 0) * 100) / 100;
-}
-
 /** Subtotal referencial para DISPLAY (el total autoritativo lo calcula el backend). */
 export function subtotalRef(items: CartItem[]): number {
   return Math.round(items.reduce((acc, i) => acc + i.unitPriceUsd * i.qty, 0) * 100) / 100;

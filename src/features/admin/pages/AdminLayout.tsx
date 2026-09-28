@@ -1,36 +1,42 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { SpeedLines } from '@/shared/components/brand/Logo';
-import { DEMO_MODE } from '@/shared/lib/backend';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 
-const NAV = [
-  { to: '/admin/pagos', label: 'Pagos', code: '01' },
-  { to: '/admin/despacho', label: 'Despacho', code: '02' },
-  { to: '/admin/productos', label: 'Productos', code: '03' },
-  { to: '/admin/zonas', label: 'Zonas', code: '04' },
-  { to: '/admin/metricas', label: 'Métricas', code: '05' },
-] as const;
+const NAV: ReadonlyArray<{ to: string; label: string; code: string; roles: readonly string[] }> = [
+  { to: '/admin/pagos', label: 'Pagos', code: '01', roles: ['admin', 'cajero'] },
+  { to: '/admin/despacho', label: 'Despacho', code: '02', roles: ['admin', 'cajero', 'delivery'] },
+  { to: '/admin/productos', label: 'Productos', code: '03', roles: ['admin'] },
+  { to: '/admin/categorias', label: 'Categorías', code: '04', roles: ['admin'] },
+  { to: '/admin/zonas', label: 'Zonas', code: '05', roles: ['admin'] },
+  { to: '/admin/usuarios', label: 'Usuarios', code: '06', roles: ['admin'] },
+  { to: '/admin/metricas', label: 'Métricas', code: '07', roles: ['admin'] },
+];
 
-/** Layout del panel admin: navegación lateral + guard ya aplicado en router. */
+const SUBTITLE: Record<string, string> = {
+  admin: 'Operación 24/7: pagos, despacho, catálogo, zonas y usuarios.',
+  cajero: 'Turno de caja: confirma pagos por Pago Móvil y deja los pedidos listos.',
+  delivery: 'Ruta activa: toma los pedidos preparados y márcalos al entregar.',
+};
+
+/** Layout del panel: navegación lateral filtrada por rol (guard ya aplicado en router). */
 export default function AdminLayout() {
-  useDocumentTitle('Panel admin');
+  useDocumentTitle('Panel');
+  const { user } = useAuth();
+  const role = user?.role ?? 'customer';
+  const items = NAV.filter((n) => n.roles.includes(role));
   return (
     <div className="spot-container py-8">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <SpeedLines className="mb-3" />
           <h1 className="spot-title">Pit stop central</h1>
-          <p className="spot-subtitle mt-1">Operación 24/7: pagos, despacho, catálogo y zonas.</p>
+          <p className="spot-subtitle mt-1">{SUBTITLE[role] ?? SUBTITLE['admin']}</p>
         </div>
-        {DEMO_MODE && (
-          <p className="rounded-brand border-2 border-signal/40 bg-signal/5 px-4 py-2 text-sm font-semibold text-paper">
-            Modo demo — datos locales, acciones simuladas
-          </p>
-        )}
       </div>
 
-      <nav aria-label="Panel admin" className="mb-8 flex flex-wrap gap-2 border-b border-line pb-4">
-        {NAV.map((n) => (
+      <nav aria-label="Panel" className="mb-8 flex flex-wrap gap-2 border-b border-line pb-4">
+        {items.map((n) => (
           <NavLink
             key={n.to}
             to={n.to}

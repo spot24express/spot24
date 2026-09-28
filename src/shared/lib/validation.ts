@@ -63,11 +63,9 @@ export function normalizeCedulaVE(value: string): string {
   return clean;
 }
 
-/** Referencias de pago: 6–20 dígitos (bancos VE) o alfanumérica Zelle. */
-export function isValidPaymentReference(value: string, method: 've' | 'zelle'): boolean {
-  const v = value.trim();
-  if (method === 've') return /^\d{6,20}$/.test(v);
-  return /^[A-Za-z0-9-]{6,30}$/.test(v);
+/** Referencia de Pago Móvil: 6–20 dígitos. */
+export function isValidPaymentReference(value: string): boolean {
+  return /^\d{6,20}$/.test(value.trim());
 }
 
 /** Números de dinero: positivo, hasta 2 decimales, tope defensivo. */

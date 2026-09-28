@@ -58,10 +58,10 @@ describe('cifrado AES-256-GCM', () => {
 });
 
 describe('hash de referencias (antifraude)', () => {
-  it('es determinista y sensible al método', () => {
+  it('es determinista y sensible a la entrada', () => {
     const a = hashReference('pago_movil', '123456789');
     const b = hashReference('pago_movil', '123456789');
-    const c = hashReference('zelle', '123456789');
+    const c = hashReference('pago_movil', '987654321');
     expect(a).toBe(b);
     expect(a).not.toBe(c);
     expect(a).toHaveLength(64);

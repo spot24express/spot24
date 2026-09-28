@@ -6,7 +6,8 @@ rules_version = '2';
  * · Ninguna colección abierta: todo lo no listado queda DENEGADO.
  * · El cliente NUNCA escribe en orders, reservations, counters,
  *   idempotency, auditLog, fraudReview ni rates (solo Cloud Functions).
- * · Roles vía custom claim `role == 'admin'`.
+ * · Roles vía custom claim `role`: admin (todo), cajero (pagos/despacho),
+ *   delivery (ruta). Solo lectura de pedidos para el personal.
  * · Validación de tipos/tamaños en cada write permitido (6.5).
  */
 service cloud.firestore {
@@ -18,6 +19,11 @@ service cloud.firestore {
     }
     function isAdmin() {
       return signedIn() && request.auth.token.role == 'admin';
+    }
+    /* Personal del panel: cajero y delivery tienen SOLO lectura de pedidos. */
+    function isStaff() {
+      return signedIn()
+        && (request.auth.token.role == 'cajero' || request.auth.token.role == 'delivery');
     }
     function isOwner(uid) {
       return signedIn() && request.auth.uid == uid;
@@ -105,31 +111,37 @@ service cloud.firestore {
               .hasAny(['role', 'sessionEpoch']));
       allow delete: if false;
 
-      /* Tokens FCM del propio usuario (5.5). */
+      /* Tokens FCM del propio usuario (5.5). La validación de datos aplica
+         solo a escrituras: request.resource no existe en las lecturas. */
       match /fcmTokens/{tokenId} {
-        allow read, write: if isOwner(uid)
+        allow read: if isOwner(uid);
+        allow create, update: if isOwner(uid)
           && request.resource.data.keys().hasAll(['token'])
           && str(request.resource.data.token, 20, 4096);
+        allow delete: if isOwner(uid);
       }
     }
 
-    /* ── carts: dueño únicamente, tamaño acotado (5.2) ── */
+    /* ── carts: dueño únicamente, tamaño acotado (5.2) ──
+       Lectura simple: request.resource no existe en reads (bug que bloqueaba
+       el carrito remoto al iniciar sesión). */
     match /carts/{uid} {
-      allow read, write: if isOwner(uid)
-        && (!('items' in request.resource.data) || (
-          request.resource.data.items is list
-          && request.resource.data.items.size() <= 50
-        ));
+      allow read: if isOwner(uid);
+      allow create, update: if isOwner(uid)
+        && request.resource.data.keys().hasAll(['items'])
+        && request.resource.data.items is list
+        && request.resource.data.items.size() <= 50;
+      allow delete: if false;
     }
 
     /* ── orders: SOLO Cloud Functions escribe (5.4, 6.3) ── */
     match /orders/{orderId} {
-      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow read: if isAdmin() || isStaff() || (signedIn() && resource.data.uid == request.auth.uid);
       allow create, update, delete: if false;
 
-      /* Timeline del pedido: solo lectura para dueño/admin. */
+      /* Timeline del pedido: lectura para dueño, personal y admin. */
       match /events/{eventId} {
-        allow read: if isAdmin() || (signedIn() && get(/databases/$(database)/documents/orders/$(orderId)).data.uid == request.auth.uid);
+        allow read: if isAdmin() || isStaff() || (signedIn() && get(/databases/$(database)/documents/orders/$(orderId)).data.uid == request.auth.uid);
         allow write: if false;
       }
     }

@@ -31,12 +31,6 @@ export function formatInt(amount: number): string {
   return intFmt.format(Number.isFinite(amount) ? amount : 0);
 }
 
-/** Peso legible: 0.4 kg → "400 g", 2.5 → "2,5 kg" */
-export function formatWeight(kg: number): string {
-  if (kg < 1) return `${Math.round(kg * 1000)} g`;
-  return `${vesFmt.format(kg)} kg`;
-}
-
 /** "hace 5 min" / "hace 2 h" / "hace 3 días" */
 export function timeAgo(date: Date | number | string): string {
   const ts = typeof date === 'object' ? date.getTime() : new Date(date).getTime();

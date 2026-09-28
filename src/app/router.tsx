@@ -2,7 +2,8 @@ import { lazy, Suspense } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { RootLayout } from './layouts/RootLayout';
 import { RouteSkeleton, LoadingScreen } from '@/shared/components/ui/Skeleton';
-import { useRequireAuth, useRequireAdmin } from '@/features/auth/hooks/useAuth';
+import { useRequireAuth, useRequirePanel, useAuth } from '@/features/auth/hooks/useAuth';
+import type { UserRole } from '@/features/auth/types';
 
 /* Code splitting por ruta (4.4): cada página es un chunk separado. */
 const HomePage = lazy(() => import('@/features/catalog/pages/HomePage'));
@@ -19,9 +20,11 @@ const MyOrdersPage = lazy(() => import('@/features/orders/pages/MyOrdersPage'));
 const OrderDetailPage = lazy(() => import('@/features/orders/pages/OrderDetailPage'));
 const AdminLayout = lazy(() => import('@/features/admin/pages/AdminLayout'));
 const AdminProductsPage = lazy(() => import('@/features/admin/pages/AdminProductsPage'));
+const AdminCategoriesPage = lazy(() => import('@/features/admin/pages/AdminCategoriesPage'));
 const AdminPaymentsPage = lazy(() => import('@/features/admin/pages/AdminPaymentsPage'));
 const AdminDispatchPage = lazy(() => import('@/features/admin/pages/AdminDispatchPage'));
 const AdminZonesPage = lazy(() => import('@/features/admin/pages/AdminZonesPage'));
+const AdminUsersPage = lazy(() => import('@/features/admin/pages/AdminUsersPage'));
 const AdminMetricsPage = lazy(() => import('@/features/admin/pages/AdminMetricsPage'));
 
 function Lazy({ children }: { children: React.ReactNode }) {
@@ -35,11 +38,26 @@ function GuardAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function GuardAdmin({ children }: { children: React.ReactNode }) {
-  const { ready, isAdmin } = useRequireAdmin();
+/** Entrada al panel: admin, cajero o delivery (cada uno ve solo sus secciones). */
+function GuardPanel({ children }: { children: React.ReactNode }) {
+  const { ready, role } = useRequirePanel();
   if (!ready) return <LoadingScreen />;
-  if (!isAdmin) return null;
+  if (!role) return null;
   return <>{children}</>;
+}
+
+/** Sección del panel acotada por rol: si no corresponde, devuelve al inicio del panel. */
+function GuardSection({ allow, children }: { allow: readonly UserRole[]; children: React.ReactNode }) {
+  const { user } = useAuth();
+  const role = user?.role;
+  if (!role || !allow.includes(role)) return <Navigate to="/admin" replace />;
+  return <>{children}</>;
+}
+
+/** Índice del panel: redirige a la sección principal de cada rol. */
+function PanelIndex() {
+  const { user } = useAuth();
+  return <Navigate to={user?.role === 'delivery' ? '/admin/despacho' : '/admin/pagos'} replace />;
 }
 
 export const router = createBrowserRouter([
@@ -61,14 +79,16 @@ export const router = createBrowserRouter([
       { path: 'pedido/:orderId', element: <GuardAuth><Lazy><OrderDetailPage /></Lazy></GuardAuth> },
       {
         path: 'admin',
-        element: <GuardAdmin><Lazy><AdminLayout /></Lazy></GuardAdmin>,
+        element: <GuardPanel><Lazy><AdminLayout /></Lazy></GuardPanel>,
         children: [
-          { index: true, element: <Navigate to="/admin/pagos" replace /> },
-          { path: 'productos', element: <Lazy><AdminProductsPage /></Lazy> },
-          { path: 'pagos', element: <Lazy><AdminPaymentsPage /></Lazy> },
-          { path: 'despacho', element: <Lazy><AdminDispatchPage /></Lazy> },
-          { path: 'zonas', element: <Lazy><AdminZonesPage /></Lazy> },
-          { path: 'metricas', element: <Lazy><AdminMetricsPage /></Lazy> },
+          { index: true, element: <PanelIndex /> },
+          { path: 'productos', element: <GuardSection allow={['admin']}><Lazy><AdminProductsPage /></Lazy></GuardSection> },
+          { path: 'categorias', element: <GuardSection allow={['admin']}><Lazy><AdminCategoriesPage /></Lazy></GuardSection> },
+          { path: 'pagos', element: <GuardSection allow={['admin', 'cajero']}><Lazy><AdminPaymentsPage /></Lazy></GuardSection> },
+          { path: 'despacho', element: <GuardSection allow={['admin', 'cajero', 'delivery']}><Lazy><AdminDispatchPage /></Lazy></GuardSection> },
+          { path: 'zonas', element: <GuardSection allow={['admin']}><Lazy><AdminZonesPage /></Lazy></GuardSection> },
+          { path: 'usuarios', element: <GuardSection allow={['admin']}><Lazy><AdminUsersPage /></Lazy></GuardSection> },
+          { path: 'metricas', element: <GuardSection allow={['admin']}><Lazy><AdminMetricsPage /></Lazy></GuardSection> },
         ],
       },
       { path: '*', element: <Lazy><HomePage /></Lazy> },

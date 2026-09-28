@@ -1,7 +1,8 @@
 /**
  * SPOT 24 · Cambio de estado de pedido (panel de despacho, 5.5).
- * Solo admins. Máquina de transiciones estricta, tracking code en en_camino,
- * notificación FCM por cambio y auditoría.
+ * Roles con permisos acotados: admin (todo), cajero (hasta preparado),
+ * delivery (en_camino → entregado). Máquina de transiciones estricta,
+ * tracking code en en_camino, notificación FCM y auditoría.
  * Core agnóstico del runtime + wrapper onCall (modo Cloud Functions).
  */
 import admin from 'firebase-admin';
@@ -13,6 +14,24 @@ import { writeAudit } from './payments';
 
 const db = () => admin.firestore(getAdminApp());
 
+/**
+ * Transiciones permitidas por rol (el admin pasa todas las válidas).
+ * Formato "desde>hasta"; el backend SIEMPRE re-valida con canTransition.
+ */
+const ROLE_MOVES: Record<string, readonly string[]> = {
+  cajero: [
+    'pendiente>en_verificacion', 'pendiente>cancelado',
+    'en_verificacion>pagado', 'en_verificacion>cancelado',
+    'pagado>preparado', 'pagado>cancelado',
+  ],
+  delivery: ['preparado>en_camino', 'en_camino>entregado'],
+};
+
+function canRoleMove(role: string, from: string, to: string): boolean {
+  if (role === 'admin') return true;
+  return (ROLE_MOVES[role] ?? []).includes(`${from}>${to}`);
+}
+
 function sanitizeStr(v: unknown, max: number): string {
   if (typeof v !== 'string') return '';
   return v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim().slice(0, max);
@@ -20,8 +39,9 @@ function sanitizeStr(v: unknown, max: number): string {
 
 export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
-  if (ctx.auth.token['role'] !== 'admin') {
-    throw new HttpsError('permission-denied', 'Solo administración.');
+  const role = String(ctx.auth.token['role'] ?? '');
+  if (!['admin', 'cajero', 'delivery'].includes(role)) {
+    throw new HttpsError('permission-denied', 'No tienes permiso para esta acción.');
   }
 
   const orderId = sanitizeStr(ctx.data?.['orderId'], 120);
@@ -41,6 +61,9 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   if (!canTransition(from as never, to)) {
     throw new HttpsError('failed-precondition', `Transición inválida: ${from} → ${to}.`);
   }
+  if (!canRoleMove(role, from, to)) {
+    throw new HttpsError('permission-denied', 'Tu rol no permite mover el pedido a ese estado.');
+  }
 
   const patch: Record<string, unknown> = { status: to, updatedAt: Date.now() };
   if (to === 'en_camino' && !order['delivery']?.['trackingCode']) {
@@ -55,7 +78,7 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
     tx.set(ref.collection('events').doc(), {
       status: to,
       at: Date.now(),
-      by: 'admin',
+      by: role,
       note,
     });
   });

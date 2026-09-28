@@ -1,7 +1,7 @@
 /**
  * Módulo auth · Capa de servicios (Firebase Auth + perfil en Firestore).
- * Roles customer/admin mediante custom claims (5.3). Cierre de sesión remoto
- * por época de sesión en users/{uid}.sessionEpoch.
+ * Roles mediante custom claims (5.3). Cierre de sesión remoto por época de
+ * sesión en users/{uid}.sessionEpoch.
  */
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut as fbSignOut,
@@ -10,7 +10,6 @@ import {
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE } from '@/shared/lib/backend';
 import { logger } from '@/shared/lib/logger';
 import { AppError } from '@/shared/lib/errors';
 import { sanitizeText, isValidEmail } from '@/shared/lib/validation';
@@ -50,40 +49,11 @@ async function fetchProfile(user: User): Promise<SpotUser> {
     ...base,
     name,
     sessionEpoch,
-    role: claimsRole === 'admin' ? 'admin' : 'customer',
+    role: claimsRole === 'admin' || claimsRole === 'cajero' || claimsRole === 'delivery' ? claimsRole : 'customer',
   };
 }
 
 /* ───────────────────────────── API pública ───────────────────────────── */
-
-/* ── Sesión demo (solo sin Firebase): permite navegar checkout y admin ── */
-const DEMO_SESSION_KEY = 'spot24:demo:session';
-
-export function demoSignIn(role: 'customer' | 'admin'): SpotUser {
-  const user: SpotUser = {
-    uid: `demo-${role}`,
-    email: 'demo@spot24.com.ve',
-    phone: null,
-    name: role === 'admin' ? 'Admin Demo' : 'Cliente Demo',
-    role,
-    emailVerified: true,
-    sessionEpoch: 0,
-  };
-  try {
-    localStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(user));
-  } catch {
-    /* almacenamiento no disponible */
-  }
-  return user;
-}
-
-export function demoSignOut(): void {
-  try {
-    localStorage.removeItem(DEMO_SESSION_KEY);
-  } catch {
-    /* almacenamiento no disponible */
-  }
-}
 
 export async function signUpEmail(name: string, email: string, password: string, phoneE164: string): Promise<SpotUser> {
   if (!isValidEmail(email)) throw new AppError('generic', 'email inválido en signUp');
@@ -115,7 +85,6 @@ export async function signUpEmail(name: string, email: string, password: string,
 }
 
 export async function signInEmail(email: string, password: string): Promise<SpotUser> {
-  if (DEMO_MODE) return demoSignIn('customer');
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic', 'Firebase no configurado');
   try {
@@ -128,10 +97,6 @@ export async function signInEmail(email: string, password: string): Promise<Spot
 }
 
 export async function signOut(): Promise<void> {
-  if (DEMO_MODE) {
-    demoSignOut();
-    return;
-  }
   const fb = await loadFirebase();
   if (!fb) return;
   await fbSignOut(fb.auth);
@@ -168,15 +133,6 @@ export async function startPhoneVerification(containerId: string, phoneE164: str
 
 /** Observa sesión; aplica cierre remoto por época y devuelve el perfil. */
 export function observeAuth(cb: (user: SpotUser | null) => void): () => void {
-  if (DEMO_MODE) {
-    try {
-      const raw = localStorage.getItem(DEMO_SESSION_KEY);
-      cb(raw ? (JSON.parse(raw) as SpotUser) : null);
-    } catch {
-      cb(null);
-    }
-    return () => undefined;
-  }
   let epochAtLogin: number | null = null;
   let unsub: (() => void) | null = null;
   let cancelled = false;

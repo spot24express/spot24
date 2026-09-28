@@ -1,7 +1,7 @@
 /**
  * Módulo catalog · Capa de servicios.
  * Único punto de acceso a Firestore para el catálogo (sección 4.3).
- * Con DEMO_MODE sirve el seed local. Consultas SIEMPRE con límite (7.1).
+ * Consultas SIEMPRE con límite (7.1).
  */
 import {
   collection, doc, getDoc, getDocs, getCountFromServer,
@@ -9,8 +9,6 @@ import {
   where, type DocumentData, type QueryDocumentSnapshot, type Query,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE } from '@/shared/lib/backend';
-import { DEMO_PRODUCTS } from '@/shared/lib/demo/seed';
 import type { CatalogQuery, Product } from '../types';
 import type { Page, BcvRate } from '@/shared/types';
 import { CATEGORIES, type CategoryDef } from '@/shared/constants/categories';
@@ -72,14 +70,34 @@ function mapProduct(id: string, data: DocumentData): Product {
 
 /* ───────────────────────────── API pública ───────────────────────────── */
 
+/** Categorías desde Firestore (gestionadas por el admin); respaldo local si aún no hay datos. */
 export async function listCategories(): Promise<CategoryDef[]> {
-  return [...CATEGORIES];
+  try {
+    const fb = await loadFirebase();
+    if (!fb) return [...CATEGORIES];
+    const snap = await getDocs(
+      query(collection(fb.db, 'categories'), orderBy('createdAt', 'asc'), fbLimit(60)),
+    );
+    if (snap.empty) return [...CATEGORIES];
+    return snap.docs
+      .map((d, i) => {
+        const c = d.data();
+        return {
+          id: d.id,
+          code: String(i + 1).padStart(2, '0'),
+          name: String(c.name ?? ''),
+          tagline: String(c.tagline ?? ''),
+          imageUrl: typeof c.imageUrl === 'string' && c.imageUrl ? c.imageUrl : undefined,
+          active: c.active !== false,
+        };
+      })
+      .filter((c) => c.name && c.active !== false);
+  } catch {
+    return [...CATEGORIES];
+  }
 }
 
 export async function countByCategory(categoryId: string): Promise<number> {
-  if (DEMO_MODE) {
-    return DEMO_PRODUCTS.filter((p) => p.categoryId === categoryId).length;
-  }
   const fb = await loadFirebase();
   if (!fb) return 0;
   const snap = await getCountFromServer(
@@ -91,37 +109,15 @@ export async function countByCategory(categoryId: string): Promise<number> {
 /** Página por cursor (default 12, máximo 48). */
 export async function listProducts(q: CatalogQuery): Promise<Page<Product>> {
   const pageSize = Math.min(Math.max(q.pageSize || 12, 1), PAGE_SIZE_MAX);
-  if (DEMO_MODE) {
-    let items = DEMO_PRODUCTS.filter((p) => p.active);
-    if (q.categoryId) items = items.filter((p) => p.categoryId === q.categoryId);
-    if (q.inStockOnly) items = items.filter((p) => p.stockTotal > 0);
-    if (q.minPriceUsd !== undefined) items = items.filter((p) => p.basePriceUsd >= q.minPriceUsd!);
-    if (q.maxPriceUsd !== undefined) items = items.filter((p) => p.basePriceUsd <= q.maxPriceUsd!);
-    if (q.q) {
-      const term = q.q;
-      items = items.filter(
-        (p) =>
-          p.searchTerms.some((t) => t.startsWith(term)) ||
-          deaccentLocal(p.name).includes(term),
-      );
-    }
-    items = [...items].sort((a, b) => b.createdAt - a.createdAt);
-    const startIdx = q.cursor ? Number(Buffer.from(q.cursor, 'base64').toString('utf8').split('|')[0] ?? 0) || 0 : 0;
-    const pageItems = items.slice(startIdx, startIdx + pageSize);
-    const nextIdx = startIdx + pageSize;
-    return {
-      items: pageItems,
-      cursor: nextIdx < items.length ? btoa(`${nextIdx}|${pageItems[pageItems.length - 1]?.id ?? ''}`) : null,
-      hasMore: nextIdx < items.length,
-    };
-  }
 
   const fb = await loadFirebase();
   if (!fb) return { items: [], cursor: null, hasMore: false };
   const base = collection(fb.db, PRODUCTS);
   const snap = await getDocs(buildProductsQuery({ ...q, pageSize }, base));
   const docs = snap.docs;
-  const items = docs.map((d) => mapProduct(d.id, d.data()));
+  // El catálogo público solo muestra activos (se filtra en código para no exigir
+  // índices compuestos nuevos; la paginación por cursor no se ve afectada).
+  const items = docs.map((d) => mapProduct(d.id, d.data())).filter((p) => p.active);
   const last = docs[docs.length - 1];
   return {
     items,
@@ -140,9 +136,6 @@ export function normalizeSearchTerm(input: string): string {
 }
 
 export async function getProductBySlug(slug: string): Promise<Product | null> {
-  if (DEMO_MODE) {
-    return DEMO_PRODUCTS.find((p) => p.slug === slug) ?? null;
-  }
   const fb = await loadFirebase();
   if (!fb) return null;
   const snap = await getDocs(
@@ -153,10 +146,6 @@ export async function getProductBySlug(slug: string): Promise<Product | null> {
 }
 
 export async function getVariants(productId: string): Promise<import('../types').ProductVariant[]> {
-  if (DEMO_MODE) {
-    const p = DEMO_PRODUCTS.find((x) => x.id === productId);
-    return p ? p.variants : [];
-  }
   const fb = await loadFirebase();
   if (!fb) return [];
   const snap = await getDocs(
@@ -170,7 +159,6 @@ export async function getVariants(productId: string): Promise<import('../types')
       sku: String(v.sku ?? ''),
       priceUsd: Number(v.priceUsd ?? 0),
       stock: Number(v.stock ?? 0),
-      weightKg: Number(v.weightKg ?? 0),
       active: v.active !== false,
     };
   });
@@ -181,11 +169,6 @@ export function subscribeProduct(
   productId: string,
   cb: (p: Product | null) => void,
 ): () => void {
-  if (DEMO_MODE) {
-    const p = DEMO_PRODUCTS.find((x) => x.id === productId) ?? null;
-    cb(p ? { ...p } : null);
-    return () => undefined;
-  }
   let unsub: (() => void) | null = null;
   let cancelled = false;
   void loadFirebase().then((fb) => {
@@ -204,32 +187,26 @@ export function subscribeProduct(
 
 /** Productos relacionados: misma categoría, máx. 4, sin límites libres. */
 export async function getRelated(product: Product, max = 4): Promise<Product[]> {
-  if (DEMO_MODE) {
-    return DEMO_PRODUCTS.filter((p) => p.categoryId === product.categoryId && p.id !== product.id).slice(0, max);
-  }
   const fb = await loadFirebase();
   if (!fb) return [];
+  // Sin where(active) en la consulta: exige índice compuesto extra; el filtro
+  // se aplica en código con el mismo resultado (índice categoryId+createdAt basta).
   const snap = await getDocs(
     query(
       collection(fb.db, PRODUCTS),
       where('categoryId', '==', product.categoryId),
-      where('active', '==', true),
       orderBy('createdAt', 'desc'),
-      fbLimit(max + 1),
+      fbLimit(max + 6),
     ),
   );
   return snap.docs
     .map((d) => mapProduct(d.id, d.data()))
-    .filter((p) => p.id !== product.id)
+    .filter((p) => p.active && p.id !== product.id)
     .slice(0, max);
 }
 
 /** Tasa BCV publicada por la Cloud Function programada. */
 export async function getBcvRate(): Promise<BcvRate | null> {
-  if (DEMO_MODE) {
-    const { DEMO_BCV_RATE } = await import('@/shared/lib/demo/seed');
-    return { ...DEMO_BCV_RATE };
-  }
   const fb = await loadFirebase();
   if (!fb) return null;
   const snap = await getDoc(doc(fb.db, 'rates', 'bcv'));

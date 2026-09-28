@@ -1,7 +1,7 @@
 import { useSearchParams } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { SpeedDivider } from '@/shared/components/brand/Logo';
-import { ProductGridSkeleton, Skeleton } from '@/shared/components/ui/Skeleton';
+import { ProductGridSkeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState, ErrorState } from '@/shared/components/ui/States';
 import { Button } from '@/shared/components/ui/Button';
 import { useCategories, useCategoryCount, useProductList } from '../hooks/useCatalog';
@@ -80,7 +80,7 @@ export default function CatalogPage() {
         <section className="mt-8" aria-label="Categorías">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             {categories?.map((c) => (
-              <CategoryCardItem key={c.id} id={c.id} />
+              <CategoryCard key={c.id} category={c} />
             ))}
           </div>
         </section>
@@ -129,12 +129,4 @@ export default function CatalogPage() {
       <SpeedDivider className="mt-14" />
     </div>
   );
-}
-
-function CategoryCardItem({ id }: { id: string }) {
-  const { data: categories } = useCategories();
-  const category = categories?.find((c) => c.id === id);
-  const { data: count } = useCategoryCount(id);
-  if (!category) return <Skeleton className="min-h-[120px]" />;
-  return <CategoryCard category={category} count={count} />;
 }

@@ -1,7 +1,7 @@
 /**
  * Checkout en pasos: Datos → Entrega → Pago → Confirmación (5.4).
  * · Reserva de stock 2 h al entrar (callable fn-reserveStock).
- * · Cotización autoritativa por zona/peso y monto en Bs (callable fn-quoteTotals).
+ * · Cotización autoritativa por zona y monto en Bs (callable fn-quoteTotals).
  * · La orden la crea EXCLUSIVAMENTE la Cloud Function fn-createOrder con App
  *   Check e idempotencia: el cliente nunca escribe en orders ni calcula montos.
  */
@@ -21,11 +21,11 @@ import { reserveStock, quoteTotals, createOrder } from '../services/checkout.ser
 import { buildIdempotencyKey } from '../lib/idempotency';
 import { useBcvRate } from '@/features/catalog/hooks/useCatalog';
 import {
-  PAYMENT_METHODS, PAYMENT_METHOD_LABELS, PAYMENT_INSTRUCTIONS,
+  PAYMENT_METHOD_LABELS, PAYMENT_INSTRUCTIONS,
 } from '@/shared/constants/orders';
 import { VE_BANKS, DEFAULT_PAYMENT_ACCOUNTS, BRAND } from '@/shared/constants/brand';
 import {
-  isValidPersonName, isValidCedulaVE, isValidPhoneVE, isValidEmail,
+  isValidPersonName, isValidCedulaVE, isValidPhoneVE,
   isValidPaymentReference, normalizeCedulaVE, normalizePhoneVE, sanitizeMultiline, sanitizeText,
 } from '@/shared/lib/validation';
 import { userMessage, AppError } from '@/shared/lib/errors';
@@ -45,8 +45,6 @@ interface AddressForm {
 interface PaymentForm {
   method: PaymentMethod;
   banco: string; cedula: string; telefono: string; referencia: string; fecha: string;
-  bancoOrigen: string; referenciaTransferencia: string;
-  correoZelle: string; referenciaZelle: string;
 }
 
 export default function CheckoutPage() {
@@ -62,7 +60,6 @@ export default function CheckoutPage() {
   const [address, setAddress] = useState<AddressForm>({ zoneId: '', state: '', city: '', details: '', notes: '' });
   const [payment, setPayment] = useState<PaymentForm>({
     method: 'pago_movil', banco: '', cedula: '', telefono: '', referencia: '', fecha: '',
-    bancoOrigen: '', referenciaTransferencia: '', correoZelle: '', referenciaZelle: '',
   });
   const [reservation, setReservation] = useState<ReservationResponse | null>(null);
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
@@ -151,21 +148,11 @@ export default function CheckoutPage() {
 
   const validateStep2 = (): boolean => {
     const e: Record<string, string | null> = {};
-    const p = payment;
-    if (p.method === 'pago_movil') {
-      if (!p.banco) e['banco'] = 'Selecciona el banco del pago.';
-      if (!isValidCedulaVE(p.cedula)) e['cedula'] = 'Cédula del pagador.';
-      if (!isValidPhoneVE(p.telefono)) e['telefono'] = 'Teléfono del pago móvil.';
-      if (!isValidPaymentReference(p.referencia, 've')) e['referencia'] = 'Referencia de 6 a 20 dígitos.';
-      if (!p.fecha) e['fecha'] = 'Fecha del pago.';
-    } else if (p.method === 'transferencia') {
-      if (!p.bancoOrigen) e['bancoOrigen'] = 'Banco de origen.';
-      if (!isValidPaymentReference(p.referenciaTransferencia, 've')) e['referenciaTransferencia'] = 'Referencia de 6 a 20 dígitos.';
-      if (!p.fecha) e['fecha'] = 'Fecha del pago.';
-    } else if (p.method === 'zelle') {
-      if (!isValidEmail(p.correoZelle)) e['correoZelle'] = 'Correo del emisor en Zelle.';
-      if (!isValidPaymentReference(p.referenciaZelle, 'zelle')) e['referenciaZelle'] = 'Referencia de confirmación.';
-    }
+    if (!payment.banco) e['banco'] = 'Selecciona el banco del pago.';
+    if (!isValidCedulaVE(payment.cedula)) e['cedula'] = 'Cédula del pagador.';
+    if (!isValidPhoneVE(payment.telefono)) e['telefono'] = 'Teléfono del pago móvil.';
+    if (!isValidPaymentReference(payment.referencia)) e['referencia'] = 'Referencia de 6 a 20 dígitos.';
+    if (!payment.fecha) e['fecha'] = 'Fecha del pago.';
     setErrors(e);
     return Object.values(e).every((x) => !x);
   };
@@ -189,21 +176,13 @@ export default function CheckoutPage() {
         now: Date.now(),
       });
 
-      const paymentDetails: Record<string, string> = {};
-      if (payment.method === 'pago_movil') {
-        paymentDetails['banco'] = payment.banco;
-        paymentDetails['cedula'] = normalizeCedulaVE(payment.cedula);
-        paymentDetails['telefono'] = normalizePhoneVE(payment.telefono);
-        paymentDetails['referencia'] = payment.referencia;
-        paymentDetails['fecha'] = payment.fecha;
-      } else if (payment.method === 'transferencia') {
-        paymentDetails['bancoOrigen'] = payment.bancoOrigen;
-        paymentDetails['referencia'] = payment.referenciaTransferencia;
-        paymentDetails['fecha'] = payment.fecha;
-      } else if (payment.method === 'zelle') {
-        paymentDetails['correo'] = payment.correoZelle.trim().toLowerCase();
-        paymentDetails['referencia'] = payment.referenciaZelle;
-      }
+      const paymentDetails: Record<string, string> = {
+        banco: payment.banco,
+        cedula: normalizeCedulaVE(payment.cedula),
+        telefono: normalizePhoneVE(payment.telefono),
+        referencia: payment.referencia,
+        fecha: payment.fecha,
+      };
 
       const response = await createOrder(
         {
@@ -228,7 +207,6 @@ export default function CheckoutPage() {
           paymentMethod: payment.method,
           paymentDetails,
         },
-        items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
       );
 
       void trackEvent({
@@ -347,7 +325,7 @@ export default function CheckoutPage() {
               />
               {zone && (
                 <p className="spot-label">
-                  Ventanas: {zone.windows.map((w) => w.label).join(' · ')} · peso máximo {zone.maxWeightKg} kg
+                  Ventanas: {zone.windows.map((w) => w.label).join(' · ')}
                 </p>
               )}
               <div className="flex gap-3">
@@ -372,7 +350,6 @@ export default function CheckoutPage() {
                     <Row label="Total USD" value={formatUsd(quote.totalUsd)} strong />
                     <Row label="Total Bs · tasa BCV" value={formatBs(quote.totalVes)} />
                     <Row label="Tasa aplicada" value={`1 USD = ${formatBs(quote.rateUsed)}`} />
-                    <Row label="Peso aproximado" value={`${quote.weightKg} kg`} />
                   </dl>
                 ) : (
                   <p className="mt-3 text-muted">Calculando montos en el servidor…</p>
@@ -390,23 +367,13 @@ export default function CheckoutPage() {
               {/* Métodos de pago */}
               <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
                 <h2 className="font-display text-lg font-bold italic uppercase text-paper">Método de pago</h2>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Método de pago">
-                  {PAYMENT_METHODS.map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      role="radio"
-                      aria-checked={payment.method === m}
-                      onClick={() => setPayment((p) => ({ ...p, method: m }))}
-                      className={`min-h-[56px] rounded-brand border-2 px-4 py-3 text-left font-body font-semibold transition-colors ${
-                        payment.method === m
-                          ? 'border-signal bg-signal/10 text-signal'
-                          : 'border-line text-paper hover:border-line-strong'
-                      }`}
-                    >
-                      {PAYMENT_METHOD_LABELS[m]}
-                    </button>
-                  ))}
+                {/* Método único por ahora: Pago Móvil */}
+                <div
+                  aria-label="Método de pago"
+                  className="mt-4 flex min-h-[56px] items-center justify-between rounded-brand border-2 border-signal bg-signal/10 px-4 py-3 font-body font-semibold text-signal"
+                >
+                  {PAYMENT_METHOD_LABELS['pago_movil']}
+                  <span className="text-xs font-bold uppercase tracking-wide">Único método</span>
                 </div>
 
                 {/* Datos de recaudación */}
@@ -423,41 +390,17 @@ export default function CheckoutPage() {
                   </div>
                 )}
 
-                {/* Formularios por método */}
-                {payment.method === 'pago_movil' && (
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <Select label="Banco del pago" value={payment.banco} onChange={(e) => setPayment((p) => ({ ...p, banco: e.target.value }))} error={errors['banco']} required>
-                      <option value="">Selecciona…</option>
-                      {VE_BANKS.map((b) => <option key={b} value={b}>{b}</option>)}
-                    </Select>
-                    <Input label="Cédula del pagador" value={payment.cedula} onChange={(e) => setPayment((p) => ({ ...p, cedula: e.target.value }))} error={errors['cedula']} required />
-                    <Input label="Teléfono del pago" type="tel" value={payment.telefono} onChange={(e) => setPayment((p) => ({ ...p, telefono: e.target.value }))} error={errors['telefono']} required />
-                    <Input label="Referencia" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.replace(/\D/g, '') }))} error={errors['referencia']} inputMode="numeric" required />
-                    <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
-                  </div>
-                )}
-                {payment.method === 'transferencia' && (
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <Select label="Banco de origen" value={payment.bancoOrigen} onChange={(e) => setPayment((p) => ({ ...p, bancoOrigen: e.target.value }))} error={errors['bancoOrigen']} required>
-                      <option value="">Selecciona…</option>
-                      {VE_BANKS.map((b) => <option key={b} value={b}>{b}</option>)}
-                    </Select>
-                    <Input label="Referencia" value={payment.referenciaTransferencia} onChange={(e) => setPayment((p) => ({ ...p, referenciaTransferencia: e.target.value.replace(/\D/g, '') }))} error={errors['referenciaTransferencia']} inputMode="numeric" required />
-                    <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
-                  </div>
-                )}
-                {payment.method === 'zelle' && (
-                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                    <Input label="Correo del emisor" type="email" value={payment.correoZelle} onChange={(e) => setPayment((p) => ({ ...p, correoZelle: e.target.value }))} error={errors['correoZelle']} required />
-                    <Input label="Referencia de confirmación" value={payment.referenciaZelle} onChange={(e) => setPayment((p) => ({ ...p, referenciaZelle: e.target.value.trim() }))} error={errors['referenciaZelle']} required />
-                  </div>
-                )}
-                {payment.method === 'efectivo' && (
-                  <p className="mt-4 rounded-brand border-2 border-line bg-ink p-4 text-body-base text-paper">
-                    Prepara el monto exacto en divisas. El mensajero cobra al entregar y te
-                    contactará antes de salir. Sin comprobante previo.
-                  </p>
-                )}
+                {/* Formulario Pago Móvil (método único) */}
+                <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                  <Select label="Banco del pago" value={payment.banco} onChange={(e) => setPayment((p) => ({ ...p, banco: e.target.value }))} error={errors['banco']} required>
+                    <option value="">Selecciona…</option>
+                    {VE_BANKS.map((b) => <option key={b} value={b}>{b}</option>)}
+                  </Select>
+                  <Input label="Cédula del pagador" value={payment.cedula} onChange={(e) => setPayment((p) => ({ ...p, cedula: e.target.value }))} error={errors['cedula']} required />
+                  <Input label="Teléfono del pago" type="tel" value={payment.telefono} onChange={(e) => setPayment((p) => ({ ...p, telefono: e.target.value }))} error={errors['telefono']} required />
+                  <Input label="Referencia" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.replace(/\D/g, '') }))} error={errors['referencia']} inputMode="numeric" required />
+                  <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
+                </div>
               </section>
 
               <div className="flex gap-3">

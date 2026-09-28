@@ -5,7 +5,6 @@
  */
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE } from '@/shared/lib/backend';
 import { logger } from '@/shared/lib/logger';
 import { mergeCarts } from '../lib/cartLogic';
 import { CART_STORAGE_KEY, type CartItem } from '../types';
@@ -78,7 +77,6 @@ export async function saveCart(uid: string | null, items: CartItem[]): Promise<v
  */
 export async function mergeOnLogin(uid: string): Promise<CartItem[]> {
   const guest = readGuest();
-  if (DEMO_MODE) return guest;
   let remote: CartItem[] = [];
   try {
     remote = await readRemote(uid);

@@ -10,7 +10,6 @@ import { enableOrderNotifications, hasRegisteredToken } from '@/features/deliver
 import { userMessage } from '@/shared/lib/errors';
 import { isValidPhoneVE, normalizePhoneVE } from '@/shared/lib/validation';
 import type { ConfirmationResult } from 'firebase/auth';
-import { DEMO_MODE } from '@/shared/lib/backend';
 
 /** Cuenta: datos, teléfono verificado, notificaciones y cierre de sesión. */
 export default function AccountPage() {
@@ -21,10 +20,7 @@ export default function AccountPage() {
   const [pushState, setPushState] = useState<'unknown' | 'on' | 'off'>('unknown');
 
   useEffect(() => {
-    if (!user || DEMO_MODE) {
-      setPushState(DEMO_MODE ? 'off' : 'unknown');
-      return;
-    }
+    if (!user) return;
     void hasRegisteredToken(user.uid).then((on) => setPushState(on ? 'on' : 'off'));
   }, [user]);
 
@@ -53,11 +49,9 @@ export default function AccountPage() {
               <dd className="text-paper">{user.phone ?? 'Sin verificar'}</dd>
             </div>
           </dl>
-          {!DEMO_MODE && (
-            <Button variant="secondary" className="mt-5" onClick={() => setPhoneOpen(true)}>
-              Verificar teléfono
-            </Button>
-          )}
+          <Button variant="secondary" className="mt-5" onClick={() => setPhoneOpen(true)}>
+            Verificar teléfono
+          </Button>
         </section>
 
         {/* SESIÓN Y NOTIFICACIONES */}
@@ -68,25 +62,18 @@ export default function AccountPage() {
           <p className="mt-3 text-body-base text-muted">
             Te avisamos por push en cada cambio de tu pedido: pagado, preparado, en camino.
           </p>
-          {!DEMO_MODE && (
-            <Button
-              className="mt-4"
-              variant={pushState === 'on' ? 'secondary' : 'primary'}
-              onClick={async () => {
-                if (!user) return;
-                if (pushState === 'on') return;
-                const ok = await enableOrderNotifications(user.uid);
-                setPushState(ok ? 'on' : 'off');
-              }}
-            >
-              {pushState === 'on' ? 'Notificaciones activas' : 'Activar notificaciones'}
-            </Button>
-          )}
-          {DEMO_MODE && (
-            <p className="mt-4 rounded-brand border-2 border-signal/40 bg-signal/5 p-3 text-sm text-paper">
-              Modo demo: sesión y notificaciones requieren Firebase configurado.
-            </p>
-          )}
+          <Button
+            className="mt-4"
+            variant={pushState === 'on' ? 'secondary' : 'primary'}
+            onClick={async () => {
+              if (!user) return;
+              if (pushState === 'on') return;
+              const ok = await enableOrderNotifications(user.uid);
+              setPushState(ok ? 'on' : 'off');
+            }}
+          >
+            {pushState === 'on' ? 'Notificaciones activas' : 'Activar notificaciones'}
+          </Button>
           <SpeedDivider className="my-5" />
           <Button
             variant="danger-ghost"

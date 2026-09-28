@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth.store';
 import { observeAuth } from '../services/auth.service';
 import { useCartStore } from '@/features/cart/store/cart.store';
+import type { UserRole } from '../types';
 
 /** Monta el observador de sesión una vez (en Providers). */
 export function useAuthObserver(): void {
@@ -52,8 +53,12 @@ export function useRequireAuth(): { ready: boolean; authenticated: boolean } {
   return { ready, authenticated: user !== null };
 }
 
-/** Guarda de ruta admin: exige claim admin. */
-export function useRequireAdmin(): { ready: boolean; isAdmin: boolean } {
+/**
+ * Guarda del panel (antes "admin"): entran ADMIN, CAJERO y DELIVERY con
+ * secciones acotadas por rol (el menú y las rutas filtran el resto).
+ * Devuelve el rol con acceso o null si no debe estar en el panel.
+ */
+export function useRequirePanel(): { ready: boolean; role: UserRole | null } {
   const { user, ready } = useAuth();
   const navigate = useNavigate();
   useEffect(() => {
@@ -61,9 +66,11 @@ export function useRequireAdmin(): { ready: boolean; isAdmin: boolean } {
       navigate('/cuenta/login', { replace: true, state: { from: '/admin' } });
       return;
     }
-    if (ready && user && user.role !== 'admin') {
+    if (ready && user && !['admin', 'cajero', 'delivery'].includes(user.role)) {
       navigate('/', { replace: true });
     }
   }, [ready, user, navigate]);
-  return { ready, isAdmin: user?.role === 'admin' };
+  const role: UserRole | null =
+    user && ['admin', 'cajero', 'delivery'].includes(user.role) ? user.role : null;
+  return { ready, role };
 }

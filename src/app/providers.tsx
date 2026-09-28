@@ -1,14 +1,12 @@
 /**
- * Providers globales: TanStack Query, notistack, observador de sesión,
- * App Check e hidratación del carrito en modo demo.
+ * Providers globales: TanStack Query, notistack, observador de sesión
+ * (con hidratación del carrito) y App Check.
  */
 import { useEffect, useMemo, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SnackbarProvider } from 'notistack';
 import { ToastBridge } from '@/shared/components/ui/ToastBridge';
 import { useAuthObserver } from '@/features/auth/hooks/useAuth';
-import { useCartStore } from '@/features/cart/store/cart.store';
-import { DEMO_MODE } from '@/shared/lib/backend';
 import { initAppCheck } from '@/shared/lib/appCheck';
 import { logger } from '@/shared/lib/logger';
 
@@ -23,21 +21,11 @@ const queryClient = new QueryClient({
   },
 });
 
-function SessionAndDemoBootstrap() {
+function SessionBootstrap() {
   useAuthObserver();
 
-  // En demo (sin Firebase) el carrito vive 100% en localStorage.
+  // App Check obligatorio (6.2): se registra al arrancar (no-op sin llaves).
   useEffect(() => {
-    if (!DEMO_MODE) return;
-    const cart = useCartStore.getState();
-    if (!cart.hydrated) {
-      void cart.hydrateForUser(null).finally(() => cart.setHydrated());
-    }
-  }, []);
-
-  // App Check obligatorio (6.2): se registra al arrancar si hay Firebase.
-  useEffect(() => {
-    if (DEMO_MODE) return;
     void initAppCheck().catch((e) => logger.error('App Check no iniciado', e));
   }, []);
 
@@ -59,7 +47,7 @@ export function AppProviders({ children }: { children: ReactNode }) {
     <QueryClientProvider client={queryClient}>
       <SnackbarProvider {...notistackProps}>
         <ToastBridge />
-        <SessionAndDemoBootstrap />
+        <SessionBootstrap />
         {children}
       </SnackbarProvider>
     </QueryClientProvider>

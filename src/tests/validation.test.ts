@@ -50,12 +50,11 @@ describe('validadores venezolanos', () => {
     expect(normalizeCedulaVE('v12345678')).toBe('V-12345678');
   });
 
-  it('referencias de pago: 6-20 dígitos VE, alfanumérica Zelle', () => {
-    expect(isValidPaymentReference('123456', 've')).toBe(true);
-    expect(isValidPaymentReference('12345', 've')).toBe(false);
-    expect(isValidPaymentReference('12 456', 've')).toBe(false);
-    expect(isValidPaymentReference('AB12-34', 'zelle')).toBe(true);
-    expect(isValidPaymentReference('a$b', 'zelle')).toBe(false);
+  it('referencias de pago: 6-20 dígitos', () => {
+    expect(isValidPaymentReference('123456')).toBe(true);
+    expect(isValidPaymentReference('12345')).toBe(false);
+    expect(isValidPaymentReference('12 456')).toBe(false);
+    expect(isValidPaymentReference('AB12-34')).toBe(false);
   });
 });
 

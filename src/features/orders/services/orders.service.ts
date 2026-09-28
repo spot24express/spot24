@@ -9,7 +9,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE, STORAGE_AVAILABLE, callFunction } from '@/shared/lib/backend';
+import { STORAGE_AVAILABLE, callFunction } from '@/shared/lib/backend';
 import { AppError } from '@/shared/lib/errors';
 import { logger } from '@/shared/lib/logger';
 import { isAllowedUploadSize, isAllowedUploadType, RECEIPT_TYPES, sanitizeFileName } from '@/shared/lib/validation';
@@ -27,7 +27,7 @@ function mapOrder(id: string, d: Record<string, unknown>): Order {
     status: (d['status'] as Order['status']) ?? 'pendiente',
     lines: Array.isArray(d['lines']) ? (d['lines'] as Order['lines']) : [],
     totals: (d['totals'] as Order['totals']) ?? {
-      subtotalUsd: 0, shippingUsd: 0, totalUsd: 0, totalVes: 0, rateUsed: 0, weightKg: 0,
+      subtotalUsd: 0, shippingUsd: 0, totalUsd: 0, totalVes: 0, rateUsed: 0,
     },
     payment: (d['payment'] as Order['payment']) ?? {
       method: 'pago_movil', status: 'pendiente', masked: {}, referenceMasked: '', hasReceipt: false,
@@ -44,41 +44,9 @@ function mapOrder(id: string, d: Record<string, unknown>): Order {
   };
 }
 
-/* ── Demo: pedidos simulados en localStorage ── */
-const DEMO_ORDERS_KEY = 'spot24:demo:orders';
-
-export function demoRead(): Order[] {
-  try {
-    return JSON.parse(localStorage.getItem(DEMO_ORDERS_KEY) ?? '[]') as Order[];
-  } catch {
-    return [];
-  }
-}
-
-function demoWrite(orders: Order[]): void {
-  localStorage.setItem(DEMO_ORDERS_KEY, JSON.stringify(orders.slice(0, 30)));
-}
-
-export function demoUpsertOrder(order: Order): void {
-  const all = demoRead().filter((o) => o.id !== order.id);
-  all.unshift(order);
-  demoWrite(all);
-}
-
-export function demoGetOrder(id: string): Order | null {
-  return demoRead().find((o) => o.id === id) ?? null;
-}
-
 /* ───────────────────────────── API pública ───────────────────────────── */
 
 export async function listMyOrders(cursor: string | null): Promise<Page<Order>> {
-  if (DEMO_MODE) {
-    const all = demoRead();
-    const idx = cursor ? Number(cursor) || 0 : 0;
-    const items = all.slice(idx, idx + PAGE_SIZE);
-    const next = idx + PAGE_SIZE;
-    return { items, cursor: next < all.length ? String(next) : null, hasMore: next < all.length };
-  }
   const fb = await loadFirebase();
   if (!fb) return { items: [], cursor: null, hasMore: false };
   let q = query(
@@ -110,10 +78,6 @@ export function subscribeOrder(
   orderId: string,
   cb: (o: Order | null) => void,
 ): () => void {
-  if (DEMO_MODE) {
-    cb(demoGetOrder(orderId));
-    return () => undefined;
-  }
   let unsub: (() => void) | null = null;
   let cancelled = false;
   void loadFirebase().then((fb) => {
@@ -135,7 +99,6 @@ export function subscribeOrder(
 
 /** Últimos 20 eventos del pedido (timeline). */
 export async function listOrderEvents(orderId: string): Promise<OrderEvent[]> {
-  if (DEMO_MODE) return [];
   const fb = await loadFirebase();
   if (!fb) return [];
   const snap = await getDocs(
@@ -151,24 +114,13 @@ export async function listOrderEvents(orderId: string): Promise<OrderEvent[]> {
 }
 
 export async function cancelOrder(orderId: string, reason: string): Promise<void> {
-  if (DEMO_MODE) {
-    const o = demoGetOrder(orderId);
-    if (!o) throw new AppError('generic');
-    if (!['pendiente', 'en_verificacion', 'pagado', 'preparado'].includes(o.status)) {
-      throw new AppError('generic', 'estado no cancelable');
-    }
-    o.status = 'cancelado';
-    o.updatedAt = Date.now();
-    demoUpsertOrder(o);
-    return;
-  }
   await callFunction<{ ok: boolean }>('fn-cancelOrder', { orderId, reason: reason.slice(0, 300) });
 }
 
 /**
  * Sube comprobante a Storage: orders/{uid}/{orderId}/{nombre} (5.4).
  * En Lite (plan Spark sin bucket) se informa con claridad: la verificación
- * del pago se hace con la referencia del Pago Móvil/transferencia/Zelle.
+ * del pago se hace con la referencia del Pago Móvil.
  */
 export async function uploadReceipt(orderId: string, file: File): Promise<string> {
   if (!isAllowedUploadType(file.type, RECEIPT_TYPES)) {
@@ -176,10 +128,6 @@ export async function uploadReceipt(orderId: string, file: File): Promise<string
   }
   if (!isAllowedUploadSize(file.size)) {
     throw new AppError('generic', 'archivo demasiado grande');
-  }
-  if (DEMO_MODE) {
-    // En demo guardamos la URL local del archivo (objectURL) para el visor.
-    return URL.createObjectURL(file);
   }
   if (!STORAGE_AVAILABLE) {
     throw new AppError('generic', 'Subida de comprobantes no disponible: envía la referencia de pago.');

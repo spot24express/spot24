@@ -4,12 +4,9 @@
  */
 import { collection, getDocs, limit as fbLimit, query, where } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE } from '@/shared/lib/backend';
-import { DEMO_ZONES } from '@/shared/lib/demo/seed';
 import type { Zone } from '../types';
 
 export async function listActiveZones(): Promise<Zone[]> {
-  if (DEMO_MODE) return DEMO_ZONES.filter((z) => z.active);
   const fb = await loadFirebase();
   if (!fb) return [];
   const snap = await getDocs(
@@ -23,9 +20,6 @@ export async function listActiveZones(): Promise<Zone[]> {
       state: String(z.state ?? ''),
       feeUsd: Number(z.feeUsd ?? 0),
       freeFromUsd: Number(z.freeFromUsd ?? 0),
-      weightRateUsdPerKg: Number(z.weightRateUsdPerKg ?? 0),
-      baseWeightKg: Number(z.baseWeightKg ?? 5),
-      maxWeightKg: Number(z.maxWeightKg ?? 40),
       etaMinMinutes: Number(z.etaMinMinutes ?? 60),
       etaMaxMinutes: Number(z.etaMaxMinutes ?? 120),
       windows: Array.isArray(z.windows) ? (z.windows as Zone['windows']) : [],
@@ -35,7 +29,6 @@ export async function listActiveZones(): Promise<Zone[]> {
 }
 
 export async function getZone(zoneId: string): Promise<Zone | null> {
-  if (DEMO_MODE) return DEMO_ZONES.find((z) => z.id === zoneId) ?? null;
   const zones = await listActiveZones();
   return zones.find((z) => z.id === zoneId) ?? null;
 }

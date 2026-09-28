@@ -1,7 +1,9 @@
 /**
- * SPOT 24 · Estados de pedido, máquina de transiciones y métodos de pago VE.
+ * SPOT 24 · Estados de pedido, máquina de transiciones y método de pago VE.
  * La máquina de transiciones se replica en functions/src/domain/order-state.ts:
  * cualquier cambio aquí debe reflejarse allá (el backend es la fuente de verdad).
+ *
+ * Método de pago: SOLO Pago Móvil.
  */
 
 export const ORDER_STATUSES = [
@@ -54,32 +56,21 @@ export function canTransition(from: OrderStatus, to: OrderStatus): boolean {
   return STATUS_TRANSITIONS[from].includes(to);
 }
 
-export const PAYMENT_METHODS = ['pago_movil', 'transferencia', 'zelle', 'efectivo'] as const;
-export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+export const PAYMENT_METHODS = ['pago_movil'] as const;
+
+export type PaymentMethod = 'pago_movil';
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   pago_movil: 'Pago Móvil',
-  transferencia: 'Transferencia bancaria',
-  zelle: 'Zelle',
-  efectivo: 'Efectivo en divisas al recibir',
 };
 
-/** Instrucciones de confirmación por método (paso de confirmación del checkout). */
+/** Instrucciones de confirmación (paso de confirmación del checkout). */
 export const PAYMENT_INSTRUCTIONS: Record<PaymentMethod, string> = {
   pago_movil:
     'Realiza el Pago Móvil por el monto exacto en bolívares y registra banco, cédula, teléfono, referencia y fecha. Sube el comprobante desde "Mis pedidos".',
-  transferencia:
-    'Transfiere por el monto exacto y registra banco de origen, referencia y fecha. Sube el comprobante desde "Mis pedidos".',
-  zelle:
-    'Envía el Zelle por el monto exacto en dólares y registra el correo emisor y la referencia de confirmación. Sube el comprobante desde "Mis pedidos".',
-  efectivo:
-    'Prepara el monto exacto en divisas. El mensajero cobra al entregar. Te contactaremos antes de salir.',
 };
 
 /** ¿El método requiere comprobante registrado en el paso de pago? */
 export const PAYMENT_REQUIRES_RECEIPT: Record<PaymentMethod, boolean> = {
   pago_movil: true,
-  transferencia: true,
-  zelle: true,
-  efectivo: false,
 };

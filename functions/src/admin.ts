@@ -1,7 +1,7 @@
 /**
  * SPOT 24 · Funciones administrativas (6.3/6.9).
- * · fn-setUserRole: asigna custom claims customer/admin (solo admin; no
- *   permite degradarse a sí mismo para evitar bloqueos).
+ * · fn-setUserRole: asigna custom claims customer/cajero/delivery/admin (solo
+ *   admin; no permite degradarse a sí mismo para evitar bloqueos).
  * · fn-revokeUserSessions: cierra todas las sesiones del usuario vía época.
  * · fn-getAdminMetrics: métricas agregadas calculadas en el backend.
  * Cores agnósticos del runtime + wrappers onCall (modo Cloud Functions).
@@ -30,7 +30,7 @@ export async function coreSetUserRole(ctx: CoreCtx): Promise<unknown> {
   const adminUid = requireAdmin(ctx);
   const targetUid = sanitizeStr(ctx.data?.['uid'], 128);
   const role = sanitizeStr(ctx.data?.['role'], 16);
-  if (!targetUid || !['customer', 'admin'].includes(role)) {
+  if (!targetUid || !['customer', 'cajero', 'delivery', 'admin'].includes(role)) {
     throw new HttpsError('invalid-argument', 'Datos inválidos.');
   }
   if (targetUid === adminUid && role !== 'admin') {

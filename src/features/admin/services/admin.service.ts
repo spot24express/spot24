@@ -11,24 +11,16 @@ import {
   query, serverTimestamp, setDoc, where, updateDoc,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { DEMO_MODE, callFunction } from '@/shared/lib/backend';
+import { callFunction } from '@/shared/lib/backend';
 import { AppError } from '@/shared/lib/errors';
-import { DEMO_PRODUCTS } from '@/shared/lib/demo/seed';
-import { DEMO_ZONES } from '@/shared/lib/demo/seed';
-import { demoGetOrder, demoRead, demoUpsertOrder } from '@/features/orders/services/orders.service';
 import type { Product, ProductVariant } from '@/features/catalog/types';
+import type { CategoryDef } from '@/shared/constants/categories';
 import type { Zone } from '@/features/delivery/types';
 import type { Order, OrderStatus } from '@/features/orders/types';
 
 /* ── Productos ── */
 
 export async function adminListProducts(search: string): Promise<Product[]> {
-  if (DEMO_MODE) {
-    const term = search.trim().toLowerCase();
-    return DEMO_PRODUCTS.filter(
-      (p) => !term || p.name.toLowerCase().includes(term) || p.brand.toLowerCase().includes(term),
-    ).slice(0, 60);
-  }
   const fb = await loadFirebase();
   if (!fb) return [];
   const snap = await getDocs(
@@ -46,15 +38,22 @@ export interface ProductDraftInput {
   categoryId: string;
   description: string;
   active: boolean;
-  variants: Array<{ id?: string; name: string; sku: string; priceUsd: number; stock: number; weightKg: number }>;
+  variants: Array<{ id?: string; name: string; sku: string; priceUsd: number; stock: number }>;
+}
+
+/** Tokens de búsqueda: palabras de nombre y marca, sin acentos, en minúscula (7.1). */
+function buildSearchTerms(name: string, brand: string): string[] {
+  const words = `${name} ${brand}`
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3);
+  return [...new Set(words)].slice(0, 20);
 }
 
 /** Crea/actualiza producto + subcolección variants (transacción lógica). */
 export async function adminSaveProduct(draft: ProductDraftInput): Promise<string> {
-  if (DEMO_MODE) {
-    await new Promise((r) => setTimeout(r, 400));
-    return draft.id ?? `demo-nuevo-${Date.now().toString(36)}`;
-  }
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
 
@@ -78,6 +77,7 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
     stockTotal: draft.variants.reduce((a, v) => a + v.stock, 0),
     variantCount: draft.variants.length,
     active: draft.active,
+    searchTerms: buildSearchTerms(draft.name, draft.brand),
     updatedAt: now,
   };
 
@@ -86,7 +86,6 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
     const created = await addDoc(collection(fb.db, 'products'), {
       ...payload,
       images: [`/img/products/${draft.categoryId}.svg`],
-      searchTerms: [],
       createdAt: serverTimestamp(),
     });
     productId = created.id;
@@ -102,7 +101,6 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
       sku: v.sku.trim().slice(0, 40).toUpperCase(),
       priceUsd: Math.round(v.priceUsd * 100) / 100,
       stock: Math.max(0, Math.floor(v.stock)),
-      weightKg: Math.max(0, v.weightKg),
       active: true,
     });
   }
@@ -116,13 +114,6 @@ export async function adminAdjustStock(
   delta: number,
   reason: string,
 ): Promise<void> {
-  if (DEMO_MODE) {
-    const p = DEMO_PRODUCTS.find((x) => x.id === productId);
-    const v = p?.variants.find((x) => x.id === variantId);
-    if (v) v.stock = Math.max(0, v.stock + delta);
-    await new Promise((r) => setTimeout(r, 300));
-    return;
-  }
   await callFunction<{ ok: boolean }>('fn-adjustStock',
     { productId, variantId, delta: Math.trunc(delta), reason: reason.slice(0, 200) },
   );
@@ -137,12 +128,6 @@ export async function adminSetProductImages(productId: string, images: string[])
     .map((u) => u.trim())
     .filter((u) => /^\/img\/products\/[A-Za-z0-9._-]+$/.test(u) || /^https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]+$/.test(u))
     .slice(0, 6);
-  if (DEMO_MODE) {
-    const p = DEMO_PRODUCTS.find((x) => x.id === productId);
-    if (p) p.images = clean.length ? clean : p.images;
-    await new Promise((r) => setTimeout(r, 250));
-    return;
-  }
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
   await updateDoc(doc(fb.db, 'products', productId), { images: clean, updatedAt: Date.now() });
@@ -153,10 +138,6 @@ export async function adminSetProductImages(productId: string, images: string[])
 const ACTIVE_STATUSES: OrderStatus[] = ['pendiente', 'en_verificacion', 'pagado', 'preparado', 'en_camino'];
 
 export async function adminListOrders(statuses?: OrderStatus[]): Promise<Order[]> {
-  if (DEMO_MODE) {
-    const all = demoRead();
-    return all.filter((o) => (statuses ? statuses.includes(o.status) : true));
-  }
   const fb = await loadFirebase();
   if (!fb) return [];
   const wanted = statuses ?? ACTIVE_STATUSES;
@@ -172,17 +153,6 @@ export async function adminListOrders(statuses?: OrderStatus[]): Promise<Order[]
 }
 
 export async function adminVerifyPayment(orderId: string, approve: boolean, note: string): Promise<void> {
-  if (DEMO_MODE) {
-    const o = demoGetOrder(orderId);
-    if (!o) throw new AppError('generic');
-    o.status = approve ? 'pagado' : 'cancelado';
-    o.payment.status = approve ? 'pagado' : 'rechazado';
-    o.payment.verifiedAt = Date.now();
-    o.updatedAt = Date.now();
-    demoUpsertOrder(o);
-    await new Promise((r) => setTimeout(r, 400));
-    return;
-  }
   await callFunction<{ ok: boolean }>('fn-verifyPayment', {
     orderId,
     approve,
@@ -191,16 +161,6 @@ export async function adminVerifyPayment(orderId: string, approve: boolean, note
 }
 
 export async function adminSetOrderStatus(orderId: string, to: OrderStatus, note: string): Promise<void> {
-  if (DEMO_MODE) {
-    const o = demoGetOrder(orderId);
-    if (!o) throw new AppError('generic');
-    o.status = to;
-    o.updatedAt = Date.now();
-    if (to === 'en_camino') o.delivery.trackingCode = `SP-TRK-${Math.floor(100000 + Math.random() * 899999)}`;
-    demoUpsertOrder(o);
-    await new Promise((r) => setTimeout(r, 300));
-    return;
-  }
   await callFunction<{ ok: boolean }>('fn-updateOrderStatus', {
     orderId,
     to,
@@ -208,10 +168,61 @@ export async function adminSetOrderStatus(orderId: string, to: OrderStatus, note
   });
 }
 
+/* ── Categorías (colección categories: escritura admin directa) ── */
+
+export interface CategoryDraftInput {
+  id?: string;
+  name: string;
+  tagline: string;
+  /** URL https o ruta /img/… vacía = sin foto. */
+  imageUrl: string;
+  active: boolean;
+}
+
+export async function adminListCategories(): Promise<CategoryDef[]> {
+  const fb = await loadFirebase();
+  if (!fb) return [];
+  const snap = await getDocs(
+    query(collection(fb.db, 'categories'), orderBy('createdAt', 'asc'), fbLimit(60)),
+  );
+  return snap.docs.map((d) => ({
+    id: d.id,
+    code: '',
+    name: String(d.data()['name'] ?? ''),
+    tagline: String(d.data()['tagline'] ?? ''),
+    imageUrl: typeof d.data()['imageUrl'] === 'string' ? d.data()['imageUrl'] : undefined,
+    active: d.data()['active'] !== false,
+  }));
+}
+
+export async function adminSaveCategory(draft: CategoryDraftInput): Promise<void> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  const payload: Record<string, unknown> = {
+    name: draft.name.trim().slice(0, 60),
+    tagline: draft.tagline.trim().slice(0, 80),
+    imageUrl: /^https:\/\//.test(draft.imageUrl.trim()) || /^\/img\//.test(draft.imageUrl.trim())
+      ? draft.imageUrl.trim()
+      : '',
+    active: draft.active,
+    updatedAt: Date.now(),
+  };
+  if (draft.id) {
+    await setDoc(doc(fb.db, 'categories', draft.id), payload, { merge: true });
+  } else {
+    await addDoc(collection(fb.db, 'categories'), { ...payload, createdAt: serverTimestamp() });
+  }
+}
+
+export async function adminDeleteCategory(categoryId: string): Promise<void> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  await deleteDoc(doc(fb.db, 'categories', categoryId));
+}
+
 /* ── Zonas ── */
 
 export async function adminListZones(): Promise<Zone[]> {
-  if (DEMO_MODE) return [...DEMO_ZONES];
   const fb = await loadFirebase();
   if (!fb) return [];
   const snap = await getDocs(query(collection(fb.db, 'zones'), orderBy('name', 'asc'), fbLimit(50)));
@@ -219,10 +230,6 @@ export async function adminListZones(): Promise<Zone[]> {
 }
 
 export async function adminSaveZone(zone: Omit<Zone, 'id'> & { id?: string }): Promise<void> {
-  if (DEMO_MODE) {
-    await new Promise((r) => setTimeout(r, 300));
-    return;
-  }
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
   if (zone.id) {
@@ -233,10 +240,52 @@ export async function adminSaveZone(zone: Omit<Zone, 'id'> & { id?: string }): P
 }
 
 export async function adminDeleteZone(zoneId: string): Promise<void> {
-  if (DEMO_MODE) return;
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
   await deleteDoc(doc(fb.db, 'zones', zoneId));
+}
+
+/* ── Usuarios (lectura admin; los roles/cambios van por funciones de servidor) ── */
+
+export interface AdminUserRow {
+  uid: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: 'customer' | 'cajero' | 'delivery' | 'admin';
+  createdAtMs: number;
+}
+
+export async function adminListUsers(): Promise<AdminUserRow[]> {
+  const fb = await loadFirebase();
+  if (!fb) return [];
+  const snap = await getDocs(
+    query(collection(fb.db, 'users'), orderBy('createdAt', 'desc'), fbLimit(200)),
+  );
+  return snap.docs.map((d) => {
+    const u = d.data();
+    const created = u['createdAt'];
+    const createdAtMs =
+      typeof created === 'object' && created !== null && 'toMillis' in (created as object)
+        ? (created as { toMillis: () => number }).toMillis()
+        : Number(created ?? 0);
+    const role =
+      u['role'] === 'admin'
+        ? 'admin'
+        : u['role'] === 'cajero'
+          ? 'cajero'
+          : u['role'] === 'delivery'
+            ? 'delivery'
+            : 'customer';
+    return {
+      uid: d.id,
+      name: String(u['name'] ?? ''),
+      email: String(u['email'] ?? ''),
+      phone: String(u['phone'] ?? ''),
+      role,
+      createdAtMs,
+    };
+  });
 }
 
 /* ── Métricas (agregaciones del backend) ── */
@@ -249,30 +298,11 @@ export interface AdminMetrics {
 }
 
 export async function adminGetMetrics(): Promise<AdminMetrics> {
-  if (DEMO_MODE) {
-    const all = demoRead();
-    const byStatus: Record<string, number> = {};
-    all.forEach((o) => {
-      byStatus[o.status] = (byStatus[o.status] ?? 0) + 1;
-    });
-    const productQty = new Map<string, number>();
-    all.forEach((o) => o.lines.forEach((l) => productQty.set(l.name, (productQty.get(l.name) ?? 0) + l.qty)));
-    return {
-      ordersByStatus: byStatus,
-      revenueUsd30d: all.reduce((a, o) => a + o.totals.totalUsd, 0),
-      ordersLast7d: Array.from({ length: 7 }, (_, i) => all.filter((o) => new Date(o.createdAt).getDay() === ((new Date().getDay() - i + 7) % 7)).length),
-      topProducts: [...productQty.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, qty]) => ({ name, qty })),
-    };
-  }
   return callFunction<AdminMetrics>('fn-getAdminMetrics', {});
 }
 
 /** Catálogo de variantes de un producto (para el editor admin). */
 export async function adminGetVariants(productId: string): Promise<ProductVariant[]> {
-  if (DEMO_MODE) {
-    const p = DEMO_PRODUCTS.find((x) => x.id === productId);
-    return p ? [...p.variants] : [];
-  }
   const fb = await loadFirebase();
   if (!fb) return [];
   const snap = await getDocs(collection(fb.db, 'products', productId, 'variants'));

@@ -65,8 +65,8 @@ export default function OrderDetailPage() {
   }
 
   const canCancel = canTransition(order.status, 'cancelado');
-  const needsReceipt = STORAGE_AVAILABLE && !order.payment.hasReceipt && order.payment.method !== 'efectivo' && order.status !== 'entregado' && order.status !== 'cancelado';
-  const verificationOnly = !STORAGE_AVAILABLE && order.payment.method !== 'efectivo' && ['pendiente', 'en_verificacion'].includes(order.status);
+  const needsReceipt = STORAGE_AVAILABLE && !order.payment.hasReceipt && order.status !== 'entregado' && order.status !== 'cancelado';
+  const verificationOnly = !STORAGE_AVAILABLE && ['pendiente', 'en_verificacion'].includes(order.status);
 
   const onUpload = async (file: File) => {
     setBusy(true);
@@ -211,9 +211,9 @@ export default function OrderDetailPage() {
 
       {/* Visor del comprobante subido */}
       <Modal open={receiptOpen} onClose={() => setReceiptOpen(false)} title="Comprobante">
-        {receiptUrl && order.payment.method !== 'efectivo' && (
+        {receiptUrl && (
           <div>
-            {/* En demo mostramos imagen local; PDFs abren en pestaña nueva */}
+            {/* Imagen en línea; PDFs abren en pestaña nueva */}
             <img src={receiptUrl} alt="Comprobante de pago" className="w-full rounded-brand border-2 border-line" />
             <p className="mt-3 text-sm text-muted">
               {STATUS_LABELS[order.status]} — lo revisaremos y tu pedido seguirá su curso.
