@@ -109,7 +109,6 @@ export default function ProductPage() {
         unitPriceUsd: variant.priceUsd,
         image: product.images[0] ?? '/img/products/lubricantes.svg',
         categoryId: product.categoryId,
-        weightKg: variant.weightKg,
         stockAtAdd: variant.stock,
       },
       qty,

@@ -7,13 +7,12 @@ import { EmptyState } from '@/shared/components/ui/States';
 import { SpeedDivider } from '@/shared/components/brand/Logo';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { VOICE } from '@/shared/constants/brand';
-import { formatWeight } from '@/shared/lib/format';
 import { clampSetQty } from '../lib/cartLogic';
 
 /** Carrito persistente con validación de stock y totales referenciales (5.2). */
 export default function CartPage() {
   useDocumentTitle('Mi carrito');
-  const { items, setQty, removeItem, count, subtotalRef, weightKg, isEmpty } = useCart();
+  const { items, setQty, removeItem, count, subtotalRef, isEmpty } = useCart();
   const { user } = useAuth();
 
   if (isEmpty) {
@@ -32,7 +31,7 @@ export default function CartPage() {
     <div className="spot-container py-8">
       <h1 className="spot-title">Mi carrito</h1>
       <p className="spot-subtitle mt-1">
-        {count} {count === 1 ? 'artículo' : 'artículos'} · {formatWeight(weightKg)}
+        {count} {count === 1 ? 'artículo' : 'artículos'}
       </p>
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_360px]">
