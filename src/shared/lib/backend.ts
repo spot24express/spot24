@@ -9,7 +9,7 @@
  *   plan Spark (sin tarjeta) no lo hay y la UI oculta la subida de archivos.
  */
 import { loadFirebase, type FirebaseBundle } from './firebase';
-import { AppError } from './errors';
+import { AppError, type AppErrorCode } from './errors';
 import { logger } from './logger';
 
 /** true solo si hay bucket de Storage (plan Blaze). En Lite es false. */
@@ -31,13 +31,17 @@ async function appCheckToken(): Promise<string | null> {
   }
 }
 
-/** Mapea el error canónico del servidor a un AppError de la app. */
-function toAppError(code: string): AppError {
-  if (code.includes('unauthenticated')) return new AppError('unauthenticated');
-  if (code.includes('permission-denied') || code.includes('failed-precondition')) return new AppError('forbidden');
-  if (code.includes('resource-exhausted')) return new AppError('rate-limit');
-  if (code.includes('out-of-range')) return new AppError('stock');
-  return new AppError('generic');
+/** Mapea el error canónico del servidor a un AppError de la app.
+ *  El mensaje accionable del servidor (si lo hay) viaja como detalle técnico:
+ *  userMessage() lo ignora, así la UI de cliente no cambia; los flujos de
+ *  administrador pueden optar por mostrarlo (p. ej. config faltante). */
+function toAppError(code: string, serverMessage?: string): AppError {
+  let mapped: AppErrorCode = 'generic';
+  if (code.includes('unauthenticated')) mapped = 'unauthenticated';
+  else if (code.includes('permission-denied') || code.includes('failed-precondition')) mapped = 'forbidden';
+  else if (code.includes('resource-exhausted')) mapped = 'rate-limit';
+  else if (code.includes('out-of-range')) mapped = 'stock';
+  return new AppError(mapped, serverMessage);
 }
 
 export interface CallOptions {
@@ -84,7 +88,7 @@ export async function callFunction<TRes = unknown>(
   if (!res.ok || !payload || payload.error) {
     const code = payload?.error?.code ?? '';
     logger.warn(`fn ${name} falló`, code || res.status);
-    throw toAppError(code);
+    throw toAppError(code, payload?.error?.message);
   }
   return payload.result as TRes;
 }

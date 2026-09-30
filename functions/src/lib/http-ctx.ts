@@ -45,8 +45,9 @@ function errorResponse(e: unknown): Response {
       : 'Error interno.';
   const status = STATUS_BY_CODE[code] ?? 500;
   if (status >= 500) {
-    // Nunca PII: solo el código y el tipo del error.
-    console.error(`[${code}]`, (e as Error)?.name ?? 'Error');
+    // Nunca PII: código + tipo + mensaje accionable. Nuestros mensajes son
+    // estáticos y sin secretos; así el log de Netlify dice QUÉ falló.
+    console.error(`[${code}]`, (e as Error)?.name ?? 'Error', '-', (e as Error)?.message ?? '');
   }
   return json(status, { error: { code, message } });
 }

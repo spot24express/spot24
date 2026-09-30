@@ -19,6 +19,7 @@
  * reutilizan coreUpdateBcvRate/coreGetBcvRate.
  */
 import admin from 'firebase-admin';
+import https from 'node:https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { logger } from 'firebase-functions';
@@ -27,6 +28,71 @@ import { getAdminApp, type CoreCtx } from './lib/ctx';
 const db = () => admin.firestore(getAdminApp());
 
 const BCV_URL = 'https://www.bcv.org.ve/';
+
+const BCV_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (compatible; SPOT24-Bot/1.0; +https://spot24.com.ve)',
+  Accept: 'text/html',
+  'Accept-Language': 'es-VE,es;q=0.9',
+};
+
+/** GET HTTPS con agente concreto (permite el agente relajado solo para el BCV). */
+function httpsGet(url: string, agent: https.Agent, timeoutMs: number): Promise<{ status: number; location: string; html: string }> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { agent, headers: BCV_HEADERS }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c) => chunks.push(c as Buffer));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode ?? 0,
+          location: String(res.headers['location'] ?? ''),
+          html: Buffer.concat(chunks).toString('utf8'),
+        }),
+      );
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+  });
+}
+
+/**
+ * HTML del BCV con doble estrategia TLS:
+ *  · 1.º fetch nativo (verificación estricta) — si el BCV corrige su cadena.
+ *  · 2.º respaldo node:https con verificación relajada SOLO para esta lectura
+ *    pública: bcv.org.ve sirve una cadena TLS incompleta (intermedio ausente)
+ *    y Node la rechaza con UNABLE_TO_VERIFY_LEAF_SIGNATURE (probado en vivo
+ *    2026-09-30; era la causa del 'fallback' eterno). La tasa se sanea después
+ *    (rango, formato, fecha valor y reglas del dueño), el sitio es de lectura
+ *    pública y el agente relajado queda encapsulado en esta única función.
+ */
+async function fetchBcvHtml(): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    const res = await fetch(BCV_URL, {
+      signal: controller.signal,
+      headers: BCV_HEADERS,
+      redirect: 'follow',
+    });
+    clearTimeout(timeout);
+    if (res.ok) return await res.text();
+    logger.warn('BCV respondió', res.status);
+  } catch {
+    /* cadena TLS incompleta o red: vamos al respaldo */
+  }
+
+  const relaxed = new https.Agent({ rejectUnauthorized: false });
+  try {
+    let out = await httpsGet(BCV_URL, relaxed, 15_000);
+    if (out.status >= 300 && out.status < 400 && out.location) {
+      out = await httpsGet(new URL(out.location, BCV_URL).toString(), relaxed, 15_000);
+    }
+    return out.status === 200 ? out.html : null;
+  } catch {
+    return null;
+  } finally {
+    relaxed.destroy();
+  }
+}
 
 /** Día calendario de HOY en Venezuela (YYYY-MM-DD). en-CA da formato ISO. */
 function veToday(): string {
@@ -49,22 +115,10 @@ interface BcvFetch {
 
 async function fetchBcvUsd(): Promise<BcvFetch> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-    const res = await fetch(BCV_URL, {
-      signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SPOT24-Bot/1.0; +https://spot24.com.ve)',
-        Accept: 'text/html',
-      },
-      redirect: 'follow',
-    });
-    clearTimeout(timeout);
-    if (!res.ok) {
-      logger.warn('BCV respondió', res.status);
+    const html = await fetchBcvHtml();
+    if (!html) {
       return { rate: null, fechaValor: null };
     }
-    const html = await res.text();
 
     // Fecha valor oficial: «Fecha Valor: <span … content="2026-09-29T00:00:00-04:00">»
     const fvm =

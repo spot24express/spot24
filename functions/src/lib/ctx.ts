@@ -9,6 +9,7 @@
 import type { DecodedIdToken } from 'firebase-admin/auth';
 import type { App } from 'firebase-admin/app';
 import admin from 'firebase-admin';
+import { HttpsError } from 'firebase-functions/v2/https';
 
 /** Datos de App Check verificados por el runtime/adaptador. */
 export interface CoreAppCheckData {
@@ -46,13 +47,31 @@ export function getAdminApp(): App {
     return adminApp;
   }
   const raw = process.env['FIREBASE_SERVICE_ACCOUNT'];
-  if (raw) {
-    const json = raw.trim().startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
-    adminApp = admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(json) as Parameters<typeof admin.credential.cert>[0]),
-    });
+  if (!raw) {
+    // En Netlify las ADC no existen (plan Lite): el error de google-auth
+    // («Could not load the default credentials») no dice nada. Lanzamos
+    // failed-precondition con el paso a paso: el mensaje llega al toast del
+    // panel de admin Y al log, con instrucción accionable.
+    if (process.env['NETLIFY'] === 'true') {
+      throw new HttpsError(
+        'failed-precondition',
+        'FIREBASE_SERVICE_ACCOUNT no configurada: Netlify → Site configuration → Environment variables → añade el JSON completo de la clave privada de la cuenta de servicio (o su base64) → guarda y redeploy.',
+      );
+    }
+    // Cloud Functions / gcloud: las ADC sí existen.
+    adminApp = admin.initializeApp();
     return adminApp;
   }
-  adminApp = admin.initializeApp();
+  const json = raw.trim().startsWith('{') ? raw : Buffer.from(raw, 'base64').toString('utf8');
+  let sa: Parameters<typeof admin.credential.cert>[0];
+  try {
+    sa = JSON.parse(json) as Parameters<typeof admin.credential.cert>[0];
+  } catch {
+    throw new HttpsError(
+      'failed-precondition',
+      'FIREBASE_SERVICE_ACCOUNT está mal formada: pega el JSON COMPLETO de la clave privada (o su base64), sin cortes ni saltos añadidos. Guarda y redeploy.',
+    );
+  }
+  adminApp = admin.initializeApp({ credential: admin.credential.cert(sa) });
   return adminApp;
 }
