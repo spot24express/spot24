@@ -7,9 +7,11 @@ import { useCategories, useProductList } from '../hooks/useCatalog';
 import { CategoryCard } from '../components/CategoryCard';
 import { ProductCard } from '../components/ProductCard';
 import { SearchBar } from '../components/SearchBar';
+import { listActivePromos, type PromoSlide } from '../services/promos.service';
 import { VOICE } from '@/shared/constants/brand';
 
-/** Fotos del local para el banner (limpias, sin texto superpuesto). */
+/** Fotos del local para el banner (limpias, sin texto superpuesto).
+ *  FALLBACK: se muestran cuando no hay promos activas en Firestore. */
 const BANNER = [
   {
     src: '/img/local-mural.jpg',
@@ -40,25 +42,59 @@ const BANNER = [
 /** Milisegundos entre cada avance automático del banner. */
 const BANNER_MS = 5000;
 
-/** Home: hero con buscador de primero + Visítanos (fachada + banner automático). */
+/** Diapositiva unificada del carrusel: promo del admin o foto del local. */
+interface Slide {
+  key: string;
+  src: string;
+  alt: string;
+  caption?: string;
+}
+
+/** Home: hero con buscador de primero + Visítanos (fachada + carrusel de promos). */
 export default function HomePage() {
   useDocumentTitle('Tu parada segura. 24/7');
   const { data: categories } = useCategories();
   const { data: page, isError, refetch } = useProductList({}, 8);
 
-  // Banner: avanza solo cada 5 s; se pausa mientras el usuario interactúa.
+  // Promos del carrusel: null = cargando, [] = sin promos activas (usa BANNER).
+  const [promos, setPromos] = useState<PromoSlide[] | null>(null);
+
+  // Carrusel: avanza solo cada 5 s; se pausa mientras el usuario interactúa.
   const trackRef = useRef<HTMLDivElement>(null);
   const [slide, setSlide] = useState(0);
   const [paused, setPaused] = useState(false);
   const resumeTimer = useRef<number | null>(null);
 
   useEffect(() => {
+    let alive = true;
+    void listActivePromos()
+      .then((p) => {
+        if (alive) {
+          setPromos(p);
+          setSlide(0); // el carrusel arranca desde el inicio con las promos
+        }
+      })
+      .catch(() => {
+        if (alive) setPromos([]); // ante fallo, el banner del local sigue en pie
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const slides: Slide[] =
+    promos && promos.length > 0
+      ? promos.map((p, i) => ({ key: `${p.imageUrl}-${i}`, src: p.imageUrl, alt: p.title, caption: p.title }))
+      : BANNER.map((b) => ({ key: b.src, src: b.src, alt: b.alt }));
+  const slideCount = slides.length;
+
+  useEffect(() => {
     if (paused) return;
     const id = window.setInterval(() => {
-      setSlide((s) => (s + 1) % BANNER.length);
+      setSlide((s) => (s + 1) % slideCount);
     }, BANNER_MS);
     return () => window.clearInterval(id);
-  }, [paused]);
+  }, [paused, slideCount]);
 
   useEffect(() => {
     const track = trackRef.current;
@@ -76,8 +112,8 @@ export default function HomePage() {
     [],
   );
 
-  /** Pausa el auto-avance 10 s cuando el usuario toca o desliza el banner. */
-  const pauseBanner = () => {
+  /** Pausa el auto-avance 10 s cuando el usuario toca o desliza el carrusel. */
+  const pauseCarousel = () => {
     setPaused(true);
     if (resumeTimer.current) window.clearTimeout(resumeTimer.current);
     resumeTimer.current = window.setTimeout(() => setPaused(false), 10000);
@@ -99,7 +135,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* VISÍTANOS — fachada real + banner del local */}
+      {/* VISÍTANOS — fachada real + carrusel (promos del admin o fotos del local) */}
       <section className="mt-12" aria-labelledby="visit-title">
         <h2 id="visit-title" className="spot-title mb-2">
           Visítanos
@@ -122,27 +158,37 @@ export default function HomePage() {
           </figcaption>
         </figure>
 
-        {/* BANNER — tira que avanza sola cada 5 s, fotos limpias sin texto */}
+        {/* CARRUSEL — avanza solo cada 5 s; las promos activas del admin tienen
+            título superpuesto; si no hay, salen las fotos limpias del local */}
         <div
           ref={trackRef}
-          aria-label="Galería del local"
+          aria-label={promos && promos.length > 0 ? 'Promociones' : 'Galería del local'}
           className="mt-4 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-          onPointerDown={pauseBanner}
-          onWheel={pauseBanner}
+          onPointerDown={pauseCarousel}
+          onWheel={pauseCarousel}
         >
-          {BANNER.map((g) => (
-            <div
-              key={g.src}
-              className="relative h-52 w-auto shrink-0 snap-start overflow-hidden rounded-brand-lg border-2 border-line sm:h-72"
+          {slides.map((g) => (
+            <figure
+              key={g.key}
+              className={`relative shrink-0 snap-start overflow-hidden rounded-brand-lg border-2 border-line ${
+                g.caption ? 'aspect-[16/9] h-52 sm:h-72' : 'h-52 w-auto sm:h-72'
+              }`}
             >
               <img
                 src={g.src}
                 alt={g.alt}
                 loading="lazy"
                 decoding="async"
-                className="h-full w-auto object-cover"
+                className={g.caption ? 'h-full w-full object-cover' : 'h-full w-auto object-cover'}
               />
-            </div>
+              {g.caption ? (
+                <figcaption className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-ink/95 via-ink/60 to-transparent p-4 pt-12 sm:p-5 sm:pt-16">
+                  <p className="font-display text-lg font-extrabold italic uppercase leading-tight text-paper sm:text-2xl">
+                    {g.caption}
+                  </p>
+                </figcaption>
+              ) : null}
+            </figure>
           ))}
         </div>
       </section>

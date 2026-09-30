@@ -17,6 +17,16 @@
   node_bundler = "esbuild"
   external_node_modules = ["firebase-admin", "firebase-functions"]
 
+# BCV: bcv.org.ve suele tardar más de 10 s en responder; el límite por defecto
+# mataba la función antes del fetch (15 s interno) y nunca publicaba rates/bcv.
+[functions."update-bcv-rate"]
+  timeout = 26
+
+# Disparo manual/cron (fn-runBcvRate): mismo motivo, el fetch interno tarda
+# hasta 15 s y el límite por defecto (10 s) la mataría antes de responder.
+[functions."fn-runBcvRate"]
+  timeout = 26
+
 # ── Redirect SPA: todas las rutas a /index.html (200) ──
 # force=false por defecto: los archivos estáticos de dist/ se sirven primero.
 [[redirects]]
@@ -33,10 +43,12 @@
 #   la frontera dura está en script-src (nunca hay JS inline).
 # connect-src: Firestore, Auth, Installations, App Check, Messaging y telemetría
 #   de Firebase; las funciones de negocio viven en el mismo origen ('self').
+# img-src: 'self' data: blob: https: — las promos pueden apuntar a cualquier
+#   host https (Storage, GitHub, el host que sea) sin tocar la CSP de nuevo.
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://firebasestorage.googleapis.com https://lh3.googleusercontent.com; font-src 'self'; connect-src 'self' blob: https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
     Strict-Transport-Security = "max-age=63072000; includeSubDomains; preload"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"

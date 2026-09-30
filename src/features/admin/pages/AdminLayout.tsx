@@ -11,10 +11,12 @@ const NAV: ReadonlyArray<{ to: string; label: string; code: string; roles: reado
   { to: '/admin/zonas', label: 'Zonas', code: '05', roles: ['admin'] },
   { to: '/admin/usuarios', label: 'Usuarios', code: '06', roles: ['admin'] },
   { to: '/admin/metricas', label: 'Métricas', code: '07', roles: ['admin'] },
+  { to: '/admin/promos', label: 'Promos', code: '08', roles: ['admin'] },
+  { to: '/admin/ajustes', label: 'Ajustes', code: '09', roles: ['admin'] },
 ];
 
 const SUBTITLE: Record<string, string> = {
-  admin: 'Operación 24/7: pagos, despacho, catálogo, zonas y usuarios.',
+  admin: 'Operación 24/7: pagos, despacho, catálogo, zonas, usuarios y ajustes.',
   cajero: 'Turno de caja: confirma pagos por Pago Móvil y deja los pedidos listos.',
   delivery: 'Ruta activa: toma los pedidos preparados y márcalos al entregar.',
 };

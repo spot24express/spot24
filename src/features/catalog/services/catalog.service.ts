@@ -4,13 +4,13 @@
  * Consultas SIEMPRE con límite (7.1).
  */
 import {
-  collection, doc, getDoc, getDocs, getCountFromServer,
+  collection, doc, getDocs, getCountFromServer,
   limit as fbLimit, onSnapshot, orderBy, query, startAfter,
   where, type DocumentData, type QueryDocumentSnapshot, type Query,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import type { CatalogQuery, Product } from '../types';
-import type { Page, BcvRate } from '@/shared/types';
+import type { Page } from '@/shared/types';
 import { CATEGORIES, type CategoryDef } from '@/shared/constants/categories';
 
 const PRODUCTS = 'products';
@@ -203,16 +203,6 @@ export async function getRelated(product: Product, max = 4): Promise<Product[]> 
     .map((d) => mapProduct(d.id, d.data()))
     .filter((p) => p.active && p.id !== product.id)
     .slice(0, max);
-}
-
-/** Tasa BCV publicada por la Cloud Function programada. */
-export async function getBcvRate(): Promise<BcvRate | null> {
-  const fb = await loadFirebase();
-  if (!fb) return null;
-  const snap = await getDoc(doc(fb.db, 'rates', 'bcv'));
-  if (!snap.exists()) return null;
-  const d = snap.data();
-  return { usdToVes: Number(d.usdToVes ?? 0), updatedAt: Number(d.updatedAt ?? 0), source: 'bcv.org.ve' };
 }
 
 /* Re-export para uso interno de los hooks */

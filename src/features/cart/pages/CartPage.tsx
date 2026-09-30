@@ -113,7 +113,7 @@ export default function CartPage() {
           </dl>
           <SpeedDivider className="my-4" />
           <p className="text-sm text-muted">
-            El total final en USD y su equivalencia en bolívares (tasa BCV) los calcula el
+            El total final en USD y su equivalencia en bolívares los calcula el
             servidor al confirmar. Nada se cobra sin tu comprobante.
           </p>
           <div className="mt-5 space-y-3">

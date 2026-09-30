@@ -130,8 +130,7 @@ export default function OrderDetailPage() {
               <Row label="Subtotal" value={formatUsd(order.totals.subtotalUsd)} />
               <Row label="Envío" value={order.totals.shippingUsd === 0 ? 'Gratis' : formatUsd(order.totals.shippingUsd)} />
               <Row label="Total USD" value={formatUsd(order.totals.totalUsd)} strong />
-              <Row label="Total Bs · tasa BCV" value={formatBs(order.totals.totalVes)} />
-              <Row label="Tasa" value={`1 USD = ${formatBs(order.totals.rateUsed)}`} />
+              <Row label="Total Bs" value={formatBs(order.totals.totalVes)} />
             </dl>
           </section>
 

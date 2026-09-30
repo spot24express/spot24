@@ -19,11 +19,11 @@ import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useZones } from '@/features/delivery/hooks/useZones';
 import { reserveStock, quoteTotals, createOrder } from '../services/checkout.service';
 import { buildIdempotencyKey } from '../lib/idempotency';
-import { useBcvRate } from '@/features/catalog/hooks/useCatalog';
 import {
   PAYMENT_METHOD_LABELS, PAYMENT_INSTRUCTIONS,
 } from '@/shared/constants/orders';
-import { VE_BANKS, DEFAULT_PAYMENT_ACCOUNTS, BRAND } from '@/shared/constants/brand';
+import { VE_BANKS, DEFAULT_PAYMENT_ACCOUNTS, BRAND, type PaymentAccount } from '@/shared/constants/brand';
+import { getPaymentAccounts } from '@/shared/services/settings.service';
 import {
   isValidPersonName, isValidCedulaVE, isValidPhoneVE,
   isValidPaymentReference, normalizeCedulaVE, normalizePhoneVE, sanitizeMultiline, sanitizeText,
@@ -53,7 +53,6 @@ export default function CheckoutPage() {
   const { items, clear, isEmpty } = useCart();
   const { user } = useAuth();
   const { data: zones } = useZones();
-  const { data: rate } = useBcvRate();
 
   const [step, setStep] = useState(0);
   const [contact, setContact] = useState<ContactForm>({ name: '', cedula: '', phone: '' });
@@ -65,6 +64,7 @@ export default function CheckoutPage() {
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [busy, setBusy] = useState(false);
+  const [gpsBusy, setGpsBusy] = useState(false);
   const [created, setCreated] = useState<CreateOrderResponse | null>(null);
 
   // Reserva de stock 2 h al entrar al checkout (5.2).
@@ -110,10 +110,54 @@ export default function CheckoutPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [address.zoneId]);
 
+  // Datos de recaudación: primero Firestore (editable desde /admin/ajustes
+  // sin deploy); si aún no hay documento o falla la red, se usa la semilla.
+  const [accounts, setAccounts] = useState<readonly PaymentAccount[]>(DEFAULT_PAYMENT_ACCOUNTS);
+  useEffect(() => {
+    let alive = true;
+    void getPaymentAccounts()
+      .then((a) => {
+        if (alive && a && a.length > 0) setAccounts(a);
+      })
+      .catch(() => {
+        /* respaldo silencioso: seguimos con la semilla del repo */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const zoneAccounts = useMemo(
-    () => DEFAULT_PAYMENT_ACCOUNTS.filter((a) => a.method === payment.method),
-    [payment.method],
+    () => accounts.filter((a) => a.method === payment.method),
+    [accounts, payment.method],
   );
+
+  // GPS del cliente: las coordenadas se añaden a la dirección para el mensajero.
+  const captureGps = () => {
+    if (!navigator.geolocation) {
+      toast.error('Tu navegador no permite GPS. Escribe la dirección completa.');
+      return;
+    }
+    setGpsBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude.toFixed(6);
+        const lng = pos.coords.longitude.toFixed(6);
+        setAddress((a) => {
+          const base = a.details.replace(/\n?GPS: [^\n]*/g, '').trimEnd().slice(0, 460);
+          const details = base ? `${base}\nGPS: ${lat}, ${lng}` : `GPS: ${lat}, ${lng}`;
+          return { ...a, details };
+        });
+        setGpsBusy(false);
+        toast.success('Ubicación GPS añadida. El mensajero la usará para llegar.');
+      },
+      () => {
+        setGpsBusy(false);
+        toast.error('No pudimos leer tu ubicación. Permite el GPS en el navegador o escribe la dirección.');
+      },
+      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+    );
+  };
 
   if (isEmpty && !created) {
     return (
@@ -202,7 +246,7 @@ export default function CheckoutPage() {
           },
           deliveryWindow: zone?.windows[0]
             ? { start: zone.windows[0].start, end: zone.windows[0].end }
-            : { start: '08:00', end: '20:00' },
+            : { start: '12:00', end: '23:59' },
           notes: sanitizeMultiline(address.notes, 300),
           paymentMethod: payment.method,
           paymentDetails,
@@ -251,7 +295,7 @@ export default function CheckoutPage() {
           </div>
           <dl className="mt-6 space-y-2 text-left">
             <Row label="Total USD" value={formatUsd(created.totals.totalUsd)} strong />
-            <Row label="Total Bs (tasa BCV)" value={formatBs(created.totals.totalVes)} />
+            <Row label="Total Bs" value={formatBs(created.totals.totalVes)} />
             <Row label="Envío" value={created.totals.shippingUsd === 0 ? 'Gratis' : formatUsd(created.totals.shippingUsd)} />
           </dl>
           <div className="mt-6 rounded-brand border-2 border-line bg-ink p-4 text-left">
@@ -317,6 +361,14 @@ export default function CheckoutPage() {
                 error={errors['details']}
                 required
               />
+              <div className="flex flex-wrap items-center gap-3">
+                <Button variant="secondary" type="button" loading={gpsBusy} onClick={captureGps}>
+                  Usar mi ubicación GPS
+                </Button>
+                <p className="text-xs text-muted">
+                  Opcional: añade tus coordenadas para que el mensajero llegue exacto.
+                </p>
+              </div>
               <Textarea
                 label="Nota para el mensajero (opcional)"
                 value={address.notes}
@@ -348,14 +400,10 @@ export default function CheckoutPage() {
                     <Row label="Subtotal" value={formatUsd(quote.subtotalUsd)} />
                     <Row label={`Envío · ${quote.zoneName}`} value={quote.freeShipping ? 'Gratis' : formatUsd(quote.shippingUsd)} />
                     <Row label="Total USD" value={formatUsd(quote.totalUsd)} strong />
-                    <Row label="Total Bs · tasa BCV" value={formatBs(quote.totalVes)} />
-                    <Row label="Tasa aplicada" value={`1 USD = ${formatBs(quote.rateUsed)}`} />
+                    <Row label="Total Bs" value={formatBs(quote.totalVes)} />
                   </dl>
                 ) : (
                   <p className="mt-3 text-muted">Calculando montos en el servidor…</p>
-                )}
-                {rate && (
-                  <p className="mt-3 spot-label">Tasa BCV publicada {new Date(rate.updatedAt).toLocaleString('es-VE')}</p>
                 )}
                 {reservation && (
                   <p className="mt-3 spot-label text-signal">
@@ -426,8 +474,8 @@ export default function CheckoutPage() {
                   {quote && <Row label="Total a pagar" value={`${formatUsd(quote.totalUsd)} · ${formatBs(quote.totalVes)}`} strong />}
                 </dl>
                 <p className="mt-4 text-sm text-muted">
-                  Al confirmar, el servidor valida stock, calcula los montos finales con la tasa
-                  BCV y crea tu orden. Los reintentos no duplican pedidos.
+                  Al confirmar, el servidor valida el stock, calcula los montos finales en
+                  bolívares y crea tu orden. Los reintentos no duplican pedidos.
                 </p>
               </section>
               <div className="flex gap-3">

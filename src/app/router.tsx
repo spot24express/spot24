@@ -24,8 +24,10 @@ const AdminCategoriesPage = lazy(() => import('@/features/admin/pages/AdminCateg
 const AdminPaymentsPage = lazy(() => import('@/features/admin/pages/AdminPaymentsPage'));
 const AdminDispatchPage = lazy(() => import('@/features/admin/pages/AdminDispatchPage'));
 const AdminZonesPage = lazy(() => import('@/features/admin/pages/AdminZonesPage'));
+const AdminPromosPage = lazy(() => import('@/features/admin/pages/AdminPromosPage'));
 const AdminUsersPage = lazy(() => import('@/features/admin/pages/AdminUsersPage'));
 const AdminMetricsPage = lazy(() => import('@/features/admin/pages/AdminMetricsPage'));
+const AdminSettingsPage = lazy(() => import('@/features/admin/pages/AdminSettingsPage'));
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<RouteSkeleton />}>{children}</Suspense>;
@@ -87,8 +89,10 @@ export const router = createBrowserRouter([
           { path: 'pagos', element: <GuardSection allow={['admin', 'cajero']}><Lazy><AdminPaymentsPage /></Lazy></GuardSection> },
           { path: 'despacho', element: <GuardSection allow={['admin', 'cajero', 'delivery']}><Lazy><AdminDispatchPage /></Lazy></GuardSection> },
           { path: 'zonas', element: <GuardSection allow={['admin']}><Lazy><AdminZonesPage /></Lazy></GuardSection> },
+          { path: 'promos', element: <GuardSection allow={['admin']}><Lazy><AdminPromosPage /></Lazy></GuardSection> },
           { path: 'usuarios', element: <GuardSection allow={['admin']}><Lazy><AdminUsersPage /></Lazy></GuardSection> },
           { path: 'metricas', element: <GuardSection allow={['admin']}><Lazy><AdminMetricsPage /></Lazy></GuardSection> },
+          { path: 'ajustes', element: <GuardSection allow={['admin']}><Lazy><AdminSettingsPage /></Lazy></GuardSection> },
         ],
       },
       { path: '*', element: <Lazy><HomePage /></Lazy> },

@@ -1,11 +1,5 @@
 /** Tipos compartidos de la capa de servicios (contratos Firestore). */
 
-export interface BcvRate {
-  usdToVes: number;
-  updatedAt: number; // epoch ms
-  source: 'bcv.org.ve' | 'fallback';
-}
-
 export interface ContactData {
   name: string;
   phone: string; // cifrado AES-256-GCM en reposo (backend)

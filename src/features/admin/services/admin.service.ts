@@ -3,12 +3,12 @@
  * · Metadatos de producto, zonas: escritura directa por admin (reglas con claim).
  * · Stock, verificación de pago, estados, métricas, roles: SOLO funciones de
  *   servidor (Netlify Functions en modo Lite, mismas cores que Cloud Functions) (6.3).
- * · Imágenes de producto: ruta/URL administrada por el admin; el archivo vive
- *   en el repo (public/img/products) servido por el CDN, o URL externa.
+ * · Imágenes: URL administrada por el admin (subida fn-uploadImage → imgbb,
+ *   o ruta del repo /img/…). La clave de API jamás llega al cliente.
  */
 import {
-  addDoc, collection, deleteDoc, doc, getDocs, limit as fbLimit, orderBy,
-  query, serverTimestamp, setDoc, where, updateDoc,
+  addDoc, collection, deleteDoc, doc, getDoc, getDocs, limit as fbLimit, orderBy,
+  query, serverTimestamp, setDoc, where, updateDoc, writeBatch,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { callFunction } from '@/shared/lib/backend';
@@ -38,6 +38,8 @@ export interface ProductDraftInput {
   categoryId: string;
   description: string;
   active: boolean;
+  /** URL https (imgbb) o ruta /img/… del repo. Vacía = sin foto nueva. */
+  imageUrl?: string;
   variants: Array<{ id?: string; name: string; sku: string; priceUsd: number; stock: number }>;
 }
 
@@ -52,7 +54,11 @@ function buildSearchTerms(name: string, brand: string): string[] {
   return [...new Set(words)].slice(0, 20);
 }
 
-/** Crea/actualiza producto + subcolección variants (transacción lógica). */
+/**
+ * Crea/actualiza producto + subcolección variants en UN SOLO lote atómico:
+ * o se guarda todo (producto + todas las variantes) o no se guarda nada.
+ * Así jamás quedan productos a medias si la red falla a mitad del guardado.
+ */
 export async function adminSaveProduct(draft: ProductDraftInput): Promise<string> {
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
@@ -65,7 +71,12 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/(^-|-$)/g, '') || `producto-${Date.now().toString(36)}`;
 
-  const prices = draft.variants.map((v) => v.priceUsd);
+  const stocks = draft.variants.map((v) => Math.max(0, Math.floor(Number(v.stock) || 0)));
+  const prices = draft.variants
+    .map((v) => Number(v.priceUsd))
+    .filter((p) => Number.isFinite(p) && p >= 0);
+  const imgUrl = draft.imageUrl?.trim() ?? '';
+  const hasImage = /^https:\/\//.test(imgUrl) || /^\/img\//.test(imgUrl);
   const now = Date.now();
   const payload = {
     slug,
@@ -73,38 +84,43 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
     brand: draft.brand.trim().slice(0, 60),
     description: draft.description.trim().slice(0, 1000),
     categoryId: draft.categoryId,
-    basePriceUsd: prices.length ? Math.min(...prices) : 0,
-    stockTotal: draft.variants.reduce((a, v) => a + v.stock, 0),
+    basePriceUsd: prices.length ? Math.round(Math.min(...prices) * 100) / 100 : 0,
+    stockTotal: stocks.reduce((a, b) => a + b, 0),
     variantCount: draft.variants.length,
     active: draft.active,
     searchTerms: buildSearchTerms(draft.name, draft.brand),
     updatedAt: now,
   };
 
-  let productId = draft.id;
-  if (!productId) {
-    const created = await addDoc(collection(fb.db, 'products'), {
+  const productRef = draft.id
+    ? doc(fb.db, 'products', draft.id)
+    : doc(collection(fb.db, 'products'));
+  const batch = writeBatch(fb.db);
+  if (draft.id) {
+    // Edición: images solo se toca si trajo URL nueva (vacía conserva la foto actual).
+    batch.set(productRef, { ...payload, ...(hasImage ? { images: [imgUrl] } : {}) }, { merge: true });
+  } else {
+    batch.set(productRef, {
       ...payload,
-      images: [`/img/products/${draft.categoryId}.svg`],
+      images: hasImage ? [imgUrl] : [`/img/products/${draft.categoryId}.svg`],
       createdAt: serverTimestamp(),
     });
-    productId = created.id;
-  } else {
-    await updateDoc(doc(fb.db, 'products', productId), payload);
   }
 
-  // Variantes: sobrescribe la subcolección (catálogo pequeño, operación admin).
+  // Variantes con id determinista (v1, v2, …): reescribir el mismo producto
+  // no duplica variantes y el ajuste de stock con auditoría apunta al doc correcto.
   for (const [i, v] of draft.variants.entries()) {
-    const variantId = v.id ?? `v${i + 1}-${Date.now().toString(36)}`;
-    await setDoc(doc(fb.db, 'products', productId, 'variants', variantId), {
+    const variantId = v.id ?? `v${i + 1}`;
+    batch.set(doc(fb.db, 'products', productRef.id, 'variants', variantId), {
       name: v.name.trim().slice(0, 80),
       sku: v.sku.trim().slice(0, 40).toUpperCase(),
-      priceUsd: Math.round(v.priceUsd * 100) / 100,
-      stock: Math.max(0, Math.floor(v.stock)),
+      priceUsd: Math.round(Number(v.priceUsd) * 100) / 100,
+      stock: Math.max(0, Math.floor(Number(v.stock) || 0)),
       active: true,
     });
   }
-  return productId;
+  await batch.commit();
+  return productRef.id;
 }
 
 /** Ajuste de stock: SOLO vía Cloud Function con auditoría (6.3). */
@@ -131,6 +147,13 @@ export async function adminSetProductImages(productId: string, images: string[])
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
   await updateDoc(doc(fb.db, 'products', productId), { images: clean, updatedAt: Date.now() });
+}
+
+/** Elimina un producto (solo admin, con confirmación en el panel). */
+export async function adminDeleteProduct(productId: string): Promise<void> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  await deleteDoc(doc(fb.db, 'products', productId));
 }
 
 /* ── Pedidos (colas de pagos y despacho) ── */
@@ -232,10 +255,23 @@ export async function adminListZones(): Promise<Zone[]> {
 export async function adminSaveZone(zone: Omit<Zone, 'id'> & { id?: string }): Promise<void> {
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
+  // Payload explícito (mismo patrón que adminSaveCategory): el id NUNCA va
+  // dentro del documento y ningún campo viaja undefined — Firestore rechaza
+  // undefined en el propio navegador (sin llegar a la red, error silencioso).
+  const data = {
+    name: zone.name,
+    state: zone.state,
+    feeUsd: zone.feeUsd,
+    freeFromUsd: zone.freeFromUsd,
+    etaMinMinutes: zone.etaMinMinutes,
+    etaMaxMinutes: zone.etaMaxMinutes,
+    active: zone.active,
+    windows: zone.windows,
+  };
   if (zone.id) {
-    await setDoc(doc(fb.db, 'zones', zone.id), zone, { merge: true });
+    await setDoc(doc(fb.db, 'zones', zone.id), data, { merge: true });
   } else {
-    await addDoc(collection(fb.db, 'zones'), { ...zone, createdAt: serverTimestamp() });
+    await addDoc(collection(fb.db, 'zones'), { ...data, createdAt: serverTimestamp() });
   }
 }
 
@@ -307,4 +343,93 @@ export async function adminGetVariants(productId: string): Promise<ProductVarian
   if (!fb) return [];
   const snap = await getDocs(collection(fb.db, 'products', productId, 'variants'));
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as unknown as Omit<ProductVariant, 'id'>) }));
+}
+
+/* ── Promos (carrusel de la sección Visítanos del Home) ── */
+
+export interface PromoDraftInput {
+  id?: string;
+  title: string;
+  /** URL https o ruta /img/promos/… (archivo del repo subido por GitHub). */
+  imageUrl: string;
+  active: boolean;
+  /** Orden de aparición en el carrusel: menor número sale primero. */
+  order: number;
+}
+
+export async function adminListPromos(): Promise<PromoDraftInput[]> {
+  const fb = await loadFirebase();
+  if (!fb) return [];
+  const snap = await getDocs(collection(fb.db, 'promos'));
+  return snap.docs
+    .map((d) => ({
+      id: d.id,
+      title: String(d.data()['title'] ?? ''),
+      imageUrl: String(d.data()['imageUrl'] ?? ''),
+      active: d.data()['active'] !== false,
+      order: Number(d.data()['order'] ?? 0),
+    }))
+    .sort((a, b) => a.order - b.order);
+}
+
+export async function adminSavePromo(draft: PromoDraftInput): Promise<void> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  // Payload explícito (mismo patrón que adminSaveZone): el id NUNCA va dentro
+  // del documento y ningún campo viaja undefined — Firestore rechaza undefined
+  // en el propio navegador (sin llegar a la red, error silencioso).
+  const data = {
+    title: draft.title.trim().slice(0, 80),
+    imageUrl: draft.imageUrl.trim().slice(0, 500),
+    active: draft.active,
+    order: Math.max(0, Math.floor(Number(draft.order) || 0)),
+    updatedAt: Date.now(),
+  };
+  if (draft.id) {
+    await setDoc(doc(fb.db, 'promos', draft.id), data, { merge: true });
+  } else {
+    await addDoc(collection(fb.db, 'promos'), { ...data, createdAt: serverTimestamp() });
+  }
+}
+
+export async function adminDeletePromo(promoId: string): Promise<void> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  await deleteDoc(doc(fb.db, 'promos', promoId));
+}
+
+/* ───────────────────────── Tasa BCV (rates/bcv) ───────────────────────── */
+
+export interface BcvRateInfo {
+  usdToVes: number;
+  /** Fecha valor oficial del BCV de la tasa vigente (YYYY-MM-DD). */
+  fechaValor: string;
+  updatedAt: number;
+  source: string;
+  /** Tasa capturada hoy en la tarde: se activa sola a las 12:00 AM. */
+  nextUsdToVes: number;
+  nextFechaValor: string;
+  nextCapturedAt: number;
+}
+
+/**
+ * Tasa BCV vigente + pendiente (doc rates/bcv, escrito por la función programada).
+ * Lectura directa: las reglas permiten read público en rates.
+ * null = aún no existe el documento (normal antes del primer deploy).
+ */
+export async function adminGetBcvRate(): Promise<BcvRateInfo | null> {
+  const fb = await loadFirebase();
+  if (!fb) return null;
+  const snap = await getDoc(doc(fb.db, 'rates', 'bcv'));
+  if (!snap.exists()) return null;
+  const d = snap.data();
+  return {
+    usdToVes: Number(d['usdToVes'] ?? 0),
+    fechaValor: String(d['fechaValor'] ?? ''),
+    updatedAt: Number(d['updatedAt'] ?? 0),
+    source: String(d['source'] ?? 'fallback'),
+    nextUsdToVes: Number(d['nextUsdToVes'] ?? 0),
+    nextFechaValor: String(d['nextFechaValor'] ?? ''),
+    nextCapturedAt: Number(d['nextCapturedAt'] ?? 0),
+  };
 }

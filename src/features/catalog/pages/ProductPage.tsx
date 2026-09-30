@@ -168,7 +168,7 @@ export default function ProductPage() {
 
           <div className="mt-5">
             <PriceTag usd={variant?.priceUsd ?? product.basePriceUsd} size="lg" />
-            <p className="mt-1 spot-label">Precio en Bs calculado al confirmar (tasa BCV del backend)</p>
+            <p className="mt-1 spot-label">Precio en Bs calculado al confirmar</p>
           </div>
 
           {variants && variants.length > 1 && (

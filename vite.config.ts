@@ -42,7 +42,7 @@ export default defineConfig({
         // Precachea el bundle y las fuentes autoalojadas (woff2) para modo offline.
         globPatterns: ['**/*.{js,css,html,woff2,png,svg,ico,webmanifest}'],
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/\.netlify\//],
         clientsClaim: true,
         skipWaiting: true,
         cleanupOutdatedCaches: true,

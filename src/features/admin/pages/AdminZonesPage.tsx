@@ -9,7 +9,7 @@ import { adminListZones, adminSaveZone, adminDeleteZone } from '../services/admi
 import type { Zone } from '@/features/delivery/types';
 import { userMessage } from '@/shared/lib/errors';
 
-/** Gestión de zonas de cobertura con tarifas planas y ventanas (5.5/5.6). */
+/** Gestión de zonas de cobertura con tarifas planas y ventanas de entrega (5.5/5.6). */
 export default function AdminZonesPage() {
   const [zones, setZones] = useState<Zone[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,7 +35,7 @@ export default function AdminZonesPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-xl font-bold italic uppercase text-paper">Zonas de cobertura</h2>
-          <p className="spot-subtitle mt-1">Tarifa plana por zona y ventanas 24/7. El envío no depende del peso.</p>
+          <p className="spot-subtitle mt-1">Tarifa plana por zona y horario de entrega. El envío no depende del peso.</p>
         </div>
         <Button onClick={() => setCreating(true)}>Nueva zona</Button>
       </div>
@@ -51,7 +51,7 @@ export default function AdminZonesPage() {
               <div>
                 <p className="font-semibold text-paper">{z.name}</p>
                 <p className="spot-label mt-0.5">
-                  ${z.feeUsd.toFixed(2)} · gratis desde ${z.freeFromUsd.toFixed(2)} · {z.etaMinMinutes}-{z.etaMaxMinutes} min · {z.windows.length} ventanas
+                  ${z.feeUsd.toFixed(2)} · gratis desde ${z.freeFromUsd.toFixed(2)} · {z.etaMinMinutes}-{z.etaMaxMinutes} min · {z.windows.map((w) => w.label).join(' · ')}
                 </p>
               </div>
               <div className="flex gap-2">
@@ -113,19 +113,31 @@ function ZoneModal({
     etaMaxMinutes: zone?.etaMaxMinutes ?? 90,
     active: zone?.active ?? true,
   });
+  const [windows, setWindows] = useState<Zone['windows']>(
+    zone?.windows?.length
+      ? zone.windows
+      : [{ start: '12:00', end: '23:59', label: '12:00 pm – 12:00 am' }],
+  );
   const [busy, setBusy] = useState(false);
 
+  const setWin = (i: number, patch: Partial<Zone['windows'][number]>) =>
+    setWindows((ws) => ws.map((w, j) => (j === i ? { ...w, ...patch } : w)));
+
   const save = async () => {
+    if (windows.length === 0 || windows.some((w) => !w.start || !w.end)) {
+      toast.error('Cada ventana necesita hora desde y hasta.');
+      return;
+    }
     setBusy(true);
     try {
       await adminSaveZone({
         id: zone?.id,
         ...form,
-        windows: zone?.windows ?? [
-          { start: '08:00', end: '12:00', label: 'Mañana' },
-          { start: '12:00', end: '18:00', label: 'Tarde' },
-          { start: '18:00', end: '23:59', label: 'Noche 24/7' },
-        ],
+        windows: windows.map((w) => ({
+          start: w.start,
+          end: w.end,
+          label: w.label.trim() || `${w.start} – ${w.end}`,
+        })),
       });
       toast.success('Zona guardada.');
       onSaved();
@@ -162,6 +174,54 @@ function ZoneModal({
           La tarifa es fija por zona: el cliente paga ese monto de envío (o nada si su
           compra supera el mínimo de envío gratis). No hay recargos por peso.
         </p>
+
+        {/* Horario de entrega: lo que defines aquí es lo que ve el cliente en el checkout */}
+        <div>
+          <p className="spot-label mb-2">Horario de entrega (lo ve el cliente en el checkout)</p>
+          <div className="space-y-3">
+            {windows.map((w, i) => (
+              <div key={i} className="grid items-end gap-2 sm:grid-cols-[140px_140px_1fr_auto]">
+                <Input
+                  label="Desde"
+                  type="time"
+                  value={w.start}
+                  onChange={(e) => setWin(i, { start: e.target.value })}
+                />
+                <Input
+                  label="Hasta"
+                  type="time"
+                  value={w.end}
+                  onChange={(e) => setWin(i, { end: e.target.value })}
+                />
+                <Input
+                  label="Nombre que ve el cliente"
+                  value={w.label}
+                  placeholder="Ej.: 12:00 pm – 12:00 am"
+                  onChange={(e) => setWin(i, { label: e.target.value })}
+                />
+                <Button
+                  variant="danger-ghost"
+                  size="sm"
+                  type="button"
+                  disabled={windows.length <= 1}
+                  onClick={() => setWindows((ws) => ws.filter((_, j) => j !== i))}
+                >
+                  Quitar
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            type="button"
+            className="mt-3"
+            onClick={() => setWindows((ws) => [...ws, { start: '12:00', end: '23:59', label: '' }])}
+          >
+            Añadir ventana
+          </Button>
+        </div>
+
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
           <Button className="flex-1" loading={busy} onClick={() => void save()}>

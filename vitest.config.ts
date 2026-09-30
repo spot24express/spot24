@@ -9,7 +9,8 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     include: ['src/**/*.test.ts', 'src/tests/**/*.test.ts'],
-    // Las pruebas de reglas se ejecutan aparte con emulador (npm run test:rules).
-    exclude: ['src/tests/rules/**', 'node_modules/**', 'dist/**', 'functions/**'],
+    // Las reglas NO van en el exclude global: `npm test` las excluye por CLI
+    // (--exclude) y `npm run test:rules` las corre aparte con el emulador.
+    exclude: ['node_modules/**', 'dist/**', 'functions/**'],
   },
 });

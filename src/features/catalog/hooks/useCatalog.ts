@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import {
-  countByCategory, getBcvRate, getProductBySlug, getRelated,
+  countByCategory, getProductBySlug, getRelated,
   getVariants, listCategories, listProducts, normalizeSearchTerm,
 } from '../services/catalog.service';
 import type { CatalogFilters } from '../types';
@@ -15,7 +15,6 @@ export const catalogKeys = {
   product: (slug: string) => ['catalog', 'product', slug] as const,
   variants: (productId: string) => ['catalog', 'variants', productId] as const,
   related: (productId: string) => ['catalog', 'related', productId] as const,
-  rate: ['catalog', 'bcv'] as const,
 };
 
 export function useCategories() {
@@ -69,15 +68,6 @@ export function useRelated(product: Product | null | undefined) {
     queryKey: catalogKeys.related(product?.id ?? ''),
     queryFn: () => getRelated(product!),
     enabled: Boolean(product),
-    staleTime: 10 * 60 * 1000,
-  });
-}
-
-/** Tasa BCV (solo lectura; los montos Bs oficiales los calcula el backend). */
-export function useBcvRate() {
-  return useQuery({
-    queryKey: catalogKeys.rate,
-    queryFn: getBcvRate,
     staleTime: 10 * 60 * 1000,
   });
 }

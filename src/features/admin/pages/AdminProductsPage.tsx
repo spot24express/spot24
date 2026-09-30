@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from '@/shared/lib/toast';
 import { ListSkeleton } from '@/shared/components/ui/Skeleton';
 import { ErrorState } from '@/shared/components/ui/States';
@@ -7,15 +7,20 @@ import { Chip } from '@/shared/components/ui/Badge';
 import { Input, Select, Textarea } from '@/shared/components/ui/Input';
 import { Modal } from '@/shared/components/ui/Modal';
 import {
-  adminListProducts, adminSaveProduct, adminAdjustStock,
+  adminListProducts, adminSaveProduct, adminDeleteProduct,
   adminGetVariants, adminSetProductImages,
 } from '../services/admin.service';
+import { adminUploadImage } from '../services/imageUpload.service';
 import type { Product, ProductVariant } from '@/features/catalog/types';
 import { listCategories } from '@/features/catalog/services/catalog.service';
 import type { CategoryDef } from '@/shared/constants/categories';
 import { userMessage } from '@/shared/lib/errors';
 
-/** Gestión de productos, variantes, stock y precios (5.6). */
+/**
+ * Gestión de productos: precio y stock DIRECTOS, sin variantes ni SKU a la vista.
+ * Internamente cada producto guarda una única ficha «Estándar» (invisible para
+ * el admin) para que la tienda, el carrito y las compras sigan funcionando igual.
+ */
 export default function AdminProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
@@ -37,12 +42,23 @@ export default function AdminProductsPage() {
 
   useEffect(load, [search]);
 
+  const remove = async (p: Product) => {
+    if (!window.confirm(`¿Eliminar «${p.name}»? Esta acción no se puede deshacer.`)) return;
+    try {
+      await adminDeleteProduct(p.id);
+      toast.success('Producto eliminado.');
+      load();
+    } catch (e) {
+      toast.error(userMessage(e));
+    }
+  };
+
   return (
     <div>
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-xl font-bold italic uppercase text-paper">Productos</h2>
-          <p className="spot-subtitle mt-1">Catálogo, variantes y stock. El stock se ajusta con auditoría.</p>
+          <p className="spot-subtitle mt-1">Catálogo con precio y stock directos.</p>
         </div>
         <Button onClick={() => setCreating(true)}>Nuevo producto</Button>
       </div>
@@ -68,7 +84,7 @@ export default function AdminProductsPage() {
                   <div className="min-w-0">
                     <p className="truncate font-semibold text-paper">{p.name}</p>
                     <p className="spot-label">
-                      {p.brand} · {p.variantCount} variantes · stock total {p.stockTotal} · ${p.basePriceUsd.toFixed(2)}
+                      {p.brand} · Stock {p.stockTotal} · ${p.basePriceUsd.toFixed(2)}
                     </p>
                   </div>
                 </div>
@@ -78,6 +94,9 @@ export default function AdminProductsPage() {
                   </Chip>
                   <Button variant="secondary" size="sm" onClick={() => setEditing(p)}>
                     Editar
+                  </Button>
+                  <Button variant="danger-ghost" size="sm" onClick={() => void remove(p)}>
+                    Eliminar
                   </Button>
                 </div>
               </li>
@@ -104,7 +123,7 @@ export default function AdminProductsPage() {
   );
 }
 
-/** Editor de producto + variantes + carga de imagen. */
+/** Editor de producto: datos, precio, stock y foto. */
 function ProductModal({
   open, product, onClose, onSaved,
 }: {
@@ -120,41 +139,76 @@ function ProductModal({
     description: product?.description ?? '',
     active: product?.active ?? true,
   });
-  const [variants, setVariants] = useState<Array<{ name: string; sku: string; priceUsd: number; stock: number }>>([]);
+  const [priceUsd, setPriceUsd] = useState(0);
+  const [stock, setStock] = useState(0);
+  const [variantId, setVariantId] = useState<string | undefined>(undefined);
   const [categories, setCategories] = useState<CategoryDef[]>([]);
   const [imageUrl, setImageUrl] = useState('');
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const imgInputRef = useRef<HTMLInputElement>(null);
 
   // Categorías vigentes (las que gestiona el admin, con respaldo local).
   useEffect(() => {
     void listCategories().then(setCategories).catch(() => setCategories([]));
   }, []);
 
-  // Carga variantes al abrir con producto existente.
+  // Precio y stock actuales al editar (de la ficha única del producto).
   useEffect(() => {
     setImageUrl(product?.images?.[0] ?? '');
     if (!product) {
-      setVariants([{ name: '', sku: '', priceUsd: 0, stock: 0 }]);
+      setPriceUsd(0);
+      setStock(0);
+      setVariantId(undefined);
       return;
     }
     void adminGetVariants(product.id).then((vs) => {
-      setVariants(
-        vs.map((v: ProductVariant) => ({ name: v.name, sku: v.sku, priceUsd: v.priceUsd, stock: v.stock })),
-      );
+      const v: ProductVariant | undefined = vs[0];
+      setVariantId(v?.id);
+      setPriceUsd(v ? v.priceUsd : 0);
+      setStock(v ? v.stock : 0);
     });
   }, [product]);
 
   const save = async () => {
+    // Validación ANTES de tocar Firebase: mensajes claros en vez del aviso genérico.
+    if (form.name.trim().length < 2) {
+      toast.error('El nombre del producto necesita al menos 2 letras.');
+      return;
+    }
+    if (form.brand.trim().length < 1) {
+      toast.error('Escribe la marca del producto.');
+      return;
+    }
     if (!form.categoryId) {
       toast.error('Elige una categoría para el producto.');
       return;
     }
+    const price = Number.isFinite(Number(priceUsd)) ? Math.max(0, Math.round(Number(priceUsd) * 100) / 100) : 0;
+    const qty = Math.max(0, Math.floor(Number(stock) || 0));
+    if (price > 10000) {
+      toast.error('El precio no puede pasar de 10.000 USD.');
+      return;
+    }
+    if (qty > 100000) {
+      toast.error('El stock no puede pasar de 100.000.');
+      return;
+    }
+    // SKU interno e invisible: derivado de marca+nombre, cumple las reglas (3-40 caracteres).
+    const autoSku = `${form.brand}${form.name}`.replace(/[^A-Za-z0-9]/g, '').slice(0, 8).toUpperCase() || 'SP24';
     setBusy(true);
     try {
       await adminSaveProduct({
         id: product?.id,
         ...form,
-        variants,
+        imageUrl: imageUrl.trim(),
+        variants: [{
+          id: variantId,
+          name: 'Estándar',
+          sku: autoSku,
+          priceUsd: price,
+          stock: qty,
+        }],
       });
       toast.success('Producto guardado.');
       onSaved();
@@ -162,19 +216,6 @@ function ProductModal({
       toast.error(userMessage(e));
     } finally {
       setBusy(false);
-    }
-  };
-
-  const adjust = async (index: number, delta: number) => {
-    if (!product) return;
-    const v = variants[index];
-    if (!v) return;
-    try {
-      await adminAdjustStock(product.id, `v${index + 1}`, delta, 'ajuste desde panel');
-      setVariants((vs) => vs.map((x, i) => (i === index ? { ...x, stock: Math.max(0, x.stock + delta) } : x)));
-      toast.success('Stock ajustado con auditoría.');
-    } catch (e) {
-      toast.error(userMessage(e));
     }
   };
 
@@ -189,6 +230,25 @@ function ProductModal({
       toast.error(userMessage(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Subida real: comprime en el teléfono/PC y guarda en imgbb vía fn-uploadImage.
+  // En local la función no existe (404) → mensaje amable; funciona tras el deploy.
+  const onPickImage = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const res = await adminUploadImage(file);
+      if (res.ok) {
+        setImageUrl(res.url);
+        toast.success('Foto lista. Pulsa «Guardar producto» para confirmarla.');
+      } else {
+        toast.error(res.message);
+      }
+    } finally {
+      setUploading(false);
+      if (imgInputRef.current) imgInputRef.current.value = '';
     }
   };
 
@@ -208,57 +268,69 @@ function ProductModal({
             <option value="1">Activo</option>
             <option value="0">Inactivo</option>
           </Select>
+          <Input
+            label="Precio (USD)"
+            type="number"
+            min="0"
+            step="0.5"
+            inputMode="decimal"
+            placeholder="0.00"
+            value={priceUsd || ''}
+            onChange={(e) => setPriceUsd(Number(e.target.value))}
+            required
+          />
+          <Input
+            label="Stock (unidades)"
+            type="number"
+            min="0"
+            step="1"
+            inputMode="numeric"
+            placeholder="0"
+            value={stock || 0}
+            onChange={(e) => setStock(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+            required
+          />
         </div>
         <Textarea label="Descripción" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={3} />
 
         <div>
-          <p className="mb-2 spot-label">Variantes</p>
-          <ul className="space-y-3">
-            {variants.map((v, i) => (
-              <li key={i} className="grid gap-3 rounded-brand border-2 border-line bg-ink p-4 sm:grid-cols-[1.4fr_1fr_0.8fr_0.8fr]">
-                <input aria-label="Variante nombre" placeholder="5W-30 · 4 L" value={v.name} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} className="rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none" />
-                <input aria-label="SKU" placeholder="SKU" value={v.sku} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, sku: e.target.value.toUpperCase() } : x)))} className="rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none" />
-                <input aria-label="Precio USD" type="number" step="0.5" min="0" placeholder="USD" value={v.priceUsd || ''} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, priceUsd: Number(e.target.value) } : x)))} className="rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none" />
-                <div className="flex items-center gap-1">
-                  <button type="button" aria-label="Restar stock" onClick={() => void adjust(i, -1)} className="min-h-[40px] w-9 rounded-brand border-2 border-line font-bold text-paper hover:bg-surface-2">−</button>
-                  <input aria-label="Stock" type="number" min="0" value={v.stock || 0} onChange={(e) => setVariants((vs) => vs.map((x, j) => (j === i ? { ...x, stock: Math.max(0, Number(e.target.value)) } : x)))} className="w-16 rounded-brand border-2 border-line bg-surface-1 px-2 py-2 text-center text-paper focus:border-signal focus:outline-none" />
-                  <button type="button" aria-label="Sumar stock" onClick={() => void adjust(i, 1)} className="min-h-[40px] w-9 rounded-brand border-2 border-line font-bold text-paper hover:bg-surface-2">+</button>
-                </div>
-              </li>
-            ))}
-          </ul>
-          <Button variant="ghost" size="sm" className="mt-3" onClick={() => setVariants((vs) => [...vs, { name: '', sku: '', priceUsd: 0, stock: 0 }])}>
-            + Añadir variante
-          </Button>
-        </div>
-
-        {product && (
-          <div>
-            <p className="mb-2 spot-label">Imagen del producto (archivo del repo o URL https)</p>
-            <div className="flex items-start gap-4">
-              <img
-                src={imageUrl || product.images[0] || '/img/products/lubricantes.svg'}
-                alt="Vista previa"
-                className="h-20 w-20 shrink-0 rounded-brand border-2 border-line object-cover"
+          <p className="mb-2 spot-label">Imagen del producto</p>
+          <div className="flex items-start gap-4">
+            <img
+              src={imageUrl || product?.images?.[0] || '/img/products/lubricantes.svg'}
+              alt="Vista previa"
+              className="h-20 w-20 shrink-0 rounded-brand border-2 border-line object-cover"
+            />
+            <div className="min-w-0 flex-1">
+              <Input
+                label="Ruta o URL"
+                value={imageUrl}
+                onChange={(e) => setImageUrl(e.target.value)}
+                placeholder="Se rellena sola al subir una foto · también acepta https://…"
               />
-              <div className="min-w-0 flex-1">
-                <Input
-                  label="Ruta o URL"
-                  value={imageUrl}
-                  onChange={(e) => setImageUrl(e.target.value)}
-                  placeholder="/img/products/mi-foto.jpg  ·  https://…"
-                />
-                <p className="mt-1 text-xs text-muted">
-                  Para subir una foto: GitHub → tu repo → Add file → Upload files → carpeta public/img/products/ → Commit.
-                  En 1-2 min queda servida por el CDN; pega aquí el nombre del archivo y aplica.
-                </p>
-                <Button variant="secondary" size="sm" className="mt-3" loading={busy} onClick={() => void applyImage()}>
-                  Aplicar imagen
+              <input
+                ref={imgInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => void onPickImage(e.target.files?.[0])}
+              />
+              <div className="mt-3 flex flex-wrap gap-3">
+                <Button variant="secondary" size="sm" loading={uploading} onClick={() => imgInputRef.current?.click()}>
+                  Subir foto desde el teléfono o PC
                 </Button>
+                {product && (
+                  <Button variant="secondary" size="sm" loading={busy} onClick={() => void applyImage()}>
+                    Aplicar imagen ahora
+                  </Button>
+                )}
               </div>
+              <p className="mt-2 text-xs text-muted">
+                La foto se comprime sola antes de subirse. Al guardar el producto con la URL puesta, la imagen queda aplicada.
+              </p>
             </div>
           </div>
-        )}
+        </div>
 
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
