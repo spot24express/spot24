@@ -3,7 +3,7 @@
  * La máquina de transiciones se replica en functions/src/domain/order-state.ts:
  * cualquier cambio aquí debe reflejarse allá (el backend es la fuente de verdad).
  *
- * Método de pago: SOLO Pago Móvil.
+ * Método de pago actual: Pago Móvil (el contrato ya soporta sumar más métodos).
  */
 
 export const ORDER_STATUSES = [
@@ -67,7 +67,7 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 /** Instrucciones de confirmación (paso de confirmación del checkout). */
 export const PAYMENT_INSTRUCTIONS: Record<PaymentMethod, string> = {
   pago_movil:
-    'Realiza el Pago Móvil por el monto exacto en bolívares y registra banco, cédula, teléfono, referencia y fecha. Sube el comprobante desde "Mis pedidos".',
+    'Realiza el Pago Móvil por el monto exacto en bolívares y registra banco, cédula, teléfono, referencia (últimos 6 dígitos) y fecha. Al confirmar, sube el comprobante desde «Ver mi pedido».',
 };
 
 /** ¿El método requiere comprobante registrado en el paso de pago? */

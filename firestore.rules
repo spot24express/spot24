@@ -41,6 +41,9 @@ service cloud.firestore {
           && str(d.slug, 2, 140)
           && str(d.categoryId, 2, 60)
           && d.active is bool
+          /* Código del producto (lo escribe el admin): opcional por los docs
+             anteriores a este campo; si viene, string de 0 a 40. */
+          && (!('code' in d) || str(d.code, 0, 40))
           && (!('basePriceUsd' in d) || (d.basePriceUsd is number && d.basePriceUsd >= 0 && d.basePriceUsd <= 10000))
           && (!('stockTotal' in d) || (d.stockTotal is int && d.stockTotal >= 0))
           && (!('description' in d) || str(d.description, 0, 1000))

@@ -137,10 +137,12 @@ function PromoModal({
   const imgInputRef = useRef<HTMLInputElement>(null);
 
   // Sincroniza el formulario cada vez que se abre (editar X, editar Y o crear):
-  // evita arrastrar los valores de la promo anterior.
+  // evita arrastrar los valores de la promo anterior. El id DEBE viajar en el
+  // formulario: sin él, adminSavePromo interpreta «crear» y duplica la promo.
   useEffect(() => {
     if (!open) return;
     setForm({
+      id: promo?.id,
       title: promo?.title ?? '',
       imageUrl: promo?.imageUrl ?? '',
       active: promo?.active ?? true,

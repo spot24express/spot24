@@ -25,27 +25,39 @@ export const VOICE = {
 } as const;
 
 /**
- * Bancos venezolanos con Pago Móvil.
- * Mantener en orden alfabético para el <select>.
+ * Bancos venezolanos con Pago Móvil — lista activa SUDEBAN (verificada 2025-2026).
+ * · Se incluyó BOD durante su transición hacia BNC (los clientes migran 0116 → 0191).
+ * · Descartados: bancos cerrados o fusionados (Espirito Santo, Citibank retail,
+ *   Helm Bank) y fantasmas («Banco Platino» no existe).
+ * · En orden alfabético para el <select>.
  */
 export const VE_BANKS: readonly string[] = [
+  '100% Banco',
+  'Bancamiga',
+  'Bancaribe',
   'Banco Activo',
+  'Banco Agrícola de Venezuela',
   'Banco Bicentenario',
   'Banco Caroní',
+  'Banco de la Fuerza Armada Nacional Bolivariana (Banfanb)',
+  'Banco de la Gente Emprendedora (Bangente)',
+  'Banco de Venezuela (BDV)',
   'Banco del Tesoro',
   'Banco Exterior',
+  'Banco Internacional de Desarrollo (BID)',
   'Banco Nacional de Crédito (BNC)',
-  'Banco Platino',
+  'Banco Plaza',
   'Banco Sofitasa',
+  'Banco Venezolano de Crédito (BVC)',
   'Bancrecer',
-  'Banesco',
   'Banplus',
   'BBVA Provincial',
+  'BFC Banco Fondo Común',
   'BOD (Banco Occidental de Descuento)',
-  'Banco Venezolano de Crédito',
+  'DelSur Banco Universal',
   'Mercantil Banco',
-  'Mi Banco',
-  'Banco de Venezuela (BDV)',
+  'N58 Banco Digital',
+  'R4 Banco Microfinanciero',
 ] as const;
 
 /**

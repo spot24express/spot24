@@ -14,7 +14,10 @@ import type {
 } from '../types';
 
 export async function reserveStock(items: CheckoutItem[]): Promise<ReservationResponse> {
-  return callFunction<ReservationResponse>('fn-reserveStock', items);
+  // Contrato del backend: el body viaja como { data: { items } } — NO el array
+  // pelado. Antes se enviaba el array directo y el servidor leía data['items']
+  // sobre un array (undefined) → 400 invalid-argument «Carrito vacío».
+  return callFunction<ReservationResponse>('fn-reserveStock', { items });
 }
 
 export async function quoteTotals(req: QuoteRequest): Promise<QuoteResponse> {

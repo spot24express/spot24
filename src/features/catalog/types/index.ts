@@ -13,6 +13,10 @@ export interface ProductVariant {
 export interface Product {
   id: string;
   slug: string;
+  /** Código del producto: lo escribe y edita el ADMIN (no lo genera la app).
+   *  Único entre productos (validado al guardar). Opcional: productos creados
+   *  antes de este campo no lo tienen hasta que el admin lo complete. */
+  code?: string;
   name: string;
   brand: string;
   description: string;

@@ -1,5 +1,6 @@
 # SPOT 24 · Netlify — build, SPA redirect y cabeceras de seguridad (sección 6.6)
-# CSP estricta: sin scripts inline. Dominios de Firebase/app como única excepción.
+# CSP estricta: sin scripts inline en producción. Dominios de Firebase/app y el
+# hash del preamble de Vite (SOLO desarrollo) como únicas excepciones.
 
 [build]
   # npm --prefix functions ci: el backend Lite (netlify/functions) importa el
@@ -7,6 +8,13 @@
   # desde functions/node_modules durante el bundling con esbuild.
   command = "npm install && npm --prefix functions ci && npm run build"
   publish = "dist"
+  # Ahorro de créditos (plan por créditos: 15 por deploy a producción).
+  # Si el push SOLO toca documentación (*.md, docs/, .github/, LICENSE),
+  # `git diff --quiet` sale 0 → Netlify CANCELA el build → 0 créditos.
+  # Si cambia CUALQUIER archivo de código, el diff (excluyendo docs) es
+  # no-vacío → código != 0 → el build corre normal.
+  # El `|| exit 1` falla seguro: ante cualquier error de git, el build SÍ corre.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- . ':(exclude)*.md' ':(exclude).github' ':(exclude)docs' ':(exclude)LICENSE' || exit 1"
 
 [build.environment]
   NODE_VERSION = "22"
@@ -27,6 +35,19 @@
 [functions."fn-runBcvRate"]
   timeout = 26
 
+# ── Servidor de desarrollo local (netlify dev) ──
+# netlify dev levanta las funciones de netlify/functions y, además, la app de
+# Vite: `command` es lo que ejecuta y `targetPort` el puerto donde espera
+# encontrarla. Nuestro `npm run dev` corre Vite en 3000 (package.json), NO en
+# el 5173 por defecto de Vite: sin este bloque el CLI expira esperando 5173.
+# Esta sección SOLO aplica al dev local; los builds de producción la ignoran.
+[dev]
+  command = "npm run dev"
+  framework = "#custom"
+  targetPort = 3000
+  port = 8888
+  autoLaunch = false
+
 # ── Redirect SPA: todas las rutas a /index.html (200) ──
 # force=false por defecto: los archivos estáticos de dist/ se sirven primero.
 [[redirects]]
@@ -37,7 +58,16 @@
 # ── Cabeceras globales de seguridad ──
 # script-src: 'self' + dominios del SDK de Firebase/App Check (reCAPTCHA v3/Enterprise)
 #   + hashes de los scripts inline que el SDK de Auth/reCAPTCHA inyecta dentro
-#   de su iframe srcdoc (los iframes srcdoc heredan la CSP del sitio).
+#   de su iframe srcdoc (los iframes srcdoc heredan la CSP del sitio)
+#   + hash del «preamble» de React Refresh (sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk=).
+#     ⚠️ Ese script inline SOLO existe en desarrollo: @vitejs/plugin-react lo inyecta en
+#     la línea 4 del HTML servido por Vite, y `netlify dev` aplica ESTAS cabeceras también
+#     en local → sin el hash, la CSP lo bloqueaba («can't detect preamble») y la pantalla
+#     quedaba en blanco al recargar cualquier ruta (p. ej. «Ir al catálogo» desde el carrito).
+#     En producción es inocuo: el bundle no contiene ningún script inline con ese hash.
+#     Si una futura versión de Vite/plugin-react cambia el texto del preamble, el navegador
+#     lo volverá a bloquear y la consola imprimirá el hash nuevo: cópialo aquí sustituyendo
+#     el antiguo.
 # frame-src: iframes del SDK de Auth (<authDomain>/__/auth/iframe) y de reCAPTCHA.
 # style-src: 'self' 'unsafe-inline' — requerido por los atributos style de React;
 #   la frontera dura está en script-src (nunca hay JS inline).
@@ -48,7 +78,7 @@
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY=' 'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
     Strict-Transport-Security = "max-age=63072000; includeSubDomains; preload"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"

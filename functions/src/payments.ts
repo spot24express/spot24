@@ -94,6 +94,20 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
     void ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), 'pagado');
   } else {
     await db().runTransaction(async (tx) => {
+      // REGLA DE TRANSACCIONES FIRESTORE: TODAS las lecturas primero.
+      // Repone stock leyendo las variantes ANTES de escribir la orden
+      // (el tx.get tras tx.update revienta la transacción con
+      // «reads to be executed before all writes»).
+      const lines = (order['lines'] ?? []) as Array<{ productId: string; variantId: string; qty: number }>;
+      const restock: Array<{ ref: admin.firestore.DocumentReference; newStock: number }> = [];
+      for (const line of lines) {
+        const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
+        const vsnap = await tx.get(vref);
+        if (vsnap.exists) {
+          restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty });
+        }
+      }
+      // ── A partir de aquí SOLO escrituras: ninguna lectura después ──
       tx.update(ref, {
         status: 'cancelado',
         'payment.status': 'rechazado',
@@ -107,14 +121,8 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
         by: staff.role,
         note: note || 'Pago rechazado.',
       });
-      // Repone stock.
-      const lines = (order['lines'] ?? []) as Array<{ productId: string; variantId: string; qty: number }>;
-      for (const line of lines) {
-        const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
-        const vsnap = await tx.get(vref);
-        if (vsnap.exists) {
-          tx.update(vref, { stock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty });
-        }
+      for (const p of restock) {
+        tx.update(p.ref, { stock: p.newStock });
       }
     });
     void ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), 'cancelado');

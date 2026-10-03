@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { toast } from '@/shared/lib/toast';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Button } from '@/shared/components/ui/Button';
-import { PriceTag, StockBadge } from '@/shared/components/ui/PriceTag';
+import { StockBadge } from '@/shared/components/ui/PriceTag';
 import { SpeedDivider } from '@/shared/components/brand/Logo';
 import { Skeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState } from '@/shared/components/ui/States';
@@ -14,9 +14,11 @@ import { useCart } from '@/features/cart/hooks/useCart';
 import { trackEvent } from '@/shared/lib/analytics';
 import { categoryById } from '@/shared/constants/categories';
 import { validateAdd } from '@/features/cart/lib/cartLogic';
+import { useBcvRate } from '@/shared/hooks/useBcvRate';
+import { formatBs, usdToBs } from '@/shared/lib/format';
 import { VOICE } from '@/shared/constants/brand';
 
-/** Ficha de producto: galería, variantes, precio dual, stock en vivo, relacionados. */
+/** Ficha de producto: galería, variantes, precio en Bs. en vivo, stock, relacionados. */
 export default function ProductPage() {
   const { slug } = useParams<{ slug: string }>();
   const { data: product, isLoading } = useProduct(slug);
@@ -26,6 +28,7 @@ export default function ProductPage() {
   const [qty, setQty] = useState(1);
   const [liveStockTotal, setLiveStockTotal] = useState<number | null>(null);
   const { addItem } = useCart();
+  const rate = useBcvRate();
 
   useDocumentTitle(product?.name ?? 'Producto');
 
@@ -116,6 +119,10 @@ export default function ProductPage() {
     if (ok) toast.success('En el carrito. Para. Resuelve. Sigue.');
   };
 
+  // Precio en Bs. en vivo (presentación; el oficial lo fija el backend al cotizar).
+  const priceUsd = variant?.priceUsd ?? product.basePriceUsd;
+  const bs = rate ? usdToBs(priceUsd, rate.rate) : null;
+
   return (
     <div className="spot-container py-8">
       <nav aria-label="Ruta" className="mb-6 spot-label">
@@ -161,14 +168,15 @@ export default function ProductPage() {
           <h1 className="mt-1 font-display text-3xl font-extrabold italic uppercase leading-tight text-paper sm:text-4xl">
             {product.name}
           </h1>
-          <div className="mt-3 flex items-center gap-3">
+          <div className="mt-3">
             <StockBadge stock={stock} />
-            <span className="spot-label">Stock en vivo</span>
           </div>
 
           <div className="mt-5">
-            <PriceTag usd={variant?.priceUsd ?? product.basePriceUsd} size="lg" />
-            <p className="mt-1 spot-label">Precio en Bs calculado al confirmar</p>
+            <p className="font-display text-3xl font-extrabold italic leading-tight text-signal">
+              {bs !== null ? formatBs(bs) : 'Bs. —'}
+            </p>
+            <p className="mt-1 spot-label">Tasa BCV</p>
           </div>
 
           {variants && variants.length > 1 && (
@@ -192,7 +200,9 @@ export default function ProductPage() {
                     }`}
                   >
                     {v.name}
-                    <span className="ml-2 font-display italic text-signal">${v.priceUsd.toFixed(2)}</span>
+                    <span className="ml-2 font-display italic text-signal">
+                      {rate ? formatBs(usdToBs(v.priceUsd, rate.rate)) : 'Bs. —'}
+                    </span>
                   </button>
                 ))}
               </div>

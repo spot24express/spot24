@@ -9,16 +9,21 @@ const pkg = JSON.parse(
 ) as { version: string };
 const APP_VERSION = `${pkg.version}-${Date.now()}`;
 
-// CSP de desarrollo: más laxa que producción (HMR necesita eval/inline/ws).
-// La CSP estricta de producción vive en netlify.toml.
+// CSP de desarrollo: más laxa que producción (HMR necesita eval/inline/ws),
+// pero DEBE permitir los dominios que Firebase Auth usa en el navegador:
+//   apis.google.com  → script gapi que inicializa el iframe de autenticación
+//   *.firebaseapp.com → iframe /__/auth/iframe (phone auth y popups)
+//   gstatic/google/recaptcha → reCAPTCHA invisible del login por teléfono
+// La CSP estricta de producción vive en netlify.toml (ya los incluye).
 const DEV_CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net",
   "style-src 'self' 'unsafe-inline'",
   "font-src 'self' data:",
   "img-src 'self' data: blob: https:",
-  "connect-src 'self' ws: wss: https:",
+  "connect-src 'self' ws: wss: https: blob:",
   "worker-src 'self' blob:",
+  "frame-src 'self' https://*.firebaseapp.com https://apis.google.com https://www.google.com https://www.recaptcha.net",
   "frame-ancestors 'none'",
 ].join('; ');
 

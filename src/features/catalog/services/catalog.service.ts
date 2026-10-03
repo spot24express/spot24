@@ -9,6 +9,7 @@ import {
   where, type DocumentData, type QueryDocumentSnapshot, type Query,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
+import { logger } from '@/shared/lib/logger';
 import type { CatalogQuery, Product } from '../types';
 import type { Page } from '@/shared/types';
 import { CATEGORIES, type CategoryDef } from '@/shared/constants/categories';
@@ -70,6 +71,18 @@ function mapProduct(id: string, data: DocumentData): Product {
 
 /* ───────────────────────────── API pública ───────────────────────────── */
 
+/** Mapa de un documento de categoría (compartido por lectura y vigía en vivo). */
+function mapCategory(id: string, c: DocumentData, i: number): CategoryDef {
+  return {
+    id,
+    code: String(i + 1).padStart(2, '0'),
+    name: String(c.name ?? ''),
+    tagline: String(c.tagline ?? ''),
+    imageUrl: typeof c.imageUrl === 'string' && c.imageUrl ? c.imageUrl : undefined,
+    active: c.active !== false,
+  };
+}
+
 /** Categorías desde Firestore (gestionadas por el admin); respaldo local si aún no hay datos. */
 export async function listCategories(): Promise<CategoryDef[]> {
   try {
@@ -80,17 +93,7 @@ export async function listCategories(): Promise<CategoryDef[]> {
     );
     if (snap.empty) return [...CATEGORIES];
     return snap.docs
-      .map((d, i) => {
-        const c = d.data();
-        return {
-          id: d.id,
-          code: String(i + 1).padStart(2, '0'),
-          name: String(c.name ?? ''),
-          tagline: String(c.tagline ?? ''),
-          imageUrl: typeof c.imageUrl === 'string' && c.imageUrl ? c.imageUrl : undefined,
-          active: c.active !== false,
-        };
-      })
+      .map((d, i) => mapCategory(d.id, d.data(), i))
       .filter((c) => c.name && c.active !== false);
   } catch {
     return [...CATEGORIES];
@@ -142,7 +145,9 @@ export async function getProductBySlug(slug: string): Promise<Product | null> {
     query(collection(fb.db, PRODUCTS), where('slug', '==', slug), fbLimit(1)),
   );
   const first = snap.docs[0];
-  return first ? mapProduct(first.id, first.data()) : null;
+  // Producto inactivo = inexistente para el público (enlace directo/indexado no filtra).
+  const p = first ? mapProduct(first.id, first.data()) : null;
+  return p && p.active ? p : null;
 }
 
 export async function getVariants(productId: string): Promise<import('../types').ProductVariant[]> {
@@ -203,6 +208,77 @@ export async function getRelated(product: Product, max = 4): Promise<Product[]> 
     .map((d) => mapProduct(d.id, d.data()))
     .filter((p) => p.active && p.id !== product.id)
     .slice(0, max);
+}
+
+/* ───────────────────── Vigías en vivo (cambios del admin) ─────────────────────
+ * onSnapshot con firma comparada: disparan el callback SOLO cuando el contenido
+ * cambió de verdad (el primer disparo de Firestore entrega el estado inicial y
+ * se ignora). Cero coste extra de lecturas más allá del propio listener. */
+
+/** Vigía de categorías: altas, edición de nombre/imagen y activar/desactivar. */
+export function subscribeCategoryChanges(cb: () => void): () => void {
+  let unsub: (() => void) | null = null;
+  let cancelled = false;
+  let prev: string | null = null;
+  void loadFirebase().then((fb) => {
+    if (!fb || cancelled) return;
+    unsub = onSnapshot(
+      query(collection(fb.db, 'categories'), orderBy('createdAt', 'asc'), fbLimit(60)),
+      (snap) => {
+        const sig = JSON.stringify(snap.docs.map((d, i) => mapCategory(d.id, d.data(), i)));
+        if (prev !== null && sig !== prev) cb();
+        prev = sig;
+      },
+      (err) => logger.warn('vigía categorías detenido', err),
+    );
+  });
+  return () => {
+    cancelled = true;
+    unsub?.();
+  };
+}
+
+/** Pulso del catálogo de productos: dos vigías de 1 documento — el último
+ *  EDITADO (updatedAt) y el más RECIENTE (createdAt). Altas, ediciones de
+ *  datos/imagen/precio/stock y borrados relevantes mueven una cabeza y
+ *  disparan el callback. Coste mínimo: 2 lecturas por cambio. */
+export function subscribeCatalogPulse(cb: () => void): () => void {
+  let cancelled = false;
+  let unsubs: Array<() => void> | null = null;
+  const heads: { u: string | null; c: string | null } = { u: null, c: null };
+  let prev: string | null = null;
+  const evaluate = () => {
+    if (heads.u === null || heads.c === null) return; // estado inicial incompleto
+    const pair = `${heads.u}~${heads.c}`;
+    if (prev !== null && pair !== prev) cb();
+    prev = pair;
+  };
+  void loadFirebase().then((fb) => {
+    if (!fb || cancelled) return;
+    const u1 = onSnapshot(
+      query(collection(fb.db, PRODUCTS), orderBy('updatedAt', 'desc'), fbLimit(1)),
+      (snap) => {
+        const d = snap.docs[0];
+        heads.u = d ? `${d.id}|${String(d.get('updatedAt') ?? '')}` : '';
+        evaluate();
+      },
+      (err) => logger.warn('vigía pulso updatedAt detenido', err),
+    );
+    const u2 = onSnapshot(
+      query(collection(fb.db, PRODUCTS), orderBy('createdAt', 'desc'), fbLimit(1)),
+      (snap) => {
+        const d = snap.docs[0];
+        heads.c = d ? `${d.id}|${String(d.get('createdAt') ?? '')}` : '';
+        evaluate();
+      },
+      (err) => logger.warn('vigía pulso createdAt detenido', err),
+    );
+    unsubs = [u1, u2];
+  });
+  return () => {
+    cancelled = true;
+    unsubs?.forEach((u) => u());
+  };
 }
 
 /* Re-export para uso interno de los hooks */

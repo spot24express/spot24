@@ -1,6 +1,7 @@
 /**
- * Ajustes · Datos de pago (settings/payment_accounts).
- * La cuenta de Pago Móvil que el cliente ve en el paso de pago del checkout.
+ * Ajustes · Datos de pago (settings/payment_accounts) + Operación (settings/general).
+ * · La cuenta de Pago Móvil que el cliente ve en el paso de pago del checkout.
+ * · IVA %, WhatsApp de soporte y datos del retiro en tienda.
  * Guardar aquí aplica al instante en producción — sin deploy, sin código.
  */
 import { useEffect, useState } from 'react';
@@ -12,9 +13,13 @@ import { ListSkeleton } from '@/shared/components/ui/Skeleton';
 import { ErrorState } from '@/shared/components/ui/States';
 import { VE_BANKS, DEFAULT_PAYMENT_ACCOUNTS } from '@/shared/constants/brand';
 import type { PaymentAccount } from '@/shared/constants/brand';
-import { getPaymentAccounts, savePaymentAccounts } from '@/shared/services/settings.service';
+import {
+  getPaymentAccounts, savePaymentAccounts,
+  getGeneralSettings, saveGeneralSettings, GENERAL_SEED,
+} from '@/shared/services/settings.service';
 import { isValidPhoneVE, isValidEmail, sanitizeDigits, sanitizeText } from '@/shared/lib/validation';
 import { userMessage } from '@/shared/lib/errors';
+import { waHref } from '@/shared/lib/whatsapp';
 
 /** RIF venezolano: letra inicial + 8 dígitos + verificador (J-12345678-9). */
 const RIF_RE = /^[JGVEP]-\d{8}-\d$/;
@@ -29,6 +34,15 @@ interface AccountForm {
 
 const EMPTY_FORM: AccountForm = { bank: '', rif: '', phone: '', accountNumber: '', email: '' };
 
+interface GeneralForm {
+  ivaPercent: string;
+  whatsappNumber: string;
+  pickupAddress: string;
+  pickupHours: string;
+}
+
+const EMPTY_GENERAL: GeneralForm = { ivaPercent: '0', whatsappNumber: '', pickupAddress: '', pickupHours: '' };
+
 function toForm(a: PaymentAccount): AccountForm {
   return {
     bank: a.bank,
@@ -42,10 +56,13 @@ function toForm(a: PaymentAccount): AccountForm {
 export default function AdminSettingsPage() {
   useDocumentTitle('Ajustes');
   const [form, setForm] = useState<AccountForm>(EMPTY_FORM);
+  const [general, setGeneral] = useState<GeneralForm>(EMPTY_GENERAL);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingGeneral, setSavingGeneral] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [savedGeneralAt, setSavedGeneralAt] = useState<number | null>(null);
   /** De dónde salió lo que ves: 'seed' = placeholders del código, 'firestore' = ya guardado. */
   const [source, setSource] = useState<'seed' | 'firestore' | null>(null);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
@@ -53,8 +70,8 @@ export default function AdminSettingsPage() {
   const load = () => {
     setLoading(true);
     setError(false);
-    void getPaymentAccounts()
-      .then((accs) => {
+    void Promise.all([getPaymentAccounts(), getGeneralSettings()])
+      .then(([accs, gen]) => {
         if (accs && accs.length > 0 && accs[0]) {
           setForm(toForm(accs[0]));
           setSource('firestore');
@@ -64,12 +81,49 @@ export default function AdminSettingsPage() {
           setForm(toForm(DEFAULT_PAYMENT_ACCOUNTS[0] ?? { method: 'pago_movil', bank: '', rif: '' }));
           setSource('seed');
         }
+        const g = gen ?? GENERAL_SEED;
+        setGeneral({
+          ivaPercent: String(g.ivaPercent),
+          whatsappNumber: g.whatsappNumber,
+          pickupAddress: g.pickupAddress,
+          pickupHours: g.pickupHours,
+        });
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
   };
 
   useEffect(load, []);
+
+  /** Guarda la sección Operación (IVA, WhatsApp, retiro). */
+  const saveGeneral = async () => {
+    const e: Record<string, string | null> = {};
+    const ivaRaw = general.ivaPercent.trim().replace(',', '.');
+    const ivaN = Number(ivaRaw === '' ? '0' : ivaRaw);
+    if (!Number.isFinite(ivaN) || ivaN < 0 || ivaN > 100) e['ivaPercent'] = 'IVA entre 0 y 100 (0 = sin IVA).';
+    const wa = general.whatsappNumber.trim();
+    if (wa && !isValidPhoneVE(wa) && !/^\+?58\d{10}$/.test(wa.replace(/[\s-]/g, ''))) {
+      e['whatsappNumber'] = 'WhatsApp: 04241234567 (o vacío para ocultar el botón).';
+    }
+    setErrors(e);
+    if (Object.values(e).some((x) => x)) return;
+
+    setSavingGeneral(true);
+    try {
+      await saveGeneralSettings({
+        ivaPercent: Math.round(ivaN * 100) / 100,
+        whatsappNumber: wa.replace(/[\s-]/g, ''),
+        pickupAddress: sanitizeText(general.pickupAddress, 200),
+        pickupHours: sanitizeText(general.pickupHours, 60),
+      });
+      setSavedGeneralAt(Date.now());
+      toast.success('Operación guardada: IVA, WhatsApp y retiro ya están en vivo.');
+    } catch (err) {
+      toast.error(userMessage(err));
+    } finally {
+      setSavingGeneral(false);
+    }
+  };
 
   const save = async () => {
     const e: Record<string, string | null> = {};
@@ -105,9 +159,9 @@ export default function AdminSettingsPage() {
 
   return (
     <div className="max-w-3xl">
-      <h2 className="font-display text-xl font-bold italic uppercase text-paper">Datos de pago</h2>
+      <h2 className="font-display text-xl font-bold italic uppercase text-paper">Ajustes de la tienda</h2>
       <p className="spot-subtitle mt-1 mb-6">
-        La cuenta de Pago Móvil que el cliente ve al pagar. Guardas aquí y aplica al instante — sin deploy.
+        Datos de pago y operación. Guardas aquí y aplica al instante — sin deploy.
       </p>
 
       {error ? (
@@ -127,7 +181,7 @@ export default function AdminSettingsPage() {
 
           <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Cuenta de recaudación">
             <h3 className="font-display text-lg font-bold italic uppercase text-paper">
-              Cuenta de recaudación · Pago Móvil
+              Datos de pago · Pago Móvil
             </h3>
             <div className="mt-4 grid gap-4">
               <Select
@@ -189,7 +243,71 @@ export default function AdminSettingsPage() {
             </div>
           </section>
 
-          {/* Vista previa idéntica al recuadro del checkout */}
+          {/* ── OPERACIÓN: IVA + WhatsApp + retiro en tienda ── */}
+          <section className="mt-8 rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Operación">
+            <h3 className="font-display text-lg font-bold italic uppercase text-paper">
+              Operación · IVA, WhatsApp y retiro
+            </h3>
+            <p className="mt-1 text-sm text-muted">
+              Estos valores los usa el checkout y toda la app al instante. IVA 0 = sin IVA
+              (los precios se muestran tal cual). Si activas IVA, se suma sobre subtotal + envío.
+            </p>
+            <div className="mt-4 grid gap-4">
+              <Input
+                label="IVA (%) — 0 para desactivado"
+                value={general.ivaPercent}
+                onChange={(ev) => setGeneral((g) => ({ ...g, ivaPercent: ev.target.value.replace(/[^0-9.,]/g, '') }))}
+                placeholder="16"
+                inputMode="decimal"
+                error={errors['ivaPercent']}
+              />
+              <Input
+                label="WhatsApp de soporte (vacío = botón oculto)"
+                type="tel"
+                value={general.whatsappNumber}
+                onChange={(ev) => setGeneral((g) => ({ ...g, whatsappNumber: ev.target.value }))}
+                placeholder="04241234567"
+                error={errors['whatsappNumber']}
+              />
+              <Input
+                label="Dirección del local para retiro"
+                value={general.pickupAddress}
+                onChange={(ev) => setGeneral((g) => ({ ...g, pickupAddress: ev.target.value }))}
+                placeholder="Av. Principal, Local SPOT 24, Maracay, Aragua"
+                error={errors['pickupAddress']}
+              />
+              <Input
+                label="Horario del local (opcional)"
+                value={general.pickupHours}
+                onChange={(ev) => setGeneral((g) => ({ ...g, pickupHours: ev.target.value }))}
+                placeholder="Lun–Sáb 8:00–20:00 · Dom 8:00–14:00"
+                error={errors['pickupHours']}
+              />
+            </div>
+            <div className="mt-6 flex flex-wrap items-center gap-4">
+              <Button size="lg" loading={savingGeneral} onClick={() => void saveGeneral()}>
+                Guardar operación
+              </Button>
+              {savedGeneralAt && (
+                <p className="text-sm text-muted">
+                  Última actualización: {new Date(savedGeneralAt).toLocaleTimeString('es-VE')}
+                </p>
+              )}
+            </div>
+            {waHref(general.whatsappNumber) && (
+              <p className="mt-4 text-sm text-muted">
+                Enlace que verá el cliente:{' '}
+                <a
+                  href={waHref(general.whatsappNumber) ?? '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-signal underline"
+                >
+                  probar WhatsApp
+                </a>
+              </p>
+            )}
+          </section>
           <section className="mt-8" aria-label="Vista previa">
             <p className="spot-label mb-2">Vista previa — así lo ve el cliente en el checkout</p>
             <div className="rounded-brand border-2 border-dashed border-line bg-ink p-4">

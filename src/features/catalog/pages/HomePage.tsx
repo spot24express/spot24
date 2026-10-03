@@ -3,11 +3,11 @@ import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { SpeedDivider, SpeedLines } from '@/shared/components/brand/Logo';
 import { ProductGridSkeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState, ErrorState } from '@/shared/components/ui/States';
-import { useCategories, useProductList } from '../hooks/useCatalog';
+import { useCategories, useProductList, usePromos } from '../hooks/useCatalog';
+import { useZones } from '@/features/delivery/hooks/useZones';
 import { CategoryCard } from '../components/CategoryCard';
 import { ProductCard } from '../components/ProductCard';
 import { SearchBar } from '../components/SearchBar';
-import { listActivePromos, type PromoSlide } from '../services/promos.service';
 import { VOICE } from '@/shared/constants/brand';
 
 /** Fotos del local para el banner (limpias, sin texto superpuesto).
@@ -50,14 +50,21 @@ interface Slide {
   caption?: string;
 }
 
-/** Home: hero con buscador de primero + Visítanos (fachada + carrusel de promos). */
+/** Home: hero con buscador de primero + cobertura + Visítanos (fachada + carrusel de promos). */
 export default function HomePage() {
   useDocumentTitle('Tu parada segura. 24/7');
   const { data: categories } = useCategories();
   const { data: page, isError, refetch } = useProductList({}, 8);
+  const { data: zones } = useZones();
 
-  // Promos del carrusel: null = cargando, [] = sin promos activas (usa BANNER).
-  const [promos, setPromos] = useState<PromoSlide[] | null>(null);
+  // Cobertura real (zonas activas del admin): ETA mínimo y máximo de Maracay.
+  const activeZones = zones?.filter((z) => z.active) ?? [];
+  const etaMin = activeZones.length ? Math.min(...activeZones.map((z) => z.etaMinMinutes)) : null;
+  const etaMax = activeZones.length ? Math.max(...activeZones.map((z) => z.etaMaxMinutes)) : null;
+
+  // Promos del carrusel EN VIVO: undefined = cargando, [] = sin promos activas
+  // (usa BANNER). El vigía refresca al instante cuando el admin edita promos.
+  const { data: promos } = usePromos();
 
   // Carrusel: avanza solo cada 5 s; se pausa mientras el usuario interactúa.
   const trackRef = useRef<HTMLDivElement>(null);
@@ -65,22 +72,11 @@ export default function HomePage() {
   const [paused, setPaused] = useState(false);
   const resumeTimer = useRef<number | null>(null);
 
+  // Cuando cambia la lista de promos (alta/edición del admin), el carrusel
+  // vuelve a arrancar desde el inicio.
   useEffect(() => {
-    let alive = true;
-    void listActivePromos()
-      .then((p) => {
-        if (alive) {
-          setPromos(p);
-          setSlide(0); // el carrusel arranca desde el inicio con las promos
-        }
-      })
-      .catch(() => {
-        if (alive) setPromos([]); // ante fallo, el banner del local sigue en pie
-      });
-    return () => {
-      alive = false;
-    };
-  }, []);
+    setSlide(0);
+  }, [promos?.length]);
 
   const slides: Slide[] =
     promos && promos.length > 0
@@ -132,6 +128,24 @@ export default function HomePage() {
         </p>
         <div className="mt-8">
           <SearchBar />
+        </div>
+      </section>
+
+      {/* COBERTURA — operamos en Maracay: retiro en tienda + envío por zona */}
+      <section className="mt-4" aria-label="Cobertura de entrega">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-brand border-2 border-line bg-surface-1 px-4 py-3">
+          <span className="inline-flex items-center gap-1.5 font-display text-sm font-bold italic uppercase text-signal">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+              <path d="M12 21s-7-5.6-7-11a7 7 0 0 1 14 0c0 5.4-7 11-7 11z" />
+              <circle cx="12" cy="10" r="2.6" />
+            </svg>
+            Maracay, Aragua
+          </span>
+          <p className="text-sm text-muted">
+            {etaMin !== null && etaMax !== null
+              ? `Envío a domicilio en ${etaMin}–${etaMax} min · Retiro en tienda sin costo`
+              : 'Envío a domicilio por zonas · Retiro en tienda sin costo'}
+          </p>
         </div>
       </section>
 

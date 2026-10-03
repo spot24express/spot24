@@ -28,10 +28,12 @@ describe('sanitización', () => {
 });
 
 describe('validadores venezolanos', () => {
-  it('teléfonos móviles válidos', () => {
+  it('teléfonos móviles válidos (0412, 0414, 0416, 0422, 0424, 0426)', () => {
     expect(isValidPhoneVE('04141234567')).toBe(true);
     expect(isValidPhoneVE('0412-123-4567')).toBe(true);
     expect(isValidPhoneVE('4141234567')).toBe(true);
+    expect(isValidPhoneVE('04221234567')).toBe(true);
+    expect(isValidPhoneVE('04261234567')).toBe(true);
     expect(isValidPhoneVE('0412123456')).toBe(false);
     expect(isValidPhoneVE('03141234567')).toBe(false);
     expect(isValidPhoneVE('05141234567')).toBe(false);
@@ -42,17 +44,21 @@ describe('validadores venezolanos', () => {
     expect(normalizePhoneVE('0414 123 4567')).toBe('04141234567');
   });
 
-  it('cédulas V-/E- con 1 a 8 dígitos', () => {
+  it('cédulas con o sin prefijo V-/E- (1 a 8 dígitos)', () => {
     expect(isValidCedulaVE('V-12345678')).toBe(true);
     expect(isValidCedulaVE('e87654321')).toBe(true);
+    expect(isValidCedulaVE('12345678')).toBe(true);
+    expect(isValidCedulaVE('12.345.678')).toBe(true);
     expect(isValidCedulaVE('V-123456789')).toBe(false);
     expect(isValidCedulaVE('X-123')).toBe(false);
     expect(normalizeCedulaVE('v12345678')).toBe('V-12345678');
+    expect(normalizeCedulaVE('12.345.678')).toBe('12345678');
   });
 
-  it('referencias de pago: 6-20 dígitos', () => {
+  it('referencias de pago: exactamente los últimos 6 dígitos', () => {
     expect(isValidPaymentReference('123456')).toBe(true);
     expect(isValidPaymentReference('12345')).toBe(false);
+    expect(isValidPaymentReference('1234567')).toBe(false);
     expect(isValidPaymentReference('12 456')).toBe(false);
     expect(isValidPaymentReference('AB12-34')).toBe(false);
   });

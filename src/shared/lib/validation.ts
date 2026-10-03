@@ -35,8 +35,8 @@ export function isValidEmail(value: string): boolean {
   return EMAIL_RE.test(value.trim());
 }
 
-/** Operadoras venezolanas: 0412 0414 0416 0424 0426 (+0422 fixed line-less) */
-const VE_MOBILE_PREFIXES = ['0412', '0414', '0416', '0424', '0426'];
+/** Operadoras venezolanas: Movilnet, Movistar, Digitel (todos los prefijos móviles). */
+const VE_MOBILE_PREFIXES = ['0412', '0414', '0416', '0422', '0424', '0426'];
 
 /** Acepta 04141234567 / 0414-123-4567 / 4141234567 → normaliza a 11 dígitos con 0. */
 export function normalizePhoneVE(value: string): string {
@@ -51,21 +51,31 @@ export function isValidPhoneVE(value: string): boolean {
   return VE_MOBILE_PREFIXES.some((p) => d.startsWith(p));
 }
 
-/** Cédula venezolana: V-12345678 / E-87654321 (1 a 8 dígitos). */
+/**
+ * Cédula venezolana SIN exigir prefijo: acepta 12345678, V-12345678,
+ * E-87654321, v12345678 (con o sin puntos). 1 a 8 dígitos.
+ */
 export function isValidCedulaVE(value: string): boolean {
-  const m = /^[VEve]-?\d{1,8}$/.exec(value.trim());
-  return m !== null;
+  const clean = value.trim().toUpperCase().replace(/[\s.]/g, '');
+  return /^(?:[VE]-?)?\d{1,8}$/.test(clean);
 }
 
+/**
+ * Normaliza conservando lo que escribió el usuario: solo añade el guion
+ * V-/E- si él puso la letra; los dígitos solos quedan como dígitos.
+ */
 export function normalizeCedulaVE(value: string): string {
-  const clean = value.trim().toUpperCase().replace(/\s/g, '');
+  const clean = value.trim().toUpperCase().replace(/[\s.]/g, '');
   if (/^[VE]\d{1,8}$/.test(clean)) return `${clean[0]}-${clean.slice(1)}`;
   return clean;
 }
 
-/** Referencia de Pago Móvil: 6–20 dígitos. */
+/**
+ * Referencia de Pago Móvil: los ÚLTIMOS 6 dígitos (exactamente 6), tal como
+ * los muestra el SMS o el resumen del banco.
+ */
 export function isValidPaymentReference(value: string): boolean {
-  return /^\d{6,20}$/.test(value.trim());
+  return /^\d{6}$/.test(value.trim());
 }
 
 /** Números de dinero: positivo, hasta 2 decimales, tope defensivo. */
@@ -96,8 +106,10 @@ export function sanitizeFileName(name: string): string {
     .slice(0, 80);
 }
 
-/** MIME y tamaño permitidos para comprobantes e imágenes de producto. */
+/** MIME permitidos para comprobantes e imágenes de producto. */
 export const RECEIPT_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'] as const;
+/** El comprobante del cliente va a imgbb: solo imágenes (el PDF no aplica). */
+export const RECEIPT_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
 export const PRODUCT_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
 export const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // 5 MB
 

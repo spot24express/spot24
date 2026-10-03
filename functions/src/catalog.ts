@@ -34,18 +34,24 @@ export async function coreAdjustStock(ctx: CoreCtx): Promise<unknown> {
   let newTotal = 0;
 
   await db().runTransaction(async (tx) => {
+    // REGLA DE TRANSACCIONES FIRESTORE: TODAS las lecturas primero.
+    // El tx.get de la colección de variantes iba después del tx.update de
+    // la variante → «Firestore transactions require all reads to be
+    // executed before all writes». Se lee TODO, luego se escribe TODO.
     const [vsnap, psnap] = await Promise.all([tx.get(vref), tx.get(pref)]);
     if (!vsnap.exists) throw new HttpsError('not-found', 'Variante no encontrada.');
     const stock = Number(vsnap.data()?.['stock'] ?? 0);
     const next = Math.max(0, stock + delta);
-    tx.update(vref, { stock: next });
 
-    // Recalcula stockTotal del padre.
+    // Recalcula stockTotal del padre (lectura ANTES de escribir).
     const variantsSnap = await tx.get(db().collection(`products/${productId}/variants`));
     const perVariant = new Map<string, number>();
     variantsSnap.docs.forEach((d) => perVariant.set(d.id, Number(d.data()['stock'] ?? 0)));
     perVariant.set(variantId, next);
     newTotal = [...perVariant.values()].reduce((a, b) => a + b, 0);
+
+    // ── A partir de aquí SOLO escrituras ──
+    tx.update(vref, { stock: next });
     if (psnap.exists) {
       tx.update(pref, { stockTotal: newTotal, updatedAt: Date.now() });
     }

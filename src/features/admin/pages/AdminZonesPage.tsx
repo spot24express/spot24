@@ -106,7 +106,7 @@ function ZoneModal({
 }) {
   const [form, setForm] = useState({
     name: zone?.name ?? '',
-    state: zone?.state ?? 'Distrito Capital',
+    state: zone?.state ?? 'Aragua',
     feeUsd: zone?.feeUsd ?? 2.5,
     freeFromUsd: zone?.freeFromUsd ?? 40,
     etaMinMinutes: zone?.etaMinMinutes ?? 45,
@@ -119,6 +119,29 @@ function ZoneModal({
       : [{ start: '12:00', end: '23:59', label: '12:00 pm – 12:00 am' }],
   );
   const [busy, setBusy] = useState(false);
+
+  // FIX: el modal vive montado aunque esté cerrado, así que los useState
+  // iniciales solo se evaluaron con zone=null (vacíos). Sin esta sincronía,
+  // «Editar» abría el formulario sin los datos de la zona. Cada vez que se
+  // abre, el formulario se recarga con la zona a editar (o en blanco si es
+  // una zona nueva).
+  useEffect(() => {
+    if (!open) return;
+    setForm({
+      name: zone?.name ?? '',
+      state: zone?.state ?? 'Aragua',
+      feeUsd: zone?.feeUsd ?? 2.5,
+      freeFromUsd: zone?.freeFromUsd ?? 40,
+      etaMinMinutes: zone?.etaMinMinutes ?? 45,
+      etaMaxMinutes: zone?.etaMaxMinutes ?? 90,
+      active: zone?.active ?? true,
+    });
+    setWindows(
+      zone?.windows?.length
+        ? zone.windows
+        : [{ start: '12:00', end: '23:59', label: '12:00 pm – 12:00 am' }],
+    );
+  }, [open, zone]);
 
   const setWin = (i: number, patch: Partial<Zone['windows'][number]>) =>
     setWindows((ws) => ws.map((w, j) => (j === i ? { ...w, ...patch } : w)));

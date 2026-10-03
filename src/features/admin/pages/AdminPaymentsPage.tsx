@@ -107,23 +107,21 @@ export default function AdminPaymentsPage() {
               <Field label="Teléfono" value={selected.contact.phoneMasked} />
             </dl>
 
-            {/* Visor de comprobante (Storage) */}
+            {/* Visor de comprobante (imgbb vía fn-uploadReceipt) */}
             <div className="rounded-brand border-2 border-line bg-ink p-4">
               <p className="spot-label mb-2">Comprobante</p>
-              {selected.payment.hasReceipt ? (
-                <img
-                  src={`/receipts/${selected.id}/latest`} // URL firmada real la provee Storage en producción
-                  alt="Comprobante"
-                  className="max-h-72 w-full rounded-brand object-contain"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).replaceWith(
-                      Object.assign(document.createElement('p'), {
-                        textContent: 'Comprobante disponible en Storage (orders/' + selected.id + ').',
-                        className: 'text-sm text-muted',
-                      }),
-                    );
-                  }}
-                />
+              {selected.payment.hasReceipt && selected.payment.receiptUrl ? (
+                <a href={selected.payment.receiptUrl} target="_blank" rel="noreferrer">
+                  <img
+                    src={selected.payment.receiptUrl}
+                    alt="Comprobante de pago"
+                    className="max-h-72 w-full rounded-brand object-contain"
+                  />
+                </a>
+              ) : selected.payment.hasReceipt ? (
+                <p className="text-sm text-muted">
+                  Comprobante archivado en Storage (orders/{selected.id}).
+                </p>
               ) : (
                 <p className="text-sm text-muted">
                   El cliente aún no sube el archivo. Solicítalo por teléfono antes de aprobar.

@@ -64,7 +64,7 @@ export default function AdminProductsPage() {
       </div>
 
       <Input
-        label="Buscar por nombre o marca"
+        label="Buscar por nombre, marca o código"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
         className="max-w-md"
@@ -84,7 +84,8 @@ export default function AdminProductsPage() {
                   <div className="min-w-0">
                     <p className="truncate font-semibold text-paper">{p.name}</p>
                     <p className="spot-label">
-                      {p.brand} · Stock {p.stockTotal} · ${p.basePriceUsd.toFixed(2)}
+                      {p.brand}
+                      {p.code ? ` · ${p.code}` : ''} · Stock {p.stockTotal} · ${p.basePriceUsd.toFixed(2)}
                     </p>
                   </div>
                 </div>
@@ -133,6 +134,7 @@ function ProductModal({
   onSaved: () => void;
 }) {
   const [form, setForm] = useState({
+    code: product?.code ?? '',
     name: product?.name ?? '',
     brand: product?.brand ?? '',
     categoryId: product?.categoryId ?? '',
@@ -172,6 +174,10 @@ function ProductModal({
 
   const save = async () => {
     // Validación ANTES de tocar Firebase: mensajes claros en vez del aviso genérico.
+    if (form.code.trim().length < 1) {
+      toast.error('Escribe el código del producto.');
+      return;
+    }
     if (form.name.trim().length < 2) {
       toast.error('El nombre del producto necesita al menos 2 letras.');
       return;
@@ -200,7 +206,7 @@ function ProductModal({
     try {
       await adminSaveProduct({
         id: product?.id,
-        ...form,
+        ...form, // incluye code (normaliza y valida unicidad el servicio)
         imageUrl: imageUrl.trim(),
         variants: [{
           id: variantId,
@@ -258,6 +264,16 @@ function ProductModal({
         <div className="grid gap-4 sm:grid-cols-2">
           <Input label="Nombre" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
           <Input label="Marca" value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} required />
+          <Input
+            label="Código"
+            value={form.code}
+            onChange={(e) => setForm((f) => ({ ...f, code: e.target.value.toUpperCase() }))}
+            maxLength={40}
+            autoComplete="off"
+            placeholder="Ej: AGU-600"
+            hint="Lo escribes tú (inventarios, pedidos). Único entre productos y editable."
+            required
+          />
           <Select label="Categoría" value={form.categoryId} onChange={(e) => setForm((f) => ({ ...f, categoryId: e.target.value }))} required>
             <option value="">Selecciona…</option>
             {categories.map((c) => (

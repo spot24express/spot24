@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from '@/shared/lib/toast';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { StatusBadge } from '@/shared/components/ui/Badge';
@@ -10,7 +10,6 @@ import { SpeedDivider } from '@/shared/components/brand/Logo';
 import { ListSkeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState } from '@/shared/components/ui/States';
 import { subscribeOrder, listOrderEvents, cancelOrder, uploadReceipt } from '../services/orders.service';
-import { STORAGE_AVAILABLE } from '@/shared/lib/backend';
 import type { Order, OrderEvent } from '../types';
 import { STATUS_CUSTOMER_TEXT, STATUS_LABELS, PAYMENT_METHOD_LABELS } from '@/shared/constants/orders';
 import { formatBs, formatUsd, maskReference } from '@/shared/lib/format';
@@ -21,6 +20,7 @@ import { canTransition } from '@/shared/constants/orders';
 /** Seguimiento en vivo: listener acotado a un documento (5.5). */
 export default function OrderDetailPage() {
   const { orderId } = useParams<{ orderId: string }>();
+  const navigate = useNavigate();
   useDocumentTitle('Seguimiento');
   const [order, setOrder] = useState<Order | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -58,15 +58,15 @@ export default function OrderDetailPage() {
         <EmptyState
           title="Pedido no encontrado"
           message="Revisa el enlace o vuelve a tus pedidos."
-          action={{ label: 'Mis pedidos', onClick: () => window.location.assign('/pedidos') }}
+          action={{ label: 'Mis pedidos', onClick: () => navigate('/pedidos') }}
         />
       </div>
     );
   }
 
   const canCancel = canTransition(order.status, 'cancelado');
-  const needsReceipt = STORAGE_AVAILABLE && !order.payment.hasReceipt && order.status !== 'entregado' && order.status !== 'cancelado';
-  const verificationOnly = !STORAGE_AVAILABLE && ['pendiente', 'en_verificacion'].includes(order.status);
+  const needsReceipt = !order.payment.hasReceipt && order.status !== 'entregado' && order.status !== 'cancelado';
+  const receiptToShow = order.payment.receiptUrl ?? null;
 
   const onUpload = async (file: File) => {
     setBusy(true);
@@ -76,7 +76,13 @@ export default function OrderDetailPage() {
       setReceiptOpen(true);
       toast.success('Comprobante recibido. En verificación a la brevedad.');
     } catch (e) {
-      toast.error(e instanceof AppError ? e.userMessage : userMessage(e));
+      // Si el servidor manda un motivo accionable (formato, tamaño…), se muestra;
+      // si no, el mensaje genérico de marca.
+      toast.error(
+        e instanceof AppError && e.message && e.message !== 'Error interno.' && e.message !== e.userMessage
+          ? e.message
+          : userMessage(e),
+      );
     } finally {
       setBusy(false);
     }
@@ -128,7 +134,22 @@ export default function OrderDetailPage() {
             <h2 className="font-display text-lg font-bold italic uppercase text-paper">Totales</h2>
             <dl className="mt-4 space-y-2">
               <Row label="Subtotal" value={formatUsd(order.totals.subtotalUsd)} />
-              <Row label="Envío" value={order.totals.shippingUsd === 0 ? 'Gratis' : formatUsd(order.totals.shippingUsd)} />
+              <Row
+                label="Envío"
+                value={
+                  order.totals.shippingUsd === 0
+                    ? order.delivery.mode === 'pickup'
+                      ? 'Retiro en tienda · Gratis'
+                      : 'Gratis'
+                    : formatUsd(order.totals.shippingUsd)
+                }
+              />
+              {(order.totals.ivaPercent ?? 0) > 0 && (
+                <Row
+                  label={`IVA (${String(order.totals.ivaPercent).replace('.', ',')}%)`}
+                  value={formatUsd(order.totals.ivaUsd ?? 0)}
+                />
+              )}
               <Row label="Total USD" value={formatUsd(order.totals.totalUsd)} strong />
               <Row label="Total Bs" value={formatBs(order.totals.totalVes)} />
             </dl>
@@ -150,7 +171,7 @@ export default function OrderDetailPage() {
                 <input
                   ref={fileRef}
                   type="file"
-                  accept="image/jpeg,image/png,image/webp,application/pdf"
+                  accept="image/jpeg,image/png,image/webp"
                   className="hidden"
                   aria-label="Subir comprobante"
                   onChange={(e) => {
@@ -161,27 +182,47 @@ export default function OrderDetailPage() {
                 <Button className="mt-4" variant="secondary" loading={busy} onClick={() => fileRef.current?.click()}>
                   Subir comprobante
                 </Button>
+                <p className="mt-2 text-xs text-muted">
+                  Captura de pantalla del pago (JPG, PNG o WebP). Con ella verificamos más rápido.
+                </p>
               </>
             )}
-            {verificationOnly && (
-              <p className="mt-4 rounded-brand border-2 border-line bg-ink p-3 text-sm text-muted">
-                Verificación por referencia: con la referencia de tu pago, el equipo confirma y tu pedido sigue su curso. No necesitas subir imagen.
-              </p>
+            {receiptToShow && (
+              <Button className="mt-4" variant="ghost" onClick={() => { setReceiptUrl(receiptToShow); setReceiptOpen(true); }}>
+                Ver comprobante subido
+              </Button>
             )}
           </section>
 
           <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
             <h2 className="font-display text-lg font-bold italic uppercase text-paper">Entrega</h2>
             <dl className="mt-3 space-y-2">
-              <Row label="Zona" value={order.delivery.zoneName || '—'} />
+              <Row label="Modalidad" value={order.delivery.mode === 'pickup' ? 'Retiro en tienda' : 'Envío a domicilio'} />
+              {order.delivery.mode === 'pickup' ? (
+                <Row label="Local" value={order.delivery.addressPreview || 'Retiro en tienda'} />
+              ) : (
+                <>
+                  <Row label="Zona" value={order.delivery.zoneName || '—'} />
+                  <Row label="Dirección" value={order.delivery.addressPreview || '—'} />
+                </>
+              )}
               <Row
-                label="Ventana"
+                label="Horario de entrega"
                 value={order.delivery.window.start && order.delivery.window.end ? `${order.delivery.window.start}–${order.delivery.window.end}` : 'Por confirmar'}
               />
-              <Row label="Dirección" value={order.delivery.addressPreview || '—'} />
               <Row label="Contacto" value={order.contact.name} />
               <Row label="Teléfono" value={order.contact.phoneMasked} />
             </dl>
+            {order.delivery.location && (
+              <a
+                className="mt-3 inline-block text-sm font-semibold text-signal underline"
+                href={`https://maps.google.com/?q=${order.delivery.location.lat},${order.delivery.location.lng}`}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Abrir ubicación GPS en Google Maps
+              </a>
+            )}
             {order.notes && <p className="mt-3 text-sm text-muted">Nota: {order.notes}</p>}
           </section>
 

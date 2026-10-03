@@ -17,6 +17,25 @@
  *  · Ante fallo se conserva la última tasa vigente (fail-open con flag).
  * Cores agnósticos del runtime: onSchedule/onCall y el scheduled de Netlify
  * reutilizan coreUpdateBcvRate/coreGetBcvRate.
+ *
+ * BLINDAJE DE TIEMPO (2026-10-02): el disparo manual fn-runBcvRate moría con
+ * «Task timed out after 30.00 seconds» (tope fijo de lambda-local en
+ * `netlify dev`; el timeout=26 de netlify.toml solo aplica en producción).
+ * Causas corregidas:
+ *  1. El «timeout» de httpsGet era de INACTIVIDAD de socket (req.setTimeout):
+ *     con el WAF del BCV respondiendo a cuentagotas JAMÁS disparaba y la
+ *     función colgaba hasta el kill externo. Ahora hay FECHA LÍMITE DURA que
+ *     destruye la conexión llegue o no llegue el fin del cuerpo.
+ *  2. El abort del fetch nativo se desarmaba (clearTimeout) ANTES de leer el
+ *     cuerpo (res.text()): una respuesta que goteaba podía colgar eternamente.
+ *     Ahora el temporizador cubre también la lectura del cuerpo.
+ *  3. Peor caso anterior: 15 + 15 + 15 = 45 s > 30 s local y > 26 s producción.
+ *     Presupuesto nuevo: 8 + 6 + 6 = 20 s de red + escritura Firestore ≈ 21 s.
+ *  4. Presupuesto TOTAL de 22 s en coreUpdateBcvRate (Promise.race): pase lo
+ *     que pase, la función termina, marca source 'fallback' y conserva la
+ *     última tasa vigente. Nunca más un TimeoutError.
+ *  5. User-Agent de navegador real: el WAF del BCV tarpaiteaba el UA de bot
+ *     «SPOT24-Bot/1.0» (sospecha principal del goteo).
  */
 import admin from 'firebase-admin';
 import https from 'node:https';
@@ -29,28 +48,63 @@ const db = () => admin.firestore(getAdminApp());
 
 const BCV_URL = 'https://www.bcv.org.ve/';
 
+/* Presupuestos de red (ver BLINDAJE DE TIEMPO arriba). */
+const FETCH_STRICT_MS = 8_000;   // fetch nativo (verificación TLS estricta)
+const FETCH_RELAXED_MS = 6_000;  // respaldo node:https (cadena TLS incompleta)
+const TOTAL_BUDGET_MS = 22_000;  // techo TOTAL de la lectura (red + parsing)
+
 const BCV_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (compatible; SPOT24-Bot/1.0; +https://spot24.com.ve)',
-  Accept: 'text/html',
+  // UA de navegador real: el WAF del BCV tarpaiteaba el UA de bot
+  // «SPOT24-Bot/1.0» (conexión a cuentagotas que nunca llegaba al end).
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml',
   'Accept-Language': 'es-VE,es;q=0.9',
 };
 
-/** GET HTTPS con agente concreto (permite el agente relajado solo para el BCV). */
-function httpsGet(url: string, agent: https.Agent, timeoutMs: number): Promise<{ status: number; location: string; html: string }> {
+interface HttpResult {
+  status: number;
+  location: string;
+  html: string;
+}
+
+/**
+ * GET HTTPS con agente concreto y FECHA LÍMITE DURA: aunque el servidor
+ * gotee bytes, a timeoutMs se destruye la conexión y la promesa termina
+ * (resolve o reject) una sola vez. La inactividad de socket queda como
+ * segunda red de seguridad.
+ */
+function httpsGet(url: string, agent: https.Agent, timeoutMs: number): Promise<HttpResult> {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let hardDeadline: NodeJS.Timeout;
+    const finish = (err: Error | null, val?: HttpResult): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardDeadline);
+      if (err) {
+        req.destroy();
+        reject(err);
+        return;
+      }
+      resolve(val!);
+    };
     const req = https.get(url, { agent, headers: BCV_HEADERS }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (c) => chunks.push(c as Buffer));
       res.on('end', () =>
-        resolve({
+        finish(null, {
           status: res.statusCode ?? 0,
           location: String(res.headers['location'] ?? ''),
           html: Buffer.concat(chunks).toString('utf8'),
         }),
       );
+      res.on('error', (e) => finish(e as Error));
     });
-    req.on('error', reject);
-    req.setTimeout(timeoutMs, () => req.destroy(new Error('timeout')));
+    hardDeadline = setTimeout(() => finish(new Error(`límite duro de ${timeoutMs}ms alcanzado`)), timeoutMs);
+    req.on('error', (e) => finish(e as Error));
+    // Red de seguridad adicional: inactividad total del socket.
+    req.setTimeout(timeoutMs, () => finish(new Error('socket inactivo')));
   });
 }
 
@@ -63,28 +117,33 @@ function httpsGet(url: string, agent: https.Agent, timeoutMs: number): Promise<{
  *    2026-09-30; era la causa del 'fallback' eterno). La tasa se sanea después
  *    (rango, formato, fecha valor y reglas del dueño), el sitio es de lectura
  *    pública y el agente relajado queda encapsulado en esta única función.
+ * Presupuesto total: 8 + 6 + 6 = 20 s en el peor caso.
  */
 async function fetchBcvHtml(): Promise<string | null> {
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15_000);
-    const res = await fetch(BCV_URL, {
-      signal: controller.signal,
-      headers: BCV_HEADERS,
-      redirect: 'follow',
-    });
-    clearTimeout(timeout);
-    if (res.ok) return await res.text();
-    logger.warn('BCV respondió', res.status);
+    // El abort cubre TAMBIÉN la lectura del cuerpo: clearTimeout solo al final.
+    const abortTimer = setTimeout(() => controller.abort(), FETCH_STRICT_MS);
+    try {
+      const res = await fetch(BCV_URL, {
+        signal: controller.signal,
+        headers: BCV_HEADERS,
+        redirect: 'follow',
+      });
+      if (res.ok) return await res.text();
+      logger.warn('BCV respondió', res.status);
+    } finally {
+      clearTimeout(abortTimer);
+    }
   } catch {
     /* cadena TLS incompleta o red: vamos al respaldo */
   }
 
   const relaxed = new https.Agent({ rejectUnauthorized: false });
   try {
-    let out = await httpsGet(BCV_URL, relaxed, 15_000);
+    let out = await httpsGet(BCV_URL, relaxed, FETCH_RELAXED_MS);
     if (out.status >= 300 && out.status < 400 && out.location) {
-      out = await httpsGet(new URL(out.location, BCV_URL).toString(), relaxed, 15_000);
+      out = await httpsGet(new URL(out.location, BCV_URL).toString(), relaxed, FETCH_RELAXED_MS);
     }
     return out.status === 200 ? out.html : null;
   } catch {
@@ -186,7 +245,18 @@ async function promote(
  *  4. Si el BCV no responde → conserva la vigente y marca source 'fallback'.
  */
 export async function coreUpdateBcvRate(): Promise<void> {
-  const { rate, fechaValor } = await fetchBcvUsd();
+  // Presupuesto TOTAL de lectura: pase lo que pase, esta función termina ANTES
+  // del tope externo (30.00 s de lambda-local en `netlify dev`; 26 s en
+  // producción) y registra el fallback. Nunca más un TimeoutError.
+  const { rate, fechaValor } = await Promise.race([
+    fetchBcvUsd(),
+    new Promise<BcvFetch>((resolve) =>
+      setTimeout(() => {
+        logger.warn(`BCV: presupuesto total de ${TOTAL_BUDGET_MS / 1000}s agotado → fallback`);
+        resolve({ rate: null, fechaValor: null });
+      }, TOTAL_BUDGET_MS),
+    ),
+  ]);
   const ref = db().collection('rates').doc('bcv');
   if (rate === null) {
     await ref.set({ source: 'fallback', lastAttemptAt: Date.now() }, { merge: true });
@@ -258,6 +328,9 @@ export async function coreGetBcvRate(_ctx: CoreCtx): Promise<unknown> {
     usdToVes: Number(d['usdToVes'] ?? 0),
     fechaValor: String(d['fechaValor'] ?? ''),
     updatedAt: Number(d['updatedAt'] ?? 0),
+    // Marca del ÚLTIMO INTENTO (exitoso o fallback): cambia en cada lectura
+    // del cron o del disparo manual, aunque la tasa vigente siga igual.
+    lastAttemptAt: Number(d['lastAttemptAt'] ?? 0),
     source: String(d['source'] ?? 'fallback'),
     nextUsdToVes: Number(d['nextUsdToVes'] ?? 0),
     nextFechaValor: String(d['nextFechaValor'] ?? ''),

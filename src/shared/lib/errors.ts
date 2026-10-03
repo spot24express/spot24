@@ -11,7 +11,8 @@ export type AppErrorCode =
   | 'stock'
   | 'reservation'
   | 'payment'
-  | 'rate-limit';
+  | 'rate-limit'
+  | 'code-duplicate';
 
 const USER_MESSAGES: Record<AppErrorCode, string> = {
   generic: 'Algo salió fuera de línea. Para. Resuelve. Sigue: reintenta en unos segundos.',
@@ -22,6 +23,7 @@ const USER_MESSAGES: Record<AppErrorCode, string> = {
   reservation: 'Tu reserva de stock venció. Para. Resuelve. Sigue: confirma de nuevo.',
   payment: 'No pudimos procesar el pago. Verifica los datos o intenta otro método.',
   'rate-limit': 'Demasiados intentos seguidos. Espera un momento y vuelve a intentar.',
+  'code-duplicate': 'Ese código ya lo usa otro producto. Escribe uno diferente.',
 };
 
 export class AppError extends Error {

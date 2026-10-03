@@ -12,6 +12,8 @@ export interface AddressData {
   zoneId: string;
   zoneName: string;
   details: string; // urbanización, calle, casa/piso, punto de referencia
+  /** Coordenadas GPS del cliente (obligatorias en delivery): las usa el mensajero. */
+  location?: { lat: number; lng: number } | null;
 }
 
 export interface UserProfile {

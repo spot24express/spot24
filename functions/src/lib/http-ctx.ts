@@ -8,6 +8,9 @@
  *  · App Check: header `X-Firebase-AppCheck`; se exige SOLO si
  *    APPCHECK_ENFORCE=true (enfoque monitorear → exigir, 6.2).
  *  · Errores: HttpsError → HTTP status + JSON { error: { code, message } }.
+ *    También normaliza errores CRUDOS de Firestore/Admin SDK que llegan con
+ *    código gRPC NUMÉRICO (p. ej. 9 = FAILED_PRECONDITION por un índice
+ *    compuesto faltante): antes escapaban como 500 «internal» opaco.
  * Sin CORS abierto: la PWA y las funciones viven en el mismo dominio.
  */
 import admin from 'firebase-admin';
@@ -30,6 +33,30 @@ const STATUS_BY_CODE: Record<string, number> = {
   'unavailable': 503,
 };
 
+/**
+ * Códigos gRPC numéricos → nombre canónico. Firestore/Admin SDK (vía gRPC)
+ * lanza errores crudos con `code` NUMÉRICO cuando falla algo por fuera de
+ * nuestros HttpsError: índice compuesto faltante = 9, transacción abortada
+ * tras reintentos = 10, caída de transporte = 14, etc. Sin esta tabla el
+ * errorResponse los convertía SIEMPRE en 500 con un code inservible.
+ */
+const NAME_BY_GRPC: Record<number, string> = {
+  1: 'unavailable',         // CANCELLED
+  3: 'invalid-argument',    // INVALID_ARGUMENT
+  4: 'unavailable',         // DEADLINE_EXCEEDED
+  5: 'not-found',           // NOT_FOUND
+  6: 'already-exists',      // ALREADY_EXISTS
+  7: 'permission-denied',   // PERMISSION_DENIED
+  8: 'resource-exhausted',  // RESOURCE_EXHAUSTED
+  9: 'failed-precondition', // FAILED_PRECONDITION (p. ej. índice faltante)
+  10: 'unavailable',        // ABORTED (transacción reintentada y vencida)
+  11: 'out-of-range',       // OUT_OF_RANGE
+  13: 'internal',           // INTERNAL
+  14: 'unavailable',        // UNAVAILABLE
+  15: 'internal',           // DATA_LOSS
+  16: 'unauthenticated',    // UNAUTHENTICATED
+};
+
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -38,16 +65,28 @@ function json(status: number, body: unknown): Response {
 }
 
 function errorResponse(e: unknown): Response {
-  const code = (e as { code?: string }).code ?? 'internal';
+  const rawCode = (e as { code?: unknown }).code;
+  // Normalización: gRPC numérico → nombre canónico; string canónico → tal
+  // cual; sin código → internal (error JS no controlado por nosotros).
+  const code =
+    typeof rawCode === 'number' && NAME_BY_GRPC[rawCode]
+      ? NAME_BY_GRPC[rawCode]
+      : typeof rawCode === 'string' && rawCode
+        ? rawCode
+        : 'internal';
+  // Con código (nuestro HttpsError o un Firestore crudo) el mensaje SÍ viaja:
+  // Firestore incluye datos accionables (p. ej. el link para crear un índice).
+  // Sin código es un error interno genuino: mensaje genérico, nada se filtra.
   const message =
-    (e as { code?: string }).code
-      ? String((e as Error).message ?? 'Error interno.')
-      : 'Error interno.';
+    rawCode !== undefined ? String((e as Error).message ?? 'Error interno.') : 'Error interno.';
   const status = STATUS_BY_CODE[code] ?? 500;
   if (status >= 500) {
     // Nunca PII: código + tipo + mensaje accionable. Nuestros mensajes son
     // estáticos y sin secretos; así el log de Netlify dice QUÉ falló.
     console.error(`[${code}]`, (e as Error)?.name ?? 'Error', '-', (e as Error)?.message ?? '');
+    // Stack completo (SOLO log, jamás en la respuesta): localiza archivo y
+    // línea exacta del fallo en la terminal de netlify dev.
+    if ((e as Error)?.stack) console.error(`[${code}] stack:`, (e as Error).stack);
   }
   return json(status, { error: { code, message } });
 }

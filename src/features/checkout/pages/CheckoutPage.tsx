@@ -30,9 +30,10 @@ import {
 } from '@/shared/lib/validation';
 import { userMessage, AppError } from '@/shared/lib/errors';
 import { trackEvent } from '@/shared/lib/analytics';
-import { formatBs, formatUsd } from '@/shared/lib/format';
-import type { CreateOrderResponse, QuoteResponse, ReservationResponse } from '../types';
+import { formatBs, formatUsd, usdToBs } from '@/shared/lib/format';
+import type { CreateOrderResponse, QuoteResponse, ReservationResponse, FulfillmentMode } from '../types';
 import type { PaymentMethod } from '@/shared/constants/orders';
+import { getGeneralSettings } from '@/shared/services/settings.service';
 
 const STEPS = ['Datos', 'Entrega', 'Pago', 'Confirmación'] as const;
 
@@ -40,12 +41,16 @@ interface ContactForm {
   name: string; cedula: string; phone: string;
 }
 interface AddressForm {
-  zoneId: string; state: string; city: string; details: string; notes: string;
+  zoneId: string; details: string; notes: string;
 }
 interface PaymentForm {
   method: PaymentMethod;
   banco: string; cedula: string; telefono: string; referencia: string; fecha: string;
 }
+
+/** Operación actual: solo Maracay, Aragua. Estado y ciudad se fijan aquí. */
+const ZONE_STATE = 'Aragua';
+const ZONE_CITY = 'Maracay';
 
 export default function CheckoutPage() {
   useDocumentTitle('Checkout');
@@ -55,13 +60,18 @@ export default function CheckoutPage() {
   const { data: zones } = useZones();
 
   const [step, setStep] = useState(0);
+  const [fulfillment, setFulfillment] = useState<FulfillmentMode>('delivery');
   const [contact, setContact] = useState<ContactForm>({ name: '', cedula: '', phone: '' });
-  const [address, setAddress] = useState<AddressForm>({ zoneId: '', state: '', city: '', details: '', notes: '' });
+  const [address, setAddress] = useState<AddressForm>({ zoneId: '', details: '', notes: '' });
+  const [gps, setGps] = useState<{ lat: number; lng: number } | null>(null);
   const [payment, setPayment] = useState<PaymentForm>({
     method: 'pago_movil', banco: '', cedula: '', telefono: '', referencia: '', fecha: '',
   });
+  const [pickupInfo, setPickupInfo] = useState<{ address: string; hours: string }>({ address: '', hours: '' });
   const [reservation, setReservation] = useState<ReservationResponse | null>(null);
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
+  const [quoteState, setQuoteState] = useState<'loading' | 'ok' | 'error'>('loading');
+  const [quoteAttempt, setQuoteAttempt] = useState(0);
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [busy, setBusy] = useState(false);
   const [gpsBusy, setGpsBusy] = useState(false);
@@ -93,22 +103,49 @@ export default function CheckoutPage() {
     }
   }, [user]);
 
-  // Cotización autoritativa al elegir zona.
+  // Datos del local para retiro (settings/general, editable en /admin/ajustes).
+  useEffect(() => {
+    let alive = true;
+    void getGeneralSettings()
+      .then((g) => {
+        if (alive && g) setPickupInfo({ address: g.pickupAddress, hours: g.pickupHours });
+      })
+      .catch(() => {
+        /* sin ajustes: usamos el texto por defecto de retiro */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Cotización autoritativa: al elegir zona (delivery) o de una vez (pickup).
+  // Con estado visible: loading → montos; error → Reintentar (no cuelga).
   const zone = zones?.find((z) => z.id === address.zoneId) ?? null;
   useEffect(() => {
-    if (!address.zoneId || isEmpty) return;
+    if (isEmpty) return;
+    if (fulfillment === 'delivery' && !address.zoneId) return;
     let alive = true;
+    setQuoteState('loading');
     void quoteTotals({
-      zoneId: address.zoneId,
+      fulfillment,
+      zoneId: fulfillment === 'pickup' ? '' : address.zoneId,
       items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
     })
-      .then((q) => alive && setQuote(q))
-      .catch(() => alive && setQuote(null));
+      .then((q) => {
+        if (!alive) return;
+        setQuote(q);
+        setQuoteState('ok');
+      })
+      .catch(() => {
+        if (!alive) return;
+        setQuote(null);
+        setQuoteState('error');
+      });
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [address.zoneId]);
+  }, [fulfillment, address.zoneId, quoteAttempt]);
 
   // Datos de recaudación: primero Firestore (editable desde /admin/ajustes
   // sin deploy); si aún no hay documento o falla la red, se usa la semilla.
@@ -132,30 +169,28 @@ export default function CheckoutPage() {
     [accounts, payment.method],
   );
 
-  // GPS del cliente: las coordenadas se añaden a la dirección para el mensajero.
+  // GPS del cliente: OBLIGATORIO en delivery — el mensajero recibe el punto
+  // exacto para llegar. En retiro en tienda no se pide (no aplica).
   const captureGps = () => {
     if (!navigator.geolocation) {
-      toast.error('Tu navegador no permite GPS. Escribe la dirección completa.');
+      toast.error('Tu navegador no permite GPS. Prueba desde otro navegador.');
       return;
     }
     setGpsBusy(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        const lat = pos.coords.latitude.toFixed(6);
-        const lng = pos.coords.longitude.toFixed(6);
-        setAddress((a) => {
-          const base = a.details.replace(/\n?GPS: [^\n]*/g, '').trimEnd().slice(0, 460);
-          const details = base ? `${base}\nGPS: ${lat}, ${lng}` : `GPS: ${lat}, ${lng}`;
-          return { ...a, details };
+        setGps({
+          lat: Number(pos.coords.latitude.toFixed(6)),
+          lng: Number(pos.coords.longitude.toFixed(6)),
         });
         setGpsBusy(false);
-        toast.success('Ubicación GPS añadida. El mensajero la usará para llegar.');
+        toast.success('Ubicación capturada. El mensajero la usará para llegar exacto.');
       },
       () => {
         setGpsBusy(false);
-        toast.error('No pudimos leer tu ubicación. Permite el GPS en el navegador o escribe la dirección.');
+        toast.error('No pudimos leer tu ubicación. Permite el GPS en el navegador e intenta de nuevo: es obligatoria para el envío.');
       },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
     );
   };
 
@@ -175,16 +210,21 @@ export default function CheckoutPage() {
   const validateStep0 = (): boolean => {
     const e: Record<string, string | null> = {};
     if (!isValidPersonName(contact.name)) e['name'] = 'Nombre y apellido completos.';
-    if (!isValidCedulaVE(contact.cedula)) e['cedula'] = 'Cédula: V-12345678 o E-87654321.';
-    if (!isValidPhoneVE(contact.phone)) e['phone'] = 'Teléfono móvil venezolano.';
+    if (!isValidCedulaVE(contact.cedula)) e['cedula'] = 'Cédula: solo los números, ej. 12345678.';
+    if (!isValidPhoneVE(contact.phone)) e['phone'] = 'Teléfono móvil: 0412, 0414, 0416, 0422, 0424 o 0426.';
     setErrors(e);
     return Object.values(e).every((x) => !x);
   };
 
   const validateStep1 = (): boolean => {
+    if (fulfillment === 'pickup') {
+      // Retiro en tienda: no hay dirección ni GPS que validar.
+      setErrors({});
+      return true;
+    }
     const e: Record<string, string | null> = {};
     if (!address.zoneId) e['zoneId'] = 'Elige tu zona de entrega.';
-    if (sanitizeText(address.city, 60).length < 3) e['city'] = 'Ciudad requerida.';
+    if (!gps) e['gps'] = 'Captura tu ubicación GPS: el mensajero la necesita para llegar.';
     if (sanitizeMultiline(address.details, 500).length < 8) e['details'] = 'Dirección con urbanización, calle y casa/piso.';
     setErrors(e);
     return Object.values(e).every((x) => !x);
@@ -193,9 +233,9 @@ export default function CheckoutPage() {
   const validateStep2 = (): boolean => {
     const e: Record<string, string | null> = {};
     if (!payment.banco) e['banco'] = 'Selecciona el banco del pago.';
-    if (!isValidCedulaVE(payment.cedula)) e['cedula'] = 'Cédula del pagador.';
-    if (!isValidPhoneVE(payment.telefono)) e['telefono'] = 'Teléfono del pago móvil.';
-    if (!isValidPaymentReference(payment.referencia)) e['referencia'] = 'Referencia de 6 a 20 dígitos.';
+    if (!isValidCedulaVE(payment.cedula)) e['cedula'] = 'Cédula del pagador: solo los números.';
+    if (!isValidPhoneVE(payment.telefono)) e['telefono'] = 'Teléfono móvil del pago.';
+    if (!isValidPaymentReference(payment.referencia)) e['referencia'] = 'Los últimos 6 dígitos de la referencia (los muestra el banco).';
     if (!payment.fecha) e['fecha'] = 'Fecha del pago.';
     setErrors(e);
     return Object.values(e).every((x) => !x);
@@ -208,13 +248,19 @@ export default function CheckoutPage() {
     setBusy(true);
     try {
       const uid = user.uid;
+      const pickupAddress = fulfillment === 'pickup'
+        ? (pickupInfo.address || 'Retiro en tienda · Maracay, Aragua')
+        : '';
       const idempotencyKey = buildIdempotencyKey({
         uid,
         items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
         contact: { name: contact.name, phone: normalizePhoneVE(contact.phone), cedula: normalizeCedulaVE(contact.cedula) },
         address: {
-          state: sanitizeText(address.state, 40), city: sanitizeText(address.city, 60),
-          zoneId: address.zoneId, zoneName: zone?.name ?? '', details: sanitizeMultiline(address.details, 500),
+          state: ZONE_STATE,
+          city: ZONE_CITY,
+          zoneId: fulfillment === 'pickup' ? '' : address.zoneId,
+          zoneName: fulfillment === 'pickup' ? 'Retiro en tienda' : zone?.name ?? '',
+          details: fulfillment === 'pickup' ? pickupAddress : sanitizeMultiline(address.details, 500),
         },
         paymentMethod: payment.method,
         now: Date.now(),
@@ -232,21 +278,36 @@ export default function CheckoutPage() {
         {
           idempotencyKey,
           reservationId: reservation?.reservationId ?? null,
+          fulfillment,
+          // Líneas explícitas: el backend las exige (revalida contra Firestore).
+          items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
           contact: {
             name: sanitizeText(contact.name, 80),
             phone: normalizePhoneVE(contact.phone),
             cedula: normalizeCedulaVE(contact.cedula),
           },
-          address: {
-            state: sanitizeText(address.state, 40),
-            city: sanitizeText(address.city, 60),
-            zoneId: address.zoneId,
-            zoneName: zone?.name ?? '',
-            details: sanitizeMultiline(address.details, 500),
-          },
-          deliveryWindow: zone?.windows[0]
-            ? { start: zone.windows[0].start, end: zone.windows[0].end }
-            : { start: '12:00', end: '23:59' },
+          address: fulfillment === 'pickup'
+            ? {
+                state: ZONE_STATE,
+                city: ZONE_CITY,
+                zoneId: '',
+                zoneName: 'Retiro en tienda',
+                details: pickupAddress,
+                location: null,
+              }
+            : {
+                state: ZONE_STATE,
+                city: ZONE_CITY,
+                zoneId: address.zoneId,
+                zoneName: zone?.name ?? '',
+                details: sanitizeMultiline(address.details, 500),
+                location: gps,
+              },
+          deliveryWindow: fulfillment === 'pickup'
+            ? { start: '08:00', end: '20:00' }
+            : zone?.windows[0]
+              ? { start: zone.windows[0].start, end: zone.windows[0].end }
+              : { start: '12:00', end: '23:59' },
           notes: sanitizeMultiline(address.notes, 300),
           paymentMethod: payment.method,
           paymentDetails,
@@ -294,9 +355,28 @@ export default function CheckoutPage() {
             <p className="mt-1 font-display text-2xl font-black italic text-signal">{created.code}</p>
           </div>
           <dl className="mt-6 space-y-2 text-left">
-            <Row label="Total USD" value={formatUsd(created.totals.totalUsd)} strong />
-            <Row label="Total Bs" value={formatBs(created.totals.totalVes)} />
-            <Row label="Envío" value={created.totals.shippingUsd === 0 ? 'Gratis' : formatUsd(created.totals.shippingUsd)} />
+            <Row label="Total a pagar" value={formatBs(created.totals.totalVes)} strong />
+            <Row label="Equivale a" value={formatUsd(created.totals.totalUsd)} />
+            <Row
+              label="Envío"
+              value={
+                created.totals.shippingUsd === 0
+                  ? 'Gratis'
+                  : created.totals.rateUsed > 0
+                    ? formatBs(usdToBs(created.totals.shippingUsd, created.totals.rateUsed))
+                    : formatUsd(created.totals.shippingUsd)
+              }
+            />
+            {(created.totals.ivaPercent ?? 0) > 0 && (
+              <Row
+                label={`IVA (${String(created.totals.ivaPercent).replace('.', ',')}%)`}
+                value={
+                  created.totals.rateUsed > 0
+                    ? formatBs(usdToBs(created.totals.ivaUsd ?? 0, created.totals.rateUsed))
+                    : formatUsd(created.totals.ivaUsd ?? 0)
+                }
+              />
+            )}
           </dl>
           <div className="mt-6 rounded-brand border-2 border-line bg-ink p-4 text-left">
             <p className="spot-label mb-1">Siguiente paso</p>
@@ -318,8 +398,8 @@ export default function CheckoutPage() {
             <div className="mx-auto max-w-xl space-y-4 rounded-brand-lg border-2 border-line bg-surface-1 p-6">
               <h2 className="font-display text-lg font-bold italic uppercase text-paper">Tus datos</h2>
               <Input label="Nombre y apellido" value={contact.name} onChange={(e) => setContact((c) => ({ ...c, name: e.target.value }))} error={errors['name']} required />
-              <Input label="Cédula" value={contact.cedula} onChange={(e) => setContact((c) => ({ ...c, cedula: e.target.value }))} placeholder="V-12345678" error={errors['cedula']} required />
-              <Input label="Teléfono" type="tel" value={contact.phone} onChange={(e) => setContact((c) => ({ ...c, phone: e.target.value }))} placeholder="04141234567" error={errors['phone']} required />
+              <Input label="Cédula (solo números)" value={contact.cedula} onChange={(e) => setContact((c) => ({ ...c, cedula: e.target.value }))} placeholder="12345678" inputMode="numeric" error={errors['cedula']} required />
+              <Input label="Teléfono" type="tel" value={contact.phone} onChange={(e) => setContact((c) => ({ ...c, phone: e.target.value }))} placeholder="04241234567" error={errors['phone']} required />
               <Button
                 size="lg"
                 fullWidth
@@ -333,53 +413,105 @@ export default function CheckoutPage() {
           {/* ── PASO 1: ENTREGA ── */}
           {step === 1 && (
             <div className="mx-auto max-w-xl space-y-4 rounded-brand-lg border-2 border-line bg-surface-1 p-6">
-              <h2 className="font-display text-lg font-bold italic uppercase text-paper">Entrega a domicilio</h2>
-              <Select
-                label="Zona de cobertura"
-                value={address.zoneId}
-                onChange={(e) => {
-                  const z = zones?.find((zz) => zz.id === e.target.value);
-                  setAddress((a) => ({ ...a, zoneId: e.target.value, state: z?.state ?? a.state }));
-                }}
-                error={errors['zoneId']}
-                required
-              >
-                <option value="">Selecciona tu zona…</option>
-                {zones?.filter((z) => z.active).map((z) => (
-                  <option key={z.id} value={z.id}>
-                    {z.name} · ${z.feeUsd.toFixed(2)} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
-                  </option>
-                ))}
-              </Select>
-              <Input label="Estado" value={address.state} onChange={(e) => setAddress((a) => ({ ...a, state: e.target.value }))} required />
-              <Input label="Ciudad" value={address.city} onChange={(e) => setAddress((a) => ({ ...a, city: e.target.value }))} error={errors['city']} required />
-              <Textarea
-                label="Dirección completa"
-                value={address.details}
-                onChange={(e) => setAddress((a) => ({ ...a, details: e.target.value }))}
-                placeholder="Urbanización, calle, casa/apto, piso, punto de referencia"
-                error={errors['details']}
-                required
-              />
-              <div className="flex flex-wrap items-center gap-3">
-                <Button variant="secondary" type="button" loading={gpsBusy} onClick={captureGps}>
-                  Usar mi ubicación GPS
-                </Button>
-                <p className="text-xs text-muted">
-                  Opcional: añade tus coordenadas para que el mensajero llegue exacto.
-                </p>
+              <h2 className="font-display text-lg font-bold italic uppercase text-paper">¿Cómo lo recibes?</h2>
+
+              {/* Modalidad: retiro en tienda o envío a domicilio */}
+              <div className="grid gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Modalidad de entrega">
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={fulfillment === 'pickup'}
+                  onClick={() => setFulfillment('pickup')}
+                  className={`rounded-brand border-2 p-4 text-left transition ${fulfillment === 'pickup' ? 'border-signal bg-signal/10' : 'border-line hover:border-muted'}`}
+                >
+                  <p className={`font-display text-sm font-bold italic uppercase ${fulfillment === 'pickup' ? 'text-signal' : 'text-paper'}`}>
+                    Retiro en tienda
+                  </p>
+                  <p className="mt-1 text-xs text-muted">Pasas por el local en Maracay. Sin costo de envío.</p>
+                </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={fulfillment === 'delivery'}
+                  onClick={() => setFulfillment('delivery')}
+                  className={`rounded-brand border-2 p-4 text-left transition ${fulfillment === 'delivery' ? 'border-signal bg-signal/10' : 'border-line hover:border-muted'}`}
+                >
+                  <p className={`font-display text-sm font-bold italic uppercase ${fulfillment === 'delivery' ? 'text-signal' : 'text-paper'}`}>
+                    Envío a domicilio
+                  </p>
+                  <p className="mt-1 text-xs text-muted">Llevamos tu pedido a tu zona en Maracay, Aragua.</p>
+                </button>
               </div>
-              <Textarea
-                label="Nota para el mensajero (opcional)"
-                value={address.notes}
-                onChange={(e) => setAddress((a) => ({ ...a, notes: e.target.value }))}
-                rows={2}
-              />
-              {zone && (
-                <p className="spot-label">
-                  Ventanas: {zone.windows.map((w) => w.label).join(' · ')}
-                </p>
+
+              {fulfillment === 'pickup' ? (
+                /* RETIRO: datos del local (settings/general, editable por el admin) */
+                <div className="rounded-brand border-2 border-dashed border-line bg-ink p-4">
+                  <p className="spot-label mb-2">Retira tu pedido aquí</p>
+                  <p className="text-body-base text-paper">
+                    {pickupInfo.address || 'Retiro en tienda · Maracay, Aragua'}
+                  </p>
+                  {pickupInfo.hours && (
+                    <p className="mt-2 text-sm text-muted">Horario: {pickupInfo.hours}</p>
+                  )}
+                  <p className="mt-2 text-sm text-muted">
+                    Te avisamos cuando esté listo. Pago por Pago Móvil igual que siempre.
+                  </p>
+                </div>
+              ) : (
+                <>  {/* DOMICILIO: zona + dirección */}
+                  <Select
+                    label="Zona de cobertura"
+                    value={address.zoneId}
+                    onChange={(e) => setAddress((a) => ({ ...a, zoneId: e.target.value }))}
+                    error={errors['zoneId']}
+                    required
+                  >
+                    <option value="">Selecciona tu zona…</option>
+                    {zones?.filter((z) => z.active).map((z) => (
+                      <option key={z.id} value={z.id}>
+                        {z.name} · ${z.feeUsd.toFixed(2)} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
+                      </option>
+                    ))}
+                  </Select>
+                  <Textarea
+                    label="Dirección completa"
+                    value={address.details}
+                    onChange={(e) => setAddress((a) => ({ ...a, details: e.target.value }))}
+                    placeholder="Urbanización, calle, casa/apto, piso, punto de referencia"
+                    error={errors['details']}
+                    required
+                  />
+                  {/* Ubicación GPS: OBLIGATORIA en delivery — viaja al mensajero. */}
+                  <div className="rounded-brand border-2 border-dashed border-line bg-ink p-4">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Button variant="secondary" type="button" loading={gpsBusy} onClick={captureGps}>
+                        {gps ? 'Capturar de nuevo' : 'Capturar mi ubicación'}
+                      </Button>
+                      {gps && (
+                        <span className="spot-label text-signal">Ubicación capturada ✓</span>
+                      )}
+                    </div>
+                    <p className="mt-2 text-xs text-muted">
+                      Obligatoria: el mensajero recibe tu punto exacto para llegar sin llamadas.
+                    </p>
+                    {errors['gps'] && (
+                      <p className="mt-1 text-sm font-semibold text-signal">{errors['gps']}</p>
+                    )}
+                  </div>
+                  <Textarea
+                    label="Nota para el mensajero (opcional)"
+                    value={address.notes}
+                    onChange={(e) => setAddress((a) => ({ ...a, notes: e.target.value }))}
+                    rows={2}
+                  />
+                  {zone && (
+                    <p className="spot-label">
+                      Horario de entregas: {zone.windows.map((w) => w.label).join(' · ')}
+                    </p>
+                  )}
+                </>
               )}
+
               <div className="flex gap-3">
                 <Button variant="secondary" type="button" onClick={() => setStep(0)}>Volver</Button>
                 <Button size="lg" className="flex-1" type="button" onClick={() => validateStep1() && setStep(2)}>
@@ -395,13 +527,67 @@ export default function CheckoutPage() {
               {/* Cotización autoritativa del backend */}
               <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Resumen de montos">
                 <h2 className="font-display text-lg font-bold italic uppercase text-paper">Montos</h2>
-                {quote ? (
-                  <dl className="mt-4 space-y-2">
-                    <Row label="Subtotal" value={formatUsd(quote.subtotalUsd)} />
-                    <Row label={`Envío · ${quote.zoneName}`} value={quote.freeShipping ? 'Gratis' : formatUsd(quote.shippingUsd)} />
-                    <Row label="Total USD" value={formatUsd(quote.totalUsd)} strong />
-                    <Row label="Total Bs" value={formatBs(quote.totalVes)} />
-                  </dl>
+                {quoteState === 'ok' && quote ? (
+                  quote.rateUsed > 0 ? (
+                    <>
+                      <dl className="mt-4 space-y-2">
+                        <Row label="Subtotal" value={formatBs(usdToBs(quote.subtotalUsd, quote.rateUsed))} />
+                        <Row
+                          label="Envío"
+                          value={
+                            quote.shippingUsd === 0
+                              ? fulfillment === 'pickup'
+                                ? 'Retiro en tienda · Gratis'
+                                : 'Gratis'
+                              : formatBs(usdToBs(quote.shippingUsd, quote.rateUsed))
+                          }
+                        />
+                        {(quote.ivaPercent ?? 0) > 0 && (
+                          <Row
+                            label={`IVA (${String(quote.ivaPercent).replace('.', ',')}%)`}
+                            value={formatBs(usdToBs(quote.ivaUsd ?? 0, quote.rateUsed))}
+                          />
+                        )}
+                        <Row label="Total a pagar" value={formatBs(quote.totalVes)} strong />
+                      </dl>
+                      <p className="mt-3 spot-label">
+                        Tasa BCV: {quote.rateUsed.toFixed(2).replace('.', ',')} Bs/USD · Equivale a {formatUsd(quote.totalUsd)}
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      {/* Sin tasa publicada aún: mostramos USD y avisamos. */}
+                      <dl className="mt-4 space-y-2">
+                        <Row label="Subtotal" value={formatUsd(quote.subtotalUsd)} />
+                        <Row
+                          label="Envío"
+                          value={
+                            quote.shippingUsd === 0
+                              ? fulfillment === 'pickup'
+                                ? 'Retiro en tienda · Gratis'
+                                : 'Gratis'
+                              : formatUsd(quote.shippingUsd)
+                          }
+                        />
+                        {(quote.ivaPercent ?? 0) > 0 && (
+                          <Row label={`IVA (${String(quote.ivaPercent).replace('.', ',')}%)`} value={formatUsd(quote.ivaUsd ?? 0)} />
+                        )}
+                        <Row label="Total a pagar" value={formatUsd(quote.totalUsd)} strong />
+                      </dl>
+                      <p className="mt-3 spot-label text-signal">
+                        Tasa BCV aún no publicada: mostramos montos en USD mientras tanto.
+                      </p>
+                    </>
+                  )
+                ) : quoteState === 'error' ? (
+                  <div className="mt-3">
+                    <p className="text-muted">
+                      No pudimos calcular tus montos: el servidor no respondió. Verifica tu conexión y reintenta.
+                    </p>
+                    <Button variant="secondary" className="mt-3" type="button" onClick={() => setQuoteAttempt((n) => n + 1)}>
+                      Reintentar
+                    </Button>
+                  </div>
                 ) : (
                   <p className="mt-3 text-muted">Calculando montos en el servidor…</p>
                 )}
@@ -415,13 +601,11 @@ export default function CheckoutPage() {
               {/* Métodos de pago */}
               <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
                 <h2 className="font-display text-lg font-bold italic uppercase text-paper">Método de pago</h2>
-                {/* Método único por ahora: Pago Móvil */}
                 <div
                   aria-label="Método de pago"
-                  className="mt-4 flex min-h-[56px] items-center justify-between rounded-brand border-2 border-signal bg-signal/10 px-4 py-3 font-body font-semibold text-signal"
+                  className="mt-4 flex min-h-[56px] items-center rounded-brand border-2 border-signal bg-signal/10 px-4 py-3 font-body font-semibold text-signal"
                 >
                   {PAYMENT_METHOD_LABELS['pago_movil']}
-                  <span className="text-xs font-bold uppercase tracking-wide">Único método</span>
                 </div>
 
                 {/* Datos de recaudación */}
@@ -438,25 +622,36 @@ export default function CheckoutPage() {
                   </div>
                 )}
 
-                {/* Formulario Pago Móvil (método único) */}
+                {/* Formulario Pago Móvil */}
                 <div className="mt-4 grid gap-4 sm:grid-cols-2">
                   <Select label="Banco del pago" value={payment.banco} onChange={(e) => setPayment((p) => ({ ...p, banco: e.target.value }))} error={errors['banco']} required>
                     <option value="">Selecciona…</option>
                     {VE_BANKS.map((b) => <option key={b} value={b}>{b}</option>)}
                   </Select>
-                  <Input label="Cédula del pagador" value={payment.cedula} onChange={(e) => setPayment((p) => ({ ...p, cedula: e.target.value }))} error={errors['cedula']} required />
-                  <Input label="Teléfono del pago" type="tel" value={payment.telefono} onChange={(e) => setPayment((p) => ({ ...p, telefono: e.target.value }))} error={errors['telefono']} required />
-                  <Input label="Referencia" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.replace(/\D/g, '') }))} error={errors['referencia']} inputMode="numeric" required />
+                  <Input label="Cédula del pagador (solo números)" value={payment.cedula} onChange={(e) => setPayment((p) => ({ ...p, cedula: e.target.value }))} placeholder="12345678" inputMode="numeric" error={errors['cedula']} required />
+                  <Input label="Teléfono del pago" type="tel" value={payment.telefono} onChange={(e) => setPayment((p) => ({ ...p, telefono: e.target.value }))} placeholder="04241234567" error={errors['telefono']} required />
+                  <Input label="Referencia (últimos 6 dígitos)" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.replace(/\D/g, '').slice(0, 6) }))} error={errors['referencia']} inputMode="numeric" maxLength={6} placeholder="123456" required />
                   <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
                 </div>
               </section>
 
               <div className="flex gap-3">
                 <Button variant="secondary" type="button" onClick={() => setStep(1)}>Volver</Button>
-                <Button size="lg" className="flex-1" loading={busy} onClick={() => { if (validateStep2()) setStep(3); }}>
+                <Button
+                  size="lg"
+                  className="flex-1"
+                  type="button"
+                  disabled={quoteState !== 'ok'}
+                  onClick={() => { if (validateStep2()) setStep(3); }}
+                >
                   Revisar y confirmar
                 </Button>
               </div>
+              {quoteState !== 'ok' && (
+                <p className="text-center text-sm text-muted">
+                  Esperando los montos del servidor para seguir.
+                </p>
+              )}
             </div>
           )}
 
@@ -469,9 +664,18 @@ export default function CheckoutPage() {
                   <Row label="Nombre" value={contact.name} />
                   <Row label="Cédula" value={normalizeCedulaVE(contact.cedula)} />
                   <Row label="Teléfono" value={normalizePhoneVE(contact.phone)} />
-                  <Row label="Zona" value={zone?.name ?? address.zoneId} />
+                  <Row
+                    label="Entrega"
+                    value={fulfillment === 'pickup' ? 'Retiro en tienda' : (zone?.name ?? address.zoneId)}
+                  />
                   <Row label="Método de pago" value={PAYMENT_METHOD_LABELS[payment.method]} />
-                  {quote && <Row label="Total a pagar" value={`${formatUsd(quote.totalUsd)} · ${formatBs(quote.totalVes)}`} strong />}
+                  {quote && (
+                    <Row
+                      label="Total a pagar"
+                      value={quote.totalVes > 0 ? `${formatBs(quote.totalVes)} · ≈ ${formatUsd(quote.totalUsd)}` : formatUsd(quote.totalUsd)}
+                      strong
+                    />
+                  )}
                 </dl>
                 <p className="mt-4 text-sm text-muted">
                   Al confirmar, el servidor valida el stock, calcula los montos finales en

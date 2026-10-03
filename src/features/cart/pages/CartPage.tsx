@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { useCart } from '../hooks/useCart';
 import { Button } from '@/shared/components/ui/Button';
@@ -6,14 +6,19 @@ import { PriceTag } from '@/shared/components/ui/PriceTag';
 import { EmptyState } from '@/shared/components/ui/States';
 import { SpeedDivider } from '@/shared/components/brand/Logo';
 import { useAuth } from '@/features/auth/hooks/useAuth';
+import { useBcvRate } from '@/shared/hooks/useBcvRate';
+import { formatBs, usdToBs } from '@/shared/lib/format';
 import { VOICE } from '@/shared/constants/brand';
 import { clampSetQty } from '../lib/cartLogic';
 
 /** Carrito persistente con validación de stock y totales referenciales (5.2). */
 export default function CartPage() {
   useDocumentTitle('Mi carrito');
+  const navigate = useNavigate();
   const { items, setQty, removeItem, count, subtotalRef, isEmpty } = useCart();
   const { user } = useAuth();
+  const rate = useBcvRate();
+  const subtotalBs = rate ? usdToBs(subtotalRef, rate.rate) : null;
 
   if (isEmpty) {
     return (
@@ -21,7 +26,7 @@ export default function CartPage() {
         <EmptyState
           title="Carrito vacío"
           message={VOICE.emptyCart}
-          action={{ label: 'Ir al catálogo', onClick: () => window.location.assign('/catalogo') }}
+          action={{ label: 'Ir al catálogo', onClick: () => navigate('/catalogo') }}
         />
       </div>
     );
@@ -107,12 +112,44 @@ export default function CartPage() {
               <dd className="font-semibold text-paper">${subtotalRef.toFixed(2)}</dd>
             </div>
             <div className="flex justify-between">
+              <dt className="text-muted">≈ en bolívares</dt>
+              <dd className="font-semibold text-signal">
+                {subtotalBs !== null ? formatBs(subtotalBs) : 'Bs. —'}
+              </dd>
+            </div>
+            {rate && (
+              <p className="text-right text-xs text-muted">
+                Tasa BCV: {rate.rate.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Bs/USD
+              </p>
+            )}
+            <div className="flex justify-between">
               <dt className="text-muted">Envío</dt>
-              <dd className="text-muted">se calcula por zona</dd>
+              <dd className="text-muted">por zona · retiro gratis</dd>
             </div>
           </dl>
           <SpeedDivider className="my-4" />
-          <p className="text-sm text-muted">
+
+          {/* Cómo funciona el pedido: confianza ANTES de pagar (patrón Farmatodo) */}
+          <div className="rounded-brand border-2 border-dashed border-line bg-ink p-4">
+            <p className="spot-label mb-2">¿Cómo funciona tu pedido?</p>
+            <ol className="space-y-2 text-sm text-paper">
+              <li className="flex gap-2">
+                <span className="font-display font-bold italic text-signal">1.</span>
+                Pides aquí y reservamos tu stock 2 horas.
+              </li>
+              <li className="flex gap-2">
+                <span className="font-display font-bold italic text-signal">2.</span>
+                El servidor calcula el monto exacto en Bs con la tasa BCV.
+              </li>
+              <li className="flex gap-2">
+                <span className="font-display font-bold italic text-signal">3.</span>
+                Pagas por Pago Móvil y subes tu comprobante. ¿O prefieres pasar por el local?
+                Elige <strong className="text-signal">Retiro en tienda</strong> en el checkout — sin envío.
+              </li>
+            </ol>
+          </div>
+
+          <p className="mt-4 text-sm text-muted">
             El total final en USD y su equivalencia en bolívares los calcula el
             servidor al confirmar. Nada se cobra sin tu comprobante.
           </p>

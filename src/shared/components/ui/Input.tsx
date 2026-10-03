@@ -67,7 +67,7 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
-  { label, error, hint, required, id: idProp, type, ...rest },
+  { label, error, hint, required, id: idProp, type, className, ...rest },
   ref,
 ) {
   const autoId = useId();
@@ -82,7 +82,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       type={isPassword && showPassword ? 'text' : type}
       aria-invalid={error ? true : undefined}
       required={required}
-      className={`${BASE_CONTROL} ${isPassword ? 'pr-12' : ''} ${error ? 'border-signal' : ''}`}
+      // className externo se FUSIONA al final (ancho de columna, etc.);
+      // jamás reemplaza las clases base: sin fondo/color el texto queda invisible.
+      className={[BASE_CONTROL, isPassword ? 'pr-12' : '', error ? 'border-signal' : '', className].filter(Boolean).join(' ')}
       {...rest}
     />
   );
@@ -126,7 +128,7 @@ interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
 }
 
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
-  { label, error, hint, required, rows = 3, id: idProp, ...rest },
+  { label, error, hint, required, rows = 3, id: idProp, className, ...rest },
   ref,
 ) {
   const autoId = useId();
@@ -138,7 +140,8 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       rows={rows}
       aria-invalid={error ? true : undefined}
       required={required}
-      className={`${BASE_CONTROL} min-h-[96px] resize-y ${error ? 'border-signal' : ''}`}
+      // className externo se FUSIONA (mismo criterio que Input).
+      className={[BASE_CONTROL, 'min-h-[96px] resize-y', error ? 'border-signal' : '', className].filter(Boolean).join(' ')}
       {...rest}
     />
   );
@@ -157,7 +160,7 @@ interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
 }
 
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select(
-  { label, error, hint, required, children, id: idProp, ...rest },
+  { label, error, hint, required, children, id: idProp, className, ...rest },
   ref,
 ) {
   const autoId = useId();
@@ -168,7 +171,8 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
       id={label ? id : undefined}
       aria-invalid={error ? true : undefined}
       required={required}
-      className={`${BASE_CONTROL} appearance-none ${error ? 'border-signal' : ''}`}
+      // className externo se FUSIONA (mismo criterio que Input).
+      className={[BASE_CONTROL, 'appearance-none', error ? 'border-signal' : '', className].filter(Boolean).join(' ')}
       {...rest}
     >
       {children}

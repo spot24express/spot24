@@ -51,7 +51,7 @@ export function StockBadge({ stock, lowThreshold = 5 }: StockBadgeProps) {
   }
   return (
     <span className="inline-flex items-center rounded-brand border-2 border-line px-2.5 py-1 spot-label text-paper/80">
-      En stock
+      Disponible
     </span>
   );
 }

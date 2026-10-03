@@ -28,11 +28,20 @@ export async function adminListProducts(search: string): Promise<Product[]> {
   );
   const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Product, 'id'>) }));
   const term = search.trim().toLowerCase();
-  return items.filter((p) => !term || p.name.toLowerCase().includes(term) || p.brand.toLowerCase().includes(term));
+  return items.filter(
+    (p) =>
+      !term ||
+      p.name.toLowerCase().includes(term) ||
+      p.brand.toLowerCase().includes(term) ||
+      (p.code ?? '').toLowerCase().includes(term),
+  );
 }
 
 export interface ProductDraftInput {
   id?: string;
+  /** Código del producto: lo escribe el admin a mano (no lo genera la app).
+   *  Se normaliza a mayúsculas y debe ser único entre productos. */
+  code: string;
   name: string;
   brand: string;
   categoryId: string;
@@ -63,6 +72,19 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
 
+  // Código del producto: mayúsculas, sin espacios sobrantes, tope 40 caracteres
+  // (mismo criterio que el SKU de variantes). La unicidad se valida contra
+  // Firestore ANTES del lote: si otro producto ya usa el código, se avisa claro.
+  const code = (draft.code ?? '').trim().toUpperCase().slice(0, 40);
+  if (code) {
+    const dupSnap = await getDocs(
+      query(collection(fb.db, 'products'), where('code', '==', code), fbLimit(2)),
+    );
+    if (dupSnap.docs.some((d) => d.id !== draft.id)) {
+      throw new AppError('code-duplicate');
+    }
+  }
+
   const slug =
     draft.name
       .normalize('NFD')
@@ -80,6 +102,7 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
   const now = Date.now();
   const payload = {
     slug,
+    code,
     name: draft.name.trim().slice(0, 120),
     brand: draft.brand.trim().slice(0, 60),
     description: draft.description.trim().slice(0, 1000),
@@ -404,7 +427,10 @@ export interface BcvRateInfo {
   usdToVes: number;
   /** Fecha valor oficial del BCV de la tasa vigente (YYYY-MM-DD). */
   fechaValor: string;
+  /** Cuándo se ACTIVÓ la tasa vigente (solo cambia al activar una nueva). */
   updatedAt: number;
+  /** Último intento de lectura (cron o manual): cambia aunque la tasa siga igual. */
+  lastAttemptAt: number;
   source: string;
   /** Tasa capturada hoy en la tarde: se activa sola a las 12:00 AM. */
   nextUsdToVes: number;
@@ -427,6 +453,7 @@ export async function adminGetBcvRate(): Promise<BcvRateInfo | null> {
     usdToVes: Number(d['usdToVes'] ?? 0),
     fechaValor: String(d['fechaValor'] ?? ''),
     updatedAt: Number(d['updatedAt'] ?? 0),
+    lastAttemptAt: Number(d['lastAttemptAt'] ?? 0),
     source: String(d['source'] ?? 'fallback'),
     nextUsdToVes: Number(d['nextUsdToVes'] ?? 0),
     nextFechaValor: String(d['nextFechaValor'] ?? ''),

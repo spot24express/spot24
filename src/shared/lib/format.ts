@@ -27,6 +27,15 @@ export function formatBs(amount: number): string {
   return `Bs. ${vesFmt.format(Number.isFinite(amount) ? amount : 0)}`;
 }
 
+/**
+ * Convierte USD → Bs con la tasa BCV y redondea a 2 decimales (misma
+ * convención del backend al publicar la tasa). Solo para PRESENTACIÓN:
+ * el monto oficial de una orden lo fija siempre el backend al cotizar.
+ */
+export function usdToBs(usd: number, rate: number): number {
+  return Math.round(usd * rate * 100) / 100;
+}
+
 export function formatInt(amount: number): string {
   return intFmt.format(Number.isFinite(amount) ? amount : 0);
 }

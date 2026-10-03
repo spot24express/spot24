@@ -25,6 +25,8 @@ export interface OrderPayment {
   masked: Record<string, string>;
   referenceMasked: string;
   hasReceipt: boolean;
+  /** URL pública del comprobante (imgbb) cuando el cliente ya lo subió. */
+  receiptUrl?: string;
   verifiedBy?: string;
   verifiedAt?: number;
 }
@@ -36,6 +38,10 @@ export interface OrderDelivery {
   /** Dirección enmascarada parcialmente para display; completa solo backend. */
   addressPreview: string;
   trackingCode: string | null;
+  /** Modalidad de entrega. Órdenes antiguas: undefined (= delivery). */
+  mode?: 'delivery' | 'pickup';
+  /** Coordenadas GPS capturadas en el checkout (solo delivery). */
+  location?: { lat: number; lng: number } | null;
 }
 
 export interface Order {
@@ -59,6 +65,6 @@ export interface OrderEvent {
   id: string;
   status: OrderStatus;
   at: number;
-  by: 'system' | 'admin';
+  by: 'system' | 'admin' | 'customer';
   note?: string;
 }

@@ -140,9 +140,12 @@ function CategoryModal({
 
   // Sincroniza el formulario cada vez que se abre (editar X, editar Y o crear):
   // sin esto, «Editar» mostraba campos en blanco o valores de otra categoría.
+  // El id DEBE viajar en el formulario: sin él, adminSaveCategory interpreta
+  // «crear» y duplica la categoría en vez de actualizar la existente.
   useEffect(() => {
     if (!open) return;
     setForm({
+      id: category?.id,
       name: category?.name ?? '',
       tagline: category?.tagline ?? '',
       imageUrl: category?.imageUrl ?? '',

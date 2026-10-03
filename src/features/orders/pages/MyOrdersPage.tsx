@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { StatusBadge } from '@/shared/components/ui/Badge';
 import { ListSkeleton } from '@/shared/components/ui/Skeleton';
@@ -16,6 +16,7 @@ import { useAuth } from '@/features/auth/hooks/useAuth';
 /** Mis pedidos con paginación por cursor (7.1). */
 export default function MyOrdersPage() {
   useDocumentTitle('Mis pedidos');
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [page, setPage] = useState<Page<Order> | null>(null);
   const [all, setAll] = useState<Order[]>([]);
@@ -59,7 +60,7 @@ export default function MyOrdersPage() {
           <EmptyState
             title="Sin pedidos todavía"
             message={VOICE.emptyOrders}
-            action={{ label: 'Explorar catálogo', onClick: () => window.location.assign('/catalogo') }}
+            action={{ label: 'Explorar catálogo', onClick: () => navigate('/catalogo') }}
           />
         ) : (
           <>

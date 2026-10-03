@@ -1,18 +1,18 @@
 /**
  * Módulo orders · Capa de servicios.
  * Lectura de pedidos propios (owner) con listener acotado (5.5).
- * Cancelación vía función de servidor. Comprobantes a Storage solo si hay
- * bucket configurado (plan Blaze); en Lite la verificación es por referencia.
+ * Cancelación vía función de servidor. El comprobante del cliente va por
+ * fn-uploadReceipt → imgbb (funciona sin bucket de Storage, plan Spark).
  */
 import {
   collection, doc, getDocs, limit as fbLimit, onSnapshot, orderBy, query, startAfter,
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { STORAGE_AVAILABLE, callFunction } from '@/shared/lib/backend';
+import { callFunction } from '@/shared/lib/backend';
 import { AppError } from '@/shared/lib/errors';
 import { logger } from '@/shared/lib/logger';
-import { isAllowedUploadSize, isAllowedUploadType, RECEIPT_TYPES, sanitizeFileName } from '@/shared/lib/validation';
+import { isAllowedUploadType, RECEIPT_IMAGE_TYPES } from '@/shared/lib/validation';
+import { MAX_INPUT_MB, fileToBase64 } from '@/shared/lib/imageCompress';
 import type { Page } from '@/shared/types';
 import type { Order, OrderEvent } from '../types';
 
@@ -118,29 +118,28 @@ export async function cancelOrder(orderId: string, reason: string): Promise<void
 }
 
 /**
- * Sube comprobante a Storage: orders/{uid}/{orderId}/{nombre} (5.4).
- * En Lite (plan Spark sin bucket) se informa con claridad: la verificación
- * del pago se hace con la referencia del Pago Móvil.
+ * Sube el comprobante de pago de UNA orden propia → fn-uploadReceipt → imgbb.
+ * Solo imágenes (los bancos entregan capturas): si el cliente tiene un PDF,
+ * le pedimos captura de pantalla. La URL queda en payment.receiptUrl y el
+ * admin la ve directo en la cola de verificación.
  */
 export async function uploadReceipt(orderId: string, file: File): Promise<string> {
-  if (!isAllowedUploadType(file.type, RECEIPT_TYPES)) {
-    throw new AppError('generic', 'tipo de archivo no permitido');
+  if (!isAllowedUploadType(file.type, RECEIPT_IMAGE_TYPES)) {
+    throw new AppError('generic', 'Solo imágenes JPG, PNG o WebP. Si tu comprobante es PDF, toma una captura de pantalla.');
   }
-  if (!isAllowedUploadSize(file.size)) {
-    throw new AppError('generic', 'archivo demasiado grande');
+  if (file.size > MAX_INPUT_MB * 1024 * 1024) {
+    throw new AppError('generic', `La imagen pasa de ${MAX_INPUT_MB} MB. Toma una captura más liviana.`);
   }
-  if (!STORAGE_AVAILABLE) {
-    throw new AppError('generic', 'Subida de comprobantes no disponible: envía la referencia de pago.');
-  }
-  const fb = await loadFirebase();
-  if (!fb?.storage) throw new AppError('generic');
-  const path = `orders/${fb.auth.currentUser?.uid ?? 'anon'}/${orderId}/${Date.now()}-${sanitizeFileName(file.name)}`;
-  const r = ref(fb.storage, path);
+  let image: string;
   try {
-    const snap = await uploadBytes(r, file, { contentType: file.type, cacheControl: 'private, max-age=3600' });
-    return await getDownloadURL(snap.ref);
+    image = await fileToBase64(file);
   } catch (e) {
-    logger.warn('uploadReceipt falló', e);
-    throw new AppError('generic');
+    if (e instanceof Error && e.message === 'too-big') {
+      throw new AppError('generic', 'La imagen quedó muy grande incluso comprimida. Toma una captura de menos resolución.');
+    }
+    throw new AppError('generic', 'No pudimos leer la imagen. Prueba con otra.');
   }
+  const res = await callFunction<{ ok: boolean; url: string }>('fn-uploadReceipt', { orderId, image });
+  if (!res?.url) throw new AppError('generic');
+  return res.url;
 }

@@ -39,6 +39,19 @@
     @apply font-body;
   }
 
+  /* Desplegables nativos: declaramos esquema oscuro para que el popup que
+     pinta el sistema (Chrome/Windows) salga oscuro y no blanco; y fijamos
+     color de fondo/texto de las opciones para que su contenido siempre se lea. */
+  select {
+    color-scheme: dark;
+  }
+
+  select option,
+  select optgroup {
+    background-color: #0a0a0a;
+    color: #ffffff;
+  }
+
   /* Scrollbar sobrio sobre negro */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: #0a0a0a; }

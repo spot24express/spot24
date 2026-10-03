@@ -76,21 +76,30 @@ export default function AdminMetricsPage() {
                 </div>
                 <div className="min-w-0 text-right">
                   <p className="spot-label">
-                    {rate.updatedAt > 0
-                      ? `Última lectura: ${new Date(rate.updatedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
-                      : 'Sin lectura aún'}
+                    {rate.lastAttemptAt > 0
+                      ? `Último intento: ${new Date(rate.lastAttemptAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                      : 'Sin intentos aún'}
                   </p>
                   <p className="mt-1 spot-label">
                     {rate.source === 'bcv.org.ve'
-                      ? 'Fuente: bcv.org.ve (oficial)'
-                      : 'Fuente: respaldo — se mantiene la última tasa vigente'}
+                      ? 'Resultado: capturada de bcv.org.ve (oficial)'
+                      : 'Resultado: el BCV no respondió — se mantiene la tasa vigente'}
+                  </p>
+                  <p className="mt-1 spot-label">
+                    {rate.updatedAt > 0
+                      ? `Tasa vigente desde: ${new Date(rate.updatedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}`
+                      : 'Sin lectura aún'}
                   </p>
                 </div>
               </div>
               {rate.nextUsdToVes > 0 && (
                 <div className="mt-4 rounded-brand border-2 border-line bg-ink p-4">
                   <p className="spot-label">
-                    Nueva tasa capturada hoy · fecha valor {fmtFechaValor(rate.nextFechaValor)}:{' '}
+                    Nueva tasa pendiente
+                    {rate.nextCapturedAt > 0
+                      ? ` (capturada el ${new Date(rate.nextCapturedAt).toLocaleString('es-VE', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})`
+                      : ''}{' '}
+                    · fecha valor {fmtFechaValor(rate.nextFechaValor)}:{' '}
                     <span className="font-display font-bold text-paper">{rateText(rate.nextUsdToVes)}</span>{' '}
                     — se activa sola a las 12:00 AM.
                   </p>

@@ -104,6 +104,16 @@ export default function AdminDispatchPage() {
                     {o.contact.name} · {o.contact.phoneMasked} · {o.delivery.zoneName}
                   </p>
                   <p className="mt-1 text-sm text-paper">{o.delivery.addressPreview}</p>
+                  {o.delivery.location && (
+                    <a
+                      className="mt-1 inline-block text-sm font-semibold text-signal underline"
+                      href={`https://maps.google.com/?q=${o.delivery.location.lat},${o.delivery.location.lng}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Abrir ubicación GPS del cliente
+                    </a>
+                  )}
                   <p className="mt-1 text-sm text-muted">
                     {o.lines.length} {o.lines.length === 1 ? 'línea' : 'líneas'} · ventana {o.delivery.window.start}–{o.delivery.window.end}
                     {o.delivery.trackingCode ? ` · tracking ${o.delivery.trackingCode}` : ''}

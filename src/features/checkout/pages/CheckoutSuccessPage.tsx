@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Button } from '@/shared/components/ui/Button';
 import { SpeedLines } from '@/shared/components/brand/Logo';
@@ -11,6 +11,7 @@ import type { Order } from '@/features/orders/types';
 /** Pantalla de éxito tras crear la orden (paso 4 dedicado desde enlaces). */
 export default function CheckoutSuccessPage() {
   const { orderId } = useParams<{ orderId: string }>();
+  const navigate = useNavigate();
   useDocumentTitle('Pedido confirmado');
   const [order, setOrder] = useState<Order | null>(null);
 
@@ -41,6 +42,12 @@ export default function CheckoutSuccessPage() {
                 </dd>
               </div>
               <div className="flex justify-between">
+                <dt className="text-muted">Entrega</dt>
+                <dd className="font-semibold text-paper">
+                  {order.delivery.mode === 'pickup' ? 'Retiro en tienda' : 'Envío a domicilio'}
+                </dd>
+              </div>
+              <div className="flex justify-between">
                 <dt className="text-muted">Método</dt>
                 <dd className="font-semibold text-paper">{PAYMENT_METHOD_LABELS[order.payment.method]}</dd>
               </div>
@@ -48,13 +55,16 @@ export default function CheckoutSuccessPage() {
           </>
         )}
         <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
-          <Button onClick={() => window.location.assign(orderId ? `/pedido/${orderId}` : '/pedidos')} size="lg">
+          <Button onClick={() => navigate(orderId ? `/pedido/${orderId}` : '/pedidos')} size="lg">
             Ver mi pedido
           </Button>
-          <Button variant="secondary" onClick={() => window.location.assign('/catalogo')} size="lg">
+          <Button variant="secondary" onClick={() => navigate('/catalogo')} size="lg">
             Seguir comprando
           </Button>
         </div>
+        <p className="mt-4 text-sm text-muted">
+          Siguiente paso: sube tu comprobante de pago desde «Ver mi pedido».
+        </p>
       </div>
     </div>
   );
