@@ -27,23 +27,36 @@ export function clampSetQty(qty: number, stock: number): number {
 }
 
 /**
+ * Clave ÚNICA de una línea de carrito.
+ * Ronda 5e — CRÍTICO: el variantId NO es único entre productos (las variantes
+ * creadas desde /admin se llaman «v1», «v2»… en TODOS los productos). Agrupar
+ * solo por variantId hacía que agregar un segundo producto incrementara la
+ * línea del primero en vez de crear la suya. La identidad real de una línea es
+ * productId + variantId.
+ */
+export function cartLineKey(productId: string, variantId: string): string {
+  return `${productId}::${variantId}`;
+}
+
+/**
  * Fusión de carritos (invitado + usuario) al iniciar sesión.
- * · Mismo variantId → queda la mayor cantidad (respetando stock).
+ * · Misma línea (productId+variantId) → queda la mayor cantidad (respetando stock).
  * · El resto se une; nunca duplicados.
  */
 export function mergeCarts(
   guest: CartItem[],
   remote: CartItem[],
 ): CartItem[] {
-  const byVariant = new Map<string, CartItem>();
+  const byLine = new Map<string, CartItem>();
   const upsert = (item: CartItem) => {
-    const existing = byVariant.get(item.variantId);
+    const key = cartLineKey(item.productId, item.variantId);
+    const existing = byLine.get(key);
     if (!existing) {
-      byVariant.set(item.variantId, { ...item });
+      byLine.set(key, { ...item });
       return;
     }
     const mergedQty = Math.max(existing.qty, item.qty);
-    byVariant.set(item.variantId, {
+    byLine.set(key, {
       ...existing,
       qty: Math.min(Math.max(mergedQty, 1), Math.min(item.stockAtAdd, MAX_QTY_PER_LINE)),
       stockAtAdd: Math.max(existing.stockAtAdd, item.stockAtAdd),
@@ -51,7 +64,7 @@ export function mergeCarts(
   };
   remote.forEach(upsert);
   guest.forEach(upsert);
-  return [...byVariant.values()];
+  return [...byLine.values()];
 }
 
 /** Subtotal referencial para DISPLAY (el total autoritativo lo calcula el backend). */

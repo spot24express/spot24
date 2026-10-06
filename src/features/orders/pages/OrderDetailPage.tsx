@@ -12,7 +12,9 @@ import { EmptyState } from '@/shared/components/ui/States';
 import { subscribeOrder, listOrderEvents, cancelOrder, uploadReceipt } from '../services/orders.service';
 import type { Order, OrderEvent } from '../types';
 import { STATUS_CUSTOMER_TEXT, STATUS_LABELS, PAYMENT_METHOD_LABELS } from '@/shared/constants/orders';
-import { formatBs, formatUsd, maskReference } from '@/shared/lib/format';
+import { formatBs, usdToBs, maskReference } from '@/shared/lib/format';
+import { getProductsByIds } from '@/features/catalog/services/catalog.service';
+import { cleanProductName } from '@/shared/lib/display';
 import { userMessage } from '@/shared/lib/errors';
 import { AppError } from '@/shared/lib/errors';
 import { canTransition } from '@/shared/constants/orders';
@@ -28,6 +30,7 @@ export default function OrderDetailPage() {
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [receiptUrl, setReceiptUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [brands, setBrands] = useState<Record<string, string>>({});
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -43,6 +46,27 @@ export default function OrderDetailPage() {
     if (!orderId || !order) return;
     void listOrderEvents(orderId).then(setEvents).catch(() => setEvents([]));
   }, [orderId, order?.updatedAt]);
+
+  /* Marca visible como en el carrito: las órdenes nuevas la traen congelada
+   * en cada línea; en las viejas se consulta el catálogo (1 lectura por
+   * producto, tope 30 — misma política de reparación del carrito). */
+  useEffect(() => {
+    if (!order) return;
+    const missing = [...new Set(order.lines.filter((l) => !l.brand).map((l) => l.productId))];
+    if (missing.length === 0) return;
+    let alive = true;
+    void getProductsByIds(missing)
+      .then((ps) => {
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const p of ps) map[p.id] = p.brand || '';
+        setBrands((prev) => ({ ...prev, ...map }));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [order?.id]);
 
   if (!loaded) {
     return (
@@ -67,6 +91,14 @@ export default function OrderDetailPage() {
   const canCancel = canTransition(order.status, 'cancelado');
   const needsReceipt = !order.payment.hasReceipt && order.status !== 'entregado' && order.status !== 'cancelado';
   const receiptToShow = order.payment.receiptUrl ?? null;
+
+  /* Ronda 3: el cliente SOLO ve bolívares. Toda partida se muestra en Bs con
+   * el monto oficial del servidor (subtotalVes/shippingVes/ivaVes) y, en las
+   * órdenes creadas antes de esta ronda (que no traen el desglose), se
+   * convierte en pantalla con la tasa exacta de la orden (rateUsed). */
+  const orderRate = order.totals.rateUsed ?? 0;
+  const toBs = (usd: number, official?: number): string =>
+    official && official > 0 ? formatBs(official) : orderRate > 0 ? formatBs(usdToBs(usd, orderRate)) : 'Bs. —';
 
   const onUpload = async (file: File) => {
     setBusy(true);
@@ -114,16 +146,28 @@ export default function OrderDetailPage() {
           <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
             <h2 className="font-display text-lg font-bold italic uppercase text-paper">Artículos</h2>
             <ul className="mt-4 space-y-4">
-              {order.lines.map((line) => (
-                <li key={line.variantId} className="flex items-center gap-4">
-                  <img src={line.image} alt={line.name} className="h-16 w-16 rounded-brand border border-line object-cover" loading="lazy" />
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-semibold text-paper">{line.name}</p>
-                    <p className="text-sm text-muted">{line.variantName} × {line.qty}</p>
-                  </div>
-                  <span className="font-display font-bold italic text-paper">{formatUsd(line.lineTotalUsd)}</span>
-                </li>
-              ))}
+              {order.lines.map((line) => {
+                /* Key compuesta productId+variantId: en órdenes viejas varias
+                   líneas comparten variantId «v1» y una key simple duplicaba. */
+                /* Marca SIEMPRE arriba, sola (snapshot de la orden o catálogo
+                   en órdenes viejas); el nombre no repite la marca. La variante
+                   no se muestra al cliente: solo la cantidad. */
+                const brand = line.brand || brands[line.productId] || '';
+                const displayName = brand ? cleanProductName(line.name, brand) : line.name;
+                return (
+                  <li key={`${line.productId}:${line.variantId}`} className="flex items-center gap-4">
+                    <img src={line.image} alt={displayName} className="h-16 w-16 rounded-brand border border-line object-cover" loading="lazy" />
+                    <div className="min-w-0 flex-1">
+                      {brand && <p className="spot-label">{brand}</p>}
+                      <p className="truncate font-semibold text-paper">{displayName}</p>
+                      <p className="text-sm text-muted">Cantidad: {line.qty}</p>
+                    </div>
+                    <span className="font-display font-bold italic text-paper">
+                      {toBs(line.lineTotalUsd)}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           </section>
         </div>
@@ -133,7 +177,7 @@ export default function OrderDetailPage() {
           <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
             <h2 className="font-display text-lg font-bold italic uppercase text-paper">Totales</h2>
             <dl className="mt-4 space-y-2">
-              <Row label="Subtotal" value={formatUsd(order.totals.subtotalUsd)} />
+              <Row label="Subtotal" value={toBs(order.totals.subtotalUsd, order.totals.subtotalVes)} />
               <Row
                 label="Envío"
                 value={
@@ -141,17 +185,16 @@ export default function OrderDetailPage() {
                     ? order.delivery.mode === 'pickup'
                       ? 'Retiro en tienda · Gratis'
                       : 'Gratis'
-                    : formatUsd(order.totals.shippingUsd)
+                    : toBs(order.totals.shippingUsd, order.totals.shippingVes)
                 }
               />
               {(order.totals.ivaPercent ?? 0) > 0 && (
                 <Row
                   label={`IVA (${String(order.totals.ivaPercent).replace('.', ',')}%)`}
-                  value={formatUsd(order.totals.ivaUsd ?? 0)}
+                  value={toBs(order.totals.ivaUsd ?? 0, order.totals.ivaVes)}
                 />
               )}
-              <Row label="Total USD" value={formatUsd(order.totals.totalUsd)} strong />
-              <Row label="Total Bs" value={formatBs(order.totals.totalVes)} />
+              <Row label="Total a pagar" value={formatBs(order.totals.totalVes)} strong />
             </dl>
           </section>
 

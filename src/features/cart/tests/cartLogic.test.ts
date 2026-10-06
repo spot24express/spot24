@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateAdd, clampSetQty, mergeCarts, subtotalRef, itemCount } from '../lib/cartLogic';
+import { validateAdd, clampSetQty, mergeCarts, subtotalRef, itemCount, cartLineKey } from '../lib/cartLogic';
 import type { CartItem } from '../types';
 
 const item = (variantId: string, qty: number, stockAtAdd = 10, unitPriceUsd = 5): CartItem => ({
@@ -73,6 +73,22 @@ describe('fusión de carritos al iniciar sesión', () => {
   it('carritos vacíos no rompen', () => {
     expect(mergeCarts([], [])).toEqual([]);
     expect(mergeCarts([item('v1', 1)], [])).toHaveLength(1);
+  });
+
+  it('ronda 5e: variantes «v1» de productos DISTINTOS no se fusionan (choque de ids del admin)', () => {
+    // El admin crea variantes «v1» en todos los productos: la identidad de la
+    // línea es productId+variantId, no variantId solo.
+    const a = { ...item('v1', 2, 10), productId: 'pA' };
+    const b = { ...item('v1', 1, 10), productId: 'pB' };
+    const merged = mergeCarts([a], [b]);
+    expect(merged).toHaveLength(2);
+    expect(merged.find((i) => i.productId === 'pA')?.qty).toBe(2);
+    expect(merged.find((i) => i.productId === 'pB')?.qty).toBe(1);
+  });
+
+  it('cartLineKey distingue productos con la misma variante', () => {
+    expect(cartLineKey('pA', 'v1')).not.toBe(cartLineKey('pB', 'v1'));
+    expect(cartLineKey('pA', 'v1')).toBe(cartLineKey('pA', 'v1'));
   });
 });
 

@@ -4,8 +4,13 @@
  * · Cotización autoritativa por zona y monto en Bs (callable fn-quoteTotals).
  * · La orden la crea EXCLUSIVAMENTE la Cloud Function fn-createOrder con App
  *   Check e idempotencia: el cliente nunca escribe en orders ni calcula montos.
+ * · FLUJO ESTRICTO (ronda 5i-k): el comprobante de pago se adjunta OBLIGA-
+ *   TORIAMENTE en el paso Pago y viaja con fn-createOrder (base64 comprimido).
+ *   El servidor lo sube a imgbb ANTES de crear la orden → el pedido nace en
+ *   en_verificacion con hasReceipt: true. Ya no existen pedidos sin pago y
+ *   el cajero solo ve pedidos ya pagados en su cola.
  */
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from '@/shared/lib/toast';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
@@ -27,10 +32,13 @@ import { getPaymentAccounts } from '@/shared/services/settings.service';
 import {
   isValidPersonName, isValidCedulaVE, isValidPhoneVE,
   isValidPaymentReference, normalizeCedulaVE, normalizePhoneVE, sanitizeMultiline, sanitizeText,
+  isAllowedUploadType, RECEIPT_IMAGE_TYPES,
 } from '@/shared/lib/validation';
+import { MAX_INPUT_MB, fileToBase64 } from '@/shared/lib/imageCompress';
 import { userMessage, AppError } from '@/shared/lib/errors';
 import { trackEvent } from '@/shared/lib/analytics';
-import { formatBs, formatUsd, usdToBs } from '@/shared/lib/format';
+import { formatBs, usdToBs } from '@/shared/lib/format';
+import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import type { CreateOrderResponse, QuoteResponse, ReservationResponse, FulfillmentMode } from '../types';
 import type { PaymentMethod } from '@/shared/constants/orders';
 import { getGeneralSettings } from '@/shared/services/settings.service';
@@ -47,6 +55,12 @@ interface PaymentForm {
   method: PaymentMethod;
   banco: string; cedula: string; telefono: string; referencia: string; fecha: string;
 }
+/** Comprobante ya comprimido y listo para viajar con createOrder (5i-k). */
+interface ReceiptReady {
+  name: string;
+  sizeKb: number;
+  base64: string;
+}
 
 /** Operación actual: solo Maracay, Aragua. Estado y ciudad se fijan aquí. */
 const ZONE_STATE = 'Aragua';
@@ -58,6 +72,8 @@ export default function CheckoutPage() {
   const { items, clear, isEmpty } = useCart();
   const { user } = useAuth();
   const { data: zones } = useZones();
+  // Tasa BCV en vivo: para mostrar el envío por zona en Bs en el selector.
+  const liveRate = useBcvRate();
 
   const [step, setStep] = useState(0);
   const [fulfillment, setFulfillment] = useState<FulfillmentMode>('delivery');
@@ -76,30 +92,50 @@ export default function CheckoutPage() {
   const [busy, setBusy] = useState(false);
   const [gpsBusy, setGpsBusy] = useState(false);
   const [created, setCreated] = useState<CreateOrderResponse | null>(null);
+  // FLUJO ESTRICTO (5i-k): comprobante obligatorio en el paso Pago.
+  const [receipt, setReceipt] = useState<ReceiptReady | null>(null);
+  const [receiptBusy, setReceiptBusy] = useState(false);
+  const receiptInputRef = useRef<HTMLInputElement>(null);
 
   // Reserva de stock 2 h al entrar al checkout (5.2).
+  // Ronda 5i-b: guard con useRef — StrictMode (dev) monta→desmonta→monta y
+  // disparaba DOS fn-reserveStock simultáneos, justo cuando el servidor está
+  // en frío tras reiniciar netlify dev (la 1ª llamada tarda 10-30 s locales).
+  // Con una sola llamada y la reserva idempotente por uid del servidor
+  // (Ronda 5i-b), reintentar es seguro: libera el hold anterior y crea el
+  // nuevo sin apilar stockReserved fantasma.
+  const reserveFired = useRef(false);
   useEffect(() => {
-    if (isEmpty) return;
-    let alive = true;
-    void reserveStock(
-      items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
-    )
-      .then((res) => {
-        if (alive) setReservation(res);
-      })
-      .catch(() => {
-        // La reserva se reintentará al confirmar; no bloquea el flujo.
-      });
-    return () => {
-      alive = false;
+    if (isEmpty || reserveFired.current) return;
+    reserveFired.current = true;
+    const reservar = (intento: number) => {
+      void reserveStock(
+        items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
+      )
+        .then((res) => {
+          setReservation(res);
+        })
+        .catch(() => {
+          // 1 reintento automático: el arranque en frío de netlify dev a veces
+          // supera los 25 s del cliente; el 2º intento ya va tibio y la
+          // reserva es idempotente en el servidor. Si también falla, no
+          // bloquea el flujo: al confirmar, createOrder revalida el stock.
+          if (intento === 0) setTimeout(() => reservar(1), 1500);
+        });
     };
+    reservar(0);
+    // Sin cleanup alive: React 18 hace no-op el setState tras desmontar y una
+    // reserva huérfana se libera sola (vence ≤2 h; la barre el servidor o la
+    // próxima reserva del mismo uid la reemplaza).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Datos precargados del perfil.
+  // Datos precargados del perfil. El teléfono vive en users/{uid}.phoneE164
+  // como +58XXXXXXXXX (uso interno): al cliente NUNCA se le muestra el +58,
+  // se normaliza a formato local 04XXXXXXXXX antes de tocar la pantalla.
   useEffect(() => {
     if (user) {
-      setContact((c) => ({ ...c, name: user.name || c.name, phone: user.phone ?? c.phone }));
+      setContact((c) => ({ ...c, name: user.name || c.name, phone: normalizePhoneVE(user.phone ?? '') || c.phone }));
     }
   }, [user]);
 
@@ -194,6 +230,38 @@ export default function CheckoutPage() {
     );
   };
 
+  /* ── FLUJO ESTRICTO: comprobante de pago (5i-k) ──
+   * Misma política que «Ver mi pedido»: solo imágenes JPG/PNG/WebP (los
+   * bancos entregan capturas; si el cliente tiene PDF, captura de pantalla),
+   * tope de 12 MB y compresión local a JPEG antes de viajar. La imagen se
+   * guarda COMPRIMIDA en el estado y viaja con fn-createOrder: si imgbb
+   * falla, el servidor rechaza y NO se crea pedido sin pago. */
+  const pickReceipt = async (file: File | null): Promise<void> => {
+    if (!file) return;
+    if (!isAllowedUploadType(file.type, RECEIPT_IMAGE_TYPES)) {
+      toast.error('Solo imágenes JPG, PNG o WebP. Si tu comprobante es PDF, toma una captura de pantalla.');
+      return;
+    }
+    if (file.size > MAX_INPUT_MB * 1024 * 1024) {
+      toast.error(`La imagen pasa de ${MAX_INPUT_MB} MB. Toma una captura más liviana.`);
+      return;
+    }
+    setReceiptBusy(true);
+    try {
+      const base64 = await fileToBase64(file);
+      setReceipt({ name: file.name, sizeKb: Math.max(1, Math.round(file.size / 1024)), base64 });
+      setErrors((e) => ({ ...e, receipt: null }));
+    } catch (err) {
+      if (err instanceof Error && err.message === 'too-big') {
+        toast.error('La imagen quedó muy grande incluso comprimida. Toma una captura de menos resolución.');
+      } else {
+        toast.error('No pudimos leer la imagen. Prueba con otra.');
+      }
+    } finally {
+      setReceiptBusy(false);
+    }
+  };
+
   if (isEmpty && !created) {
     return (
       <div className="spot-container py-16">
@@ -237,6 +305,10 @@ export default function CheckoutPage() {
     if (!isValidPhoneVE(payment.telefono)) e['telefono'] = 'Teléfono móvil del pago.';
     if (!isValidPaymentReference(payment.referencia)) e['referencia'] = 'Los últimos 6 dígitos de la referencia (los muestra el banco).';
     if (!payment.fecha) e['fecha'] = 'Fecha del pago.';
+    // FLUJO ESTRICTO (5i-k): sin comprobante no se avanza. El pedido se
+    // envía ya pagado: nace en verificación y el cajero lo aprueba con la
+    // foto delante, sin llamadas de «solicítalo por teléfono».
+    if (!receipt) e['receipt'] = 'Adjunta la foto del comprobante de pago: el pedido se envía ya pagado.';
     setErrors(e);
     return Object.values(e).every((x) => !x);
   };
@@ -245,6 +317,12 @@ export default function CheckoutPage() {
   const confirm = async (ev: FormEvent) => {
     ev.preventDefault();
     if (!user) return;
+    // Guard de doble llave: sin comprobante no se llama al servidor (5i-k).
+    if (!receipt) {
+      toast.error('Adjunta el comprobante de pago: el pedido se envía ya pagado.');
+      setStep(2);
+      return;
+    }
     setBusy(true);
     try {
       const uid = user.uid;
@@ -311,6 +389,11 @@ export default function CheckoutPage() {
           notes: sanitizeMultiline(address.notes, 300),
           paymentMethod: payment.method,
           paymentDetails,
+          // FLUJO ESTRICTO (5i-k): el comprobante viaja CON la orden. El
+          // servidor lo sube a imgbb ANTES de escribir el documento: si la
+          // subida falla, NO hay pedido y el cliente reintenta sin perder
+          // nada (la imagen sigue aquí, lista para reenviar).
+          receiptImage: receipt.base64,
         },
       );
 
@@ -356,31 +439,36 @@ export default function CheckoutPage() {
           </div>
           <dl className="mt-6 space-y-2 text-left">
             <Row label="Total a pagar" value={formatBs(created.totals.totalVes)} strong />
-            <Row label="Equivale a" value={formatUsd(created.totals.totalUsd)} />
             <Row
               label="Envío"
               value={
                 created.totals.shippingUsd === 0
                   ? 'Gratis'
-                  : created.totals.rateUsed > 0
-                    ? formatBs(usdToBs(created.totals.shippingUsd, created.totals.rateUsed))
-                    : formatUsd(created.totals.shippingUsd)
+                  : created.totals.shippingVes && created.totals.shippingVes > 0
+                    ? formatBs(created.totals.shippingVes)
+                    : formatBs(usdToBs(created.totals.shippingUsd, created.totals.rateUsed))
               }
             />
             {(created.totals.ivaPercent ?? 0) > 0 && (
               <Row
                 label={`IVA (${String(created.totals.ivaPercent).replace('.', ',')}%)`}
                 value={
-                  created.totals.rateUsed > 0
-                    ? formatBs(usdToBs(created.totals.ivaUsd ?? 0, created.totals.rateUsed))
-                    : formatUsd(created.totals.ivaUsd ?? 0)
+                  created.totals.ivaVes && created.totals.ivaVes > 0
+                    ? formatBs(created.totals.ivaVes)
+                    : formatBs(usdToBs(created.totals.ivaUsd ?? 0, created.totals.rateUsed))
                 }
               />
             )}
           </dl>
+          {/* FLUJO ESTRICTO (5i-k): el comprobante ya viajó con el pedido.
+              Ya no se pide «sube tu comprobante»: el siguiente paso es la
+              verificación del pago por el personal, con aviso por push. */}
           <div className="mt-6 rounded-brand border-2 border-line bg-ink p-4 text-left">
             <p className="spot-label mb-1">Siguiente paso</p>
-            <p className="text-body-base text-paper">{PAYMENT_INSTRUCTIONS[payment.method]}</p>
+            <p className="text-body-base text-paper">
+              Recibimos tu comprobante ({PAYMENT_METHOD_LABELS[payment.method]}): tu pedido ya está en la cola de
+              verificación. Te avisamos con una notificación apenas confirmemos el pago.
+            </p>
           </div>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
             <Button onClick={() => navigate(`/pedido/${created.orderId}`)} size="lg">
@@ -399,7 +487,7 @@ export default function CheckoutPage() {
               <h2 className="font-display text-lg font-bold italic uppercase text-paper">Tus datos</h2>
               <Input label="Nombre y apellido" value={contact.name} onChange={(e) => setContact((c) => ({ ...c, name: e.target.value }))} error={errors['name']} required />
               <Input label="Cédula (solo números)" value={contact.cedula} onChange={(e) => setContact((c) => ({ ...c, cedula: e.target.value }))} placeholder="12345678" inputMode="numeric" error={errors['cedula']} required />
-              <Input label="Teléfono" type="tel" value={contact.phone} onChange={(e) => setContact((c) => ({ ...c, phone: e.target.value }))} placeholder="04241234567" error={errors['phone']} required />
+              <Input label="Teléfono" type="tel" inputMode="numeric" value={contact.phone} onChange={(e) => setContact((c) => ({ ...c, phone: e.target.value }))} placeholder="04243036024" hint="Empieza con 0412, 0414, 0416, 0422, 0424 o 0426." error={errors['phone']} required />
               <Button
                 size="lg"
                 fullWidth
@@ -454,7 +542,7 @@ export default function CheckoutPage() {
                     <p className="mt-2 text-sm text-muted">Horario: {pickupInfo.hours}</p>
                   )}
                   <p className="mt-2 text-sm text-muted">
-                    Te avisamos cuando esté listo. Pago por Pago Móvil igual que siempre.
+                    Paga con Pago Móvil y adjunta el comprobante en el siguiente paso.
                   </p>
                 </div>
               ) : (
@@ -469,7 +557,7 @@ export default function CheckoutPage() {
                     <option value="">Selecciona tu zona…</option>
                     {zones?.filter((z) => z.active).map((z) => (
                       <option key={z.id} value={z.id}>
-                        {z.name} · ${z.feeUsd.toFixed(2)} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
+                        {z.name} · Envío {liveRate ? formatBs(usdToBs(z.feeUsd, liveRate.rate)) : 'por zona'} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
                       </option>
                     ))}
                   </Select>
@@ -531,7 +619,14 @@ export default function CheckoutPage() {
                   quote.rateUsed > 0 ? (
                     <>
                       <dl className="mt-4 space-y-2">
-                        <Row label="Subtotal" value={formatBs(usdToBs(quote.subtotalUsd, quote.rateUsed))} />
+                        <Row
+                          label="Subtotal"
+                          value={
+                            quote.subtotalVes && quote.subtotalVes > 0
+                              ? formatBs(quote.subtotalVes)
+                              : formatBs(usdToBs(quote.subtotalUsd, quote.rateUsed))
+                          }
+                        />
                         <Row
                           label="Envío"
                           value={
@@ -539,57 +634,48 @@ export default function CheckoutPage() {
                               ? fulfillment === 'pickup'
                                 ? 'Retiro en tienda · Gratis'
                                 : 'Gratis'
-                              : formatBs(usdToBs(quote.shippingUsd, quote.rateUsed))
+                              : quote.shippingVes && quote.shippingVes > 0
+                                ? formatBs(quote.shippingVes)
+                                : formatBs(usdToBs(quote.shippingUsd, quote.rateUsed))
                           }
                         />
                         {(quote.ivaPercent ?? 0) > 0 && (
                           <Row
                             label={`IVA (${String(quote.ivaPercent).replace('.', ',')}%)`}
-                            value={formatBs(usdToBs(quote.ivaUsd ?? 0, quote.rateUsed))}
+                            value={
+                              quote.ivaVes && quote.ivaVes > 0
+                                ? formatBs(quote.ivaVes)
+                                : formatBs(usdToBs(quote.ivaUsd ?? 0, quote.rateUsed))
+                            }
                           />
                         )}
                         <Row label="Total a pagar" value={formatBs(quote.totalVes)} strong />
                       </dl>
-                      <p className="mt-3 spot-label">
-                        Tasa BCV: {quote.rateUsed.toFixed(2).replace('.', ',')} Bs/USD · Equivale a {formatUsd(quote.totalUsd)}
-                      </p>
                     </>
                   ) : (
-                    <>
-                      {/* Sin tasa publicada aún: mostramos USD y avisamos. */}
-                      <dl className="mt-4 space-y-2">
-                        <Row label="Subtotal" value={formatUsd(quote.subtotalUsd)} />
-                        <Row
-                          label="Envío"
-                          value={
-                            quote.shippingUsd === 0
-                              ? fulfillment === 'pickup'
-                                ? 'Retiro en tienda · Gratis'
-                                : 'Gratis'
-                              : formatUsd(quote.shippingUsd)
-                          }
-                        />
-                        {(quote.ivaPercent ?? 0) > 0 && (
-                          <Row label={`IVA (${String(quote.ivaPercent).replace('.', ',')}%)`} value={formatUsd(quote.ivaUsd ?? 0)} />
-                        )}
-                        <Row label="Total a pagar" value={formatUsd(quote.totalUsd)} strong />
-                      </dl>
-                      <p className="mt-3 spot-label text-signal">
-                        Tasa BCV aún no publicada: mostramos montos en USD mientras tanto.
+                    <div className="mt-3">
+                      {/* El backend EXIGE tasa publicada para cotizar: si llegara
+                          en cero (no debería), tratamos igual que un fallo. */}
+                      <p className="text-muted">
+                        No pudimos calcular el monto exacto en bolívares en este
+                        momento. Reintenta en unos minutos.
                       </p>
-                    </>
+                      <Button variant="secondary" className="mt-3" type="button" onClick={() => setQuoteAttempt((n) => n + 1)}>
+                        Reintentar
+                      </Button>
+                    </div>
                   )
                 ) : quoteState === 'error' ? (
                   <div className="mt-3">
                     <p className="text-muted">
-                      No pudimos calcular tus montos: el servidor no respondió. Verifica tu conexión y reintenta.
+                      No pudimos calcular tus montos en este momento. Verifica tu conexión y reintenta.
                     </p>
                     <Button variant="secondary" className="mt-3" type="button" onClick={() => setQuoteAttempt((n) => n + 1)}>
                       Reintentar
                     </Button>
                   </div>
                 ) : (
-                  <p className="mt-3 text-muted">Calculando montos en el servidor…</p>
+                  <p className="mt-3 text-muted">Calculando montos exactos…</p>
                 )}
                 {reservation && (
                   <p className="mt-3 spot-label text-signal">
@@ -601,6 +687,7 @@ export default function CheckoutPage() {
               {/* Métodos de pago */}
               <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
                 <h2 className="font-display text-lg font-bold italic uppercase text-paper">Método de pago</h2>
+                <p className="mt-2 text-sm text-muted">{PAYMENT_INSTRUCTIONS[payment.method]}</p>
                 <div
                   aria-label="Método de pago"
                   className="mt-4 flex min-h-[56px] items-center rounded-brand border-2 border-signal bg-signal/10 px-4 py-3 font-body font-semibold text-signal"
@@ -615,7 +702,9 @@ export default function CheckoutPage() {
                     <ul className="space-y-1 text-body-base text-paper">
                       <li>Banco: <strong>{zoneAccounts[0].bank}</strong></li>
                       <li>RIF: <strong>{zoneAccounts[0].rif}</strong></li>
-                      {zoneAccounts[0].phone && <li>Teléfono: <strong>{zoneAccounts[0].phone}</strong></li>}
+                      {zoneAccounts[0].phone && normalizePhoneVE(zoneAccounts[0].phone) && (
+                        <li>Teléfono: <strong>{normalizePhoneVE(zoneAccounts[0].phone)}</strong></li>
+                      )}
                       {zoneAccounts[0].accountNumber && <li>Cuenta: <strong>{zoneAccounts[0].accountNumber}</strong></li>}
                       {zoneAccounts[0].email && <li>Correo: <strong>{zoneAccounts[0].email}</strong></li>}
                     </ul>
@@ -635,6 +724,67 @@ export default function CheckoutPage() {
                 </div>
               </section>
 
+              {/* FLUJO ESTRICTO (5i-k): comprobante OBLIGATORIO aquí. El
+                  pedido nace con el pago incluido y el cajero solo ve pedidos
+                  ya pagados: nadie aprobará a ciegas ni llamará «para pedir el
+                  comprobante». */}
+              <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Comprobante de pago">
+                <h2 className="font-display text-lg font-bold italic uppercase text-paper">Comprobante de pago</h2>
+                <p className="mt-2 text-sm text-muted">
+                  Adjunta la foto o captura del comprobante de tu Pago Móvil. El pedido se envía con el pago
+                  incluido y entra directo a verificación: así no te llamamos para pedirla.
+                </p>
+                <input
+                  ref={receiptInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="hidden"
+                  aria-label="Adjuntar comprobante de pago"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0] ?? null;
+                    void pickReceipt(f);
+                    // Reset del value: elegir la MISMA foto otra vez re-dispara onChange.
+                    e.target.value = '';
+                  }}
+                />
+                {receipt ? (
+                  <div className="mt-4 flex flex-wrap items-center gap-3 rounded-brand border-2 border-signal bg-signal/10 p-4">
+                    <svg className="h-5 w-5 shrink-0 text-signal" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
+                      <path d="M8 12.5l2.5 2.5L16 9.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-semibold text-paper">{receipt.name}</p>
+                      <p className="text-xs text-muted">{receipt.sizeKb} KB · comprimida y lista para enviar</p>
+                    </div>
+                    <Button variant="secondary" size="sm" type="button" onClick={() => receiptInputRef.current?.click()}>
+                      Cambiar
+                    </Button>
+                    <Button
+                      variant="danger-ghost"
+                      size="sm"
+                      type="button"
+                      onClick={() => {
+                        setReceipt(null);
+                        setErrors((e) => ({ ...e, receipt: 'Adjunta la foto del comprobante de pago: el pedido se envía ya pagado.' }));
+                      }}
+                    >
+                      Quitar
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="mt-4">
+                    <Button variant="secondary" type="button" loading={receiptBusy} onClick={() => receiptInputRef.current?.click()}>
+                      Adjuntar comprobante (foto)
+                    </Button>
+                    <p className="mt-2 text-xs text-muted">JPG, PNG o WebP · hasta {MAX_INPUT_MB} MB (la comprimimos por ti).</p>
+                  </div>
+                )}
+                {errors['receipt'] && (
+                  <p className="mt-2 text-sm font-semibold text-signal">{errors['receipt']}</p>
+                )}
+              </section>
+
               <div className="flex gap-3">
                 <Button variant="secondary" type="button" onClick={() => setStep(1)}>Volver</Button>
                 <Button
@@ -649,7 +799,7 @@ export default function CheckoutPage() {
               </div>
               {quoteState !== 'ok' && (
                 <p className="text-center text-sm text-muted">
-                  Esperando los montos del servidor para seguir.
+                  Esperando los montos exactos para seguir.
                 </p>
               )}
             </div>
@@ -669,17 +819,17 @@ export default function CheckoutPage() {
                     value={fulfillment === 'pickup' ? 'Retiro en tienda' : (zone?.name ?? address.zoneId)}
                   />
                   <Row label="Método de pago" value={PAYMENT_METHOD_LABELS[payment.method]} />
+                  <Row label="Comprobante" value={receipt ? receipt.name : 'Sin adjuntar'} />
                   {quote && (
                     <Row
                       label="Total a pagar"
-                      value={quote.totalVes > 0 ? `${formatBs(quote.totalVes)} · ≈ ${formatUsd(quote.totalUsd)}` : formatUsd(quote.totalUsd)}
+                      value={formatBs(quote.totalVes)}
                       strong
                     />
                   )}
                 </dl>
-                <p className="mt-4 text-sm text-muted">
-                  Al confirmar, el servidor valida el stock, calcula los montos finales en
-                  bolívares y crea tu orden. Los reintentos no duplican pedidos.
+                <p className="mt-3 text-xs text-muted">
+                  Al confirmar, el comprobante viaja con el pedido y este entra directo a verificación de pago.
                 </p>
               </section>
               <div className="flex gap-3">

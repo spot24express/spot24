@@ -6,14 +6,27 @@
  * Nunca en el código ni en el repo. Los logs nunca imprimen campos cifrados.
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import { HttpsError } from 'firebase-functions/v2/https';
 
 function getKey(): Buffer {
   const hex = process.env['ENC_KEY_HEX'];
   if (hex && /^[0-9a-f]{64}$/i.test(hex)) {
     return Buffer.from(hex, 'hex');
   }
-  // Clave derivada de respaldo (solo para dev): usa projectId como semilla.
-  // EN PRODUCCIÓN: definir ENC_KEY_HEX con `firebase functions:secrets:set`.
+  // PRODUCCIÓN (Netlify): sin clave real NO se cifra con material predecible.
+  // La clave de respaldo se derivaba del projectId y es computable por quien
+  // lea este repo (público): fail closed con instrucción accionable.
+  if (process.env['NETLIFY'] === 'true') {
+    throw new HttpsError(
+      'failed-precondition',
+      'ENC_KEY_HEX no configurada: Netlify → Site configuration → Environment variables → añade ENC_KEY_HEX (64 caracteres hex, p. ej. con: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))") → guarda y redeploy. Usa la MISMA clave en el .env local (ver LEEME-RONDA-3).',
+    );
+  }
+  // Desarrollo local (netlify dev): se permite la derivada para no bloquear
+  // las pruebas; queda el aviso visible en la terminal.
+  console.warn(
+    '[crypto] ENC_KEY_HEX ausente: clave derivada SOLO para desarrollo. En Netlify esta operación fallará hasta configurar la variable.',
+  );
   const seed = `spot24-fallback-${process.env['GCLOUD_PROJECT'] ?? 'dev'}`;
   return createHash('sha256').update(seed).digest();
 }

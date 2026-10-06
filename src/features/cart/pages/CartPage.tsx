@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { useCart } from '../hooks/useCart';
@@ -8,17 +9,64 @@ import { SpeedDivider } from '@/shared/components/brand/Logo';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { formatBs, usdToBs } from '@/shared/lib/format';
+import { cleanProductName } from '@/shared/lib/display';
 import { VOICE } from '@/shared/constants/brand';
-import { clampSetQty } from '../lib/cartLogic';
+import { clampSetQty, cartLineKey } from '../lib/cartLogic';
+import { getProductsByIds } from '@/features/catalog/services/catalog.service';
+import { useCartStore, type SnapshotFix } from '../store/cart.store';
 
-/** Carrito persistente con validación de stock y totales referenciales (5.2). */
+/**
+ * Carrito persistente con validación de stock y totales referenciales (5.2).
+ *
+ * Ronda 5e:
+ * · La tarjeta muestra MARCA arriba y el nombre sin repetir la marca, igual
+ *   que el catálogo (cleanProductName). Aunque el admin guardara el nombre
+ *   como «POLARCAR Caroreña Verano», aquí solo se ve «POLAR / Caroreña Verano».
+ * · Auto-reparación: las líneas agregadas antes de esta ronda guardaron el
+ *   nombre congelado y sin marca. Al abrir el carrito se consulta el producto
+ *   vigente (lectura puntual, 1 vez por producto) y la línea se actualiza con
+ *   su marca y nombre actuales. Precio y cantidad NUNCA se tocan.
+ * · Cada línea se identifica por productId+variantId: las variantes «v1» de
+ *   productos distintos ya no se pisan entre sí.
+ */
 export default function CartPage() {
   useDocumentTitle('Mi carrito');
   const navigate = useNavigate();
   const { items, setQty, removeItem, count, subtotalRef, isEmpty } = useCart();
+  const repairSnapshots = useCartStore((s) => s.repairSnapshots);
   const { user } = useAuth();
   const rate = useBcvRate();
+  // Ronda 3: el cliente SOLO ve bolívares; el subtotal USD es interno.
   const subtotalBs = rate ? usdToBs(subtotalRef, rate.rate) : null;
+
+  // ── Auto-reparación de líneas viejas (sin marca congelada) ──────────────
+  const attempted = useRef<Set<string>>(new Set());
+  const repairing = useRef(false);
+  useEffect(() => {
+    if (repairing.current) return;
+    const pending = items.filter((i) => !i.brand && !attempted.current.has(i.productId));
+    if (pending.length === 0) return;
+    const ids = [...new Set(pending.map((i) => i.productId))];
+    ids.forEach((id) => attempted.current.add(id));
+    repairing.current = true;
+    void getProductsByIds(ids)
+      .then((products) => {
+        const fixes: SnapshotFix[] = [];
+        for (const line of pending) {
+          const p = products.find((x) => x.id === line.productId);
+          // Solo repara si la marca VIGENTE difiere del snapshot: así no se
+          // reescribe el carrito en cada visita sin necesidad.
+          if (p && (p.brand !== line.brand || p.name !== line.name)) {
+            fixes.push({ productId: line.productId, variantId: line.variantId, name: p.name, brand: p.brand });
+          }
+        }
+        if (fixes.length > 0) repairSnapshots(fixes);
+      })
+      .catch(() => undefined) // sin catálogo disponible: la línea queda como está
+      .finally(() => {
+        repairing.current = false;
+      });
+  }, [items, repairSnapshots]);
 
   if (isEmpty) {
     return (
@@ -42,65 +90,72 @@ export default function CartPage() {
       <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_360px]">
         {/* LÍNEAS */}
         <ul className="space-y-4" aria-label="Artículos del carrito">
-          {items.map((item) => (
-            <li
-              key={item.variantId}
-              className="flex gap-4 rounded-brand-lg border-2 border-line bg-surface-1 p-4"
-            >
-              <img
-                src={item.image}
-                alt={item.name}
-                className="h-24 w-24 shrink-0 rounded-brand border border-line object-cover"
-                loading="lazy"
-              />
-              <div className="flex min-w-0 flex-1 flex-col">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="spot-label">{item.sku}</p>
-                    <h2 className="truncate font-display text-base font-bold italic uppercase text-paper">
-                      {item.name}
-                    </h2>
-                    <p className="text-sm text-muted">{item.variantName}</p>
+          {items.map((item) => {
+            // Marca arriba, nombre sin repetirla: misma presentación que la
+            // tarjeta del catálogo. Ítems viejos: la reparación trae la marca.
+            const displayName = cleanProductName(item.name, item.brand ?? '');
+            return (
+              <li
+                key={cartLineKey(item.productId, item.variantId)}
+                className="flex gap-4 rounded-brand-lg border-2 border-line bg-surface-1 p-4"
+              >
+                <img
+                  src={item.image}
+                  alt={displayName}
+                  className="h-24 w-24 shrink-0 rounded-brand border border-line object-cover"
+                  loading="lazy"
+                />
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      {/* Marca SIEMPRE arriba, sola (respaldo: sku del ítem). */}
+                      <p className="spot-label">{item.brand || item.sku}</p>
+                      <h2 className="truncate font-display text-base font-bold italic uppercase text-paper">
+                        {displayName}
+                      </h2>
+                      {/* La variante (ej. «Estándar») ya no se muestra al cliente:
+                          la eligió en la ficha y solo agrega ruido visual. */}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeItem(item.productId, item.variantId)}
+                      aria-label={`Quitar ${displayName}`}
+                      className="rounded-brand p-2 text-muted hover:bg-surface-2 hover:text-signal"
+                    >
+                      <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+                        <path d="M4 5h12M8 5V3h4v2M6.5 5l.8 11h5.4l.8-11" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => removeItem(item.variantId)}
-                    aria-label={`Quitar ${item.name}`}
-                    className="rounded-brand p-2 text-muted hover:bg-surface-2 hover:text-signal"
-                  >
-                    <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
-                      <path d="M4 5h12M8 5V3h4v2M6.5 5l.8 11h5.4l.8-11" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </button>
-                </div>
 
-                <div className="mt-auto flex items-end justify-between gap-3 pt-3">
-                  <div className="flex items-center rounded-brand border-2 border-line">
-                    <button
-                      type="button"
-                      aria-label="Disminuir"
-                      className="min-h-[40px] w-10 font-display font-bold text-paper hover:bg-surface-2 disabled:opacity-30"
-                      disabled={item.qty <= 1}
-                      onClick={() => setQty(item.variantId, item.qty - 1)}
-                    >
-                      −
-                    </button>
-                    <span className="w-8 text-center font-display font-bold italic text-paper">{item.qty}</span>
-                    <button
-                      type="button"
-                      aria-label="Aumentar"
-                      className="min-h-[40px] w-10 font-display font-bold text-paper hover:bg-surface-2 disabled:opacity-30"
-                      disabled={item.qty >= Math.min(item.stockAtAdd, 20)}
-                      onClick={() => setQty(item.variantId, clampSetQty(item.qty + 1, item.stockAtAdd))}
-                    >
-                      +
-                    </button>
+                  <div className="mt-auto flex items-end justify-between gap-3 pt-3">
+                    <div className="flex items-center rounded-brand border-2 border-line">
+                      <button
+                        type="button"
+                        aria-label="Disminuir"
+                        className="min-h-[40px] w-10 font-display font-bold text-paper hover:bg-surface-2 disabled:opacity-30"
+                        disabled={item.qty <= 1}
+                        onClick={() => setQty(item.productId, item.variantId, item.qty - 1)}
+                      >
+                        −
+                      </button>
+                      <span className="w-8 text-center font-display font-bold italic text-paper">{item.qty}</span>
+                      <button
+                        type="button"
+                        aria-label="Aumentar"
+                        className="min-h-[40px] w-10 font-display font-bold text-paper hover:bg-surface-2 disabled:opacity-30"
+                        disabled={item.qty >= Math.min(item.stockAtAdd, 20)}
+                        onClick={() => setQty(item.productId, item.variantId, clampSetQty(item.qty + 1, item.stockAtAdd))}
+                      >
+                        +
+                      </button>
+                    </div>
+                    <PriceTag usd={item.unitPriceUsd * item.qty} size="sm" />
                   </div>
-                  <PriceTag usd={item.unitPriceUsd * item.qty} size="sm" />
                 </div>
-              </div>
-            </li>
-          ))}
+              </li>
+            );
+          })}
         </ul>
 
         {/* RESUMEN */}
@@ -108,20 +163,11 @@ export default function CartPage() {
           <h2 className="font-display text-lg font-bold italic uppercase text-paper">Resumen</h2>
           <dl className="mt-4 space-y-2 text-body-base">
             <div className="flex justify-between">
-              <dt className="text-muted">Subtotal referencial</dt>
-              <dd className="font-semibold text-paper">${subtotalRef.toFixed(2)}</dd>
-            </div>
-            <div className="flex justify-between">
-              <dt className="text-muted">≈ en bolívares</dt>
-              <dd className="font-semibold text-signal">
+              <dt className="text-muted">Subtotal</dt>
+              <dd className="font-display text-lg font-extrabold italic text-signal">
                 {subtotalBs !== null ? formatBs(subtotalBs) : 'Bs. —'}
               </dd>
             </div>
-            {rate && (
-              <p className="text-right text-xs text-muted">
-                Tasa BCV: {rate.rate.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Bs/USD
-              </p>
-            )}
             <div className="flex justify-between">
               <dt className="text-muted">Envío</dt>
               <dd className="text-muted">por zona · retiro gratis</dd>
@@ -139,20 +185,15 @@ export default function CartPage() {
               </li>
               <li className="flex gap-2">
                 <span className="font-display font-bold italic text-signal">2.</span>
-                El servidor calcula el monto exacto en Bs con la tasa BCV.
+                El servidor calcula el monto exacto en bolívares.
               </li>
               <li className="flex gap-2">
                 <span className="font-display font-bold italic text-signal">3.</span>
-                Pagas por Pago Móvil y subes tu comprobante. ¿O prefieres pasar por el local?
-                Elige <strong className="text-signal">Retiro en tienda</strong> en el checkout — sin envío.
+                Pagas por Pago Móvil y subes tu comprobante.
               </li>
             </ol>
           </div>
 
-          <p className="mt-4 text-sm text-muted">
-            El total final en USD y su equivalencia en bolívares los calcula el
-            servidor al confirmar. Nada se cobra sin tu comprobante.
-          </p>
           <div className="mt-5 space-y-3">
             {user ? (
               <Link to="/checkout" className="block">
@@ -167,9 +208,6 @@ export default function CartPage() {
                     Entrar y pagar
                   </Button>
                 </Link>
-                <p className="text-center text-sm text-muted">
-                  Tu carrito se fusiona solo al iniciar sesión.
-                </p>
               </>
             )}
             <Link to="/catalogo" className="block">

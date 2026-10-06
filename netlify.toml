@@ -35,6 +35,32 @@
 [functions."fn-runBcvRate"]
   timeout = 26
 
+# Funciones de negocio (ronda 5.7): con la red del operador degradada (QUIC
+# con pérdida de paquetes), cada llamada a Firestore tarda 17-28 s en
+# `netlify dev` y el tope por defecto mataba la lambda → 500 SIN cuerpo
+# («sin mensaje del servidor»). En producción corren en 1-3 s: el timeout
+# solo es margen. El tope de Netlify es 26 s para funciones síncronas.
+[functions."fn-getAdminMetrics"]
+  timeout = 26
+
+[functions."fn-quoteTotals"]
+  timeout = 26
+
+[functions."fn-reserveStock"]
+  timeout = 26
+
+[functions."fn-createOrder"]
+  timeout = 26
+
+[functions."fn-verifyPayment"]
+  timeout = 26
+
+[functions."fn-updateOrderStatus"]
+  timeout = 26
+
+[functions."fn-adjustStock"]
+  timeout = 26
+
 # ── Servidor de desarrollo local (netlify dev) ──
 # netlify dev levanta las funciones de netlify/functions y, además, la app de
 # Vite: `command` es lo que ejecuta y `targetPort` el puerto donde espera
@@ -68,6 +94,9 @@
 #     Si una futura versión de Vite/plugin-react cambia el texto del preamble, el navegador
 #     lo volverá a bloquear y la consola imprimirá el hash nuevo: cópialo aquí sustituyendo
 #     el antiguo.
+#    ⚠️ NOTA: «interest-cohort» se eliminó de esta cabecera: Chrome lo retiró
+#    (FLoC fue reemplazado por Topics API) y emitía el aviso inofensivo
+#    «Unrecognized feature: 'interest-cohort'» en la consola.
 # frame-src: iframes del SDK de Auth (<authDomain>/__/auth/iframe) y de reCAPTCHA.
 # style-src: 'self' 'unsafe-inline' — requerido por los atributos style de React;
 #   la frontera dura está en script-src (nunca hay JS inline).
@@ -83,7 +112,7 @@
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
-    Permissions-Policy = "camera=(), microphone=(), geolocation=(self), payment=(), usb=(), bluetooth=(), interest-cohort=()"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(self), payment=(), usb=(), bluetooth=()"
     Cross-Origin-Opener-Policy = "same-origin"
     X-DNS-Prefetch-Control = "off"
 
@@ -108,6 +137,18 @@
   for = "/workbox-*.js"
   [headers.values]
     Cache-Control = "no-cache"
+
+# ── SW de mensajería FCM: scope propio + nunca cacheado (ronda 5i-h) ──
+# Se registra con scope /firebase-messaging/ para NO pisar al SW de la PWA
+# (/sw.js, scope '/'): dos registros con el MISMO scope se reemplazan entre sí
+# (ping-pong sw.js ↔ firebase-messaging-sw.js) y romperían el precache offline.
+# Sin la cabecera Service-Worker-Allowed, el navegador rechaza el scope más
+# ancho que la carpeta del script (SecurityError al activar notificaciones).
+[[headers]]
+  for = "/firebase-messaging-sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Service-Worker-Allowed = "/"
 
 # ── Assets con hash y fuentes woff2: caché inmutable en el CDN ──
 [[headers]]

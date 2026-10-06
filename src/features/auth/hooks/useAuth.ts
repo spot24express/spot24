@@ -6,6 +6,10 @@ import { observeAuth } from '../services/auth.service';
 import { useCartStore } from '@/features/cart/store/cart.store';
 import type { UserRole } from '../types';
 
+/** Roles con acceso al panel operativo (única fuente de verdad, ronda 5i-i).
+ *  La usa useAuth (isStaff → enlace «Panel» visible) y useRequirePanel (guard). */
+const STAFF_PANEL_ROLES: readonly UserRole[] = ['admin', 'gerente', 'cajero', 'delivery'];
+
 /** Monta el observador de sesión una vez (en Providers). */
 export function useAuthObserver(): void {
   const setUser = useAuthStore((s) => s.setUser);
@@ -34,6 +38,8 @@ export function useAuth() {
     ready,
     isAuthenticated: user !== null,
     isAdmin: user?.role === 'admin',
+    /** Personal con panel: admin, gerente, cajero, delivery (entradas visibles). */
+    isStaff: user !== null && STAFF_PANEL_ROLES.includes(user.role),
     signIn,
     signUp,
     signOut,
@@ -54,8 +60,8 @@ export function useRequireAuth(): { ready: boolean; authenticated: boolean } {
 }
 
 /**
- * Guarda del panel (antes "admin"): entran ADMIN, CAJERO y DELIVERY con
- * secciones acotadas por rol (el menú y las rutas filtran el resto).
+ * Guarda del panel (antes "admin"): entran ADMIN, GERENTE, CAJERO y DELIVERY
+ * con secciones acotadas por rol (el menú y las rutas filtran el resto).
  * Devuelve el rol con acceso o null si no debe estar en el panel.
  */
 export function useRequirePanel(): { ready: boolean; role: UserRole | null } {
@@ -66,11 +72,10 @@ export function useRequirePanel(): { ready: boolean; role: UserRole | null } {
       navigate('/cuenta/login', { replace: true, state: { from: '/admin' } });
       return;
     }
-    if (ready && user && !['admin', 'cajero', 'delivery'].includes(user.role)) {
+    if (ready && user && !STAFF_PANEL_ROLES.includes(user.role)) {
       navigate('/', { replace: true });
     }
   }, [ready, user, navigate]);
-  const role: UserRole | null =
-    user && ['admin', 'cajero', 'delivery'].includes(user.role) ? user.role : null;
+  const role: UserRole | null = user && STAFF_PANEL_ROLES.includes(user.role) ? user.role : null;
   return { ready, role };
 }

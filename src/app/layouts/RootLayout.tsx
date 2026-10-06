@@ -5,13 +5,14 @@ import { Logo, LogoShield, SpeedLines } from '@/shared/components/brand/Logo';
 import { OfflineBanner } from '@/shared/components/ui/States';
 import { useCart } from '@/features/cart/hooks/useCart';
 import { useAuth } from '@/features/auth/hooks/useAuth';
+import { NewOrderAlert } from '@/features/admin/components/NewOrderAlert';
 import { BRAND } from '@/shared/constants/brand';
 import { getGeneralSettings } from '@/shared/services/settings.service';
 import { waHref } from '@/shared/lib/whatsapp';
 
 function TopBar() {
   const { count } = useCart();
-  const { user, isAdmin } = useAuth();
+  const { user, isStaff } = useAuth();
   return (
     <header className="sticky top-0 z-30 border-b border-line bg-ink/95 backdrop-blur safe-top">
       <div className="spot-container flex h-16 items-center justify-between gap-4">
@@ -24,12 +25,15 @@ function TopBar() {
           <Logo className="h-8" />
         </NavLink>
         <nav className="flex items-center gap-2" aria-label="Principal">
-          {isAdmin && (
+          {/* Personal (admin/gerente/cajero/delivery): entrada al panel operativo.
+              Ronda 5i-i: antes solo aparecía para admin y el resto del personal
+              no tenía NINGUNA entrada visible (había que teclear /admin). */}
+          {isStaff && (
             <NavLink
               to="/admin"
               className="hidden rounded-brand px-3 py-2 spot-label hover:bg-surface-2 sm:inline-flex"
             >
-              Admin
+              Panel
             </NavLink>
           )}
           <a
@@ -271,6 +275,13 @@ export function RootLayout() {
       <Footer waLink={waLink} />
       {waLink && <WhatsAppFab href={waLink} />}
       <BottomNav />
+      {/* Alerta visual de pedidos por verificar (solo se activa para
+          admin/gerente/cajero; el resto de los roles no la ve ni consume
+          listener). Global (ronda 5i-l): antes vivía solo en AdminLayout y
+          el personal que estaba en la tienda no se enteraba de los pedidos
+          nuevos. La píldora es visible con la pestaña al fondo vía el
+          contador en el título; el toast entra en cualquier página. */}
+      <NewOrderAlert />
     </div>
   );
 }

@@ -64,10 +64,15 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   pago_movil: 'Pago Móvil',
 };
 
-/** Instrucciones de confirmación (paso de confirmación del checkout). */
+/**
+ * Instrucciones del paso de pago del checkout (FLUJO ESTRICTO).
+ * El comprobante ya NO se sube después desde «Ver mi pedido»: se adjunta
+ * OBLIGATORIAMENTE en el paso Pago, y el pedido nace en en_verificacion
+ * con el pago incluido.
+ */
 export const PAYMENT_INSTRUCTIONS: Record<PaymentMethod, string> = {
   pago_movil:
-    'Realiza el Pago Móvil por el monto exacto en bolívares y registra banco, cédula, teléfono, referencia (últimos 6 dígitos) y fecha. Al confirmar, sube el comprobante desde «Ver mi pedido».',
+    'Realiza el Pago Móvil por el monto exacto en bolívares y ten a mano la captura del comprobante: banco, cédula, teléfono, referencia (últimos 6 dígitos), fecha y la foto se registran aquí, antes de confirmar el pedido.',
 };
 
 /** ¿El método requiere comprobante registrado en el paso de pago? */

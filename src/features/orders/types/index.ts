@@ -8,6 +8,8 @@ export type { OrderStatus, PaymentMethod };
 export interface OrderLine {
   productId: string;
   variantId: string;
+  /** Marca congelada al crear la orden. Órdenes viejas: undefined. */
+  brand?: string;
   name: string;
   variantName: string;
   sku: string;
@@ -27,6 +29,9 @@ export interface OrderPayment {
   hasReceipt: boolean;
   /** URL pública del comprobante (imgbb) cuando el cliente ya lo subió. */
   receiptUrl?: string;
+  /** Referencia COMPLETA tal como la escribió el cliente (ronda 5.9).
+   *  Órdenes viejas: undefined → usar referenceMasked. */
+  reference?: string;
   verifiedBy?: string;
   verifiedAt?: number;
 }
@@ -53,7 +58,12 @@ export interface Order {
   totals: OrderTotals;
   payment: OrderPayment;
   delivery: OrderDelivery;
-  contact: { name: string; phoneMasked: string };
+  contact: {
+    name: string;
+    /** Teléfono COMPLETO (ronda 5.9). Órdenes viejas: undefined → phoneMasked. */
+    phone?: string;
+    phoneMasked: string;
+  };
   notes: string;
   riskFlags: string[];
   reservationExpiresAt: number | null;

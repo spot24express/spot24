@@ -1,29 +1,29 @@
-import { formatBs, formatUsd } from '@/shared/lib/format';
+import { formatBs, usdToBs } from '@/shared/lib/format';
+import { useBcvRate } from '@/shared/hooks/useBcvRate';
 
 interface PriceTagProps {
   usd: number;
-  /** Monto en Bs ya calculado por el backend; omitido → solo USD. */
+  /** Monto en Bs ya calculado por el backend; omitido → convierte con la tasa en vivo. */
   ves?: number | null;
   size?: 'sm' | 'md' | 'lg';
 }
 
 /**
- * Precio dual USD/Bs. El precio va en rojo (señal) y en Saira itálica;
- * el equivalente en Bs es siempre referencial si no viene del backend.
+ * Ronda 3 — SOLO bolívares para el cliente: nada de montos en USD en la
+ * tienda. Los precios de catálogo viven en USD en la base de datos (referencia
+ * interna), pero la presentación convierte con la tasa BCV en vivo; si el
+ * backend ya entregó el monto en Bs (checkout/órdenes) se usa tal cual.
+ * Mientras llega la tasa muestra «Bs. —» (milisegundos: la tasa queda en cache).
  */
 export function PriceTag({ usd, ves = null, size = 'md' }: PriceTagProps) {
+  const rate = useBcvRate();
   const main = size === 'lg' ? 'text-3xl' : size === 'sm' ? 'text-lg' : 'text-2xl';
-  const sub = size === 'lg' ? 'text-lg' : 'text-sm';
+  const bs = ves ?? (rate ? usdToBs(usd, rate.rate) : null);
   return (
     <div className="leading-tight">
       <span className={`font-display font-extrabold italic text-signal ${main}`}>
-        {formatUsd(usd)}
+        {bs !== null ? formatBs(bs) : 'Bs. —'}
       </span>
-      {ves !== null && (
-        <span className={`ml-2 font-body font-medium text-muted ${sub}`}>
-          {formatBs(ves)}
-        </span>
-      )}
     </div>
   );
 }

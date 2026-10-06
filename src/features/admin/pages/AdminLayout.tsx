@@ -2,21 +2,24 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { SpeedLines } from '@/shared/components/brand/Logo';
 import { useAuth } from '@/features/auth/hooks/useAuth';
+/* NewOrderAlert ya NO se monta aquí (ronda 5i-l): vive en RootLayout para
+   cubrir toda la app. Montarlo también aquí duplicaría listener y toasts. */
 
 const NAV: ReadonlyArray<{ to: string; label: string; code: string; roles: readonly string[] }> = [
-  { to: '/admin/pagos', label: 'Pagos', code: '01', roles: ['admin', 'cajero'] },
-  { to: '/admin/despacho', label: 'Despacho', code: '02', roles: ['admin', 'cajero', 'delivery'] },
-  { to: '/admin/productos', label: 'Productos', code: '03', roles: ['admin'] },
-  { to: '/admin/categorias', label: 'Categorías', code: '04', roles: ['admin'] },
-  { to: '/admin/zonas', label: 'Zonas', code: '05', roles: ['admin'] },
-  { to: '/admin/usuarios', label: 'Usuarios', code: '06', roles: ['admin'] },
-  { to: '/admin/metricas', label: 'Métricas', code: '07', roles: ['admin'] },
-  { to: '/admin/promos', label: 'Promos', code: '08', roles: ['admin'] },
+  { to: '/admin/pagos', label: 'Pagos', code: '01', roles: ['admin', 'gerente', 'cajero'] },
+  { to: '/admin/despacho', label: 'Despacho', code: '02', roles: ['admin', 'gerente', 'cajero', 'delivery'] },
+  { to: '/admin/productos', label: 'Productos', code: '03', roles: ['admin', 'gerente'] },
+  { to: '/admin/categorias', label: 'Categorías', code: '04', roles: ['admin', 'gerente'] },
+  { to: '/admin/zonas', label: 'Zonas', code: '05', roles: ['admin', 'gerente'] },
+  { to: '/admin/usuarios', label: 'Usuarios', code: '06', roles: ['admin', 'gerente'] },
+  { to: '/admin/metricas', label: 'Métricas', code: '07', roles: ['admin', 'gerente'] },
+  { to: '/admin/promos', label: 'Promos', code: '08', roles: ['admin', 'gerente'] },
   { to: '/admin/ajustes', label: 'Ajustes', code: '09', roles: ['admin'] },
 ];
 
 const SUBTITLE: Record<string, string> = {
   admin: 'Operación 24/7: pagos, despacho, catálogo, zonas, usuarios y ajustes.',
+  gerente: 'Gerencia: pagos, despacho, catálogo y métricas. Roles y ajustes sensibles quedan en admin.',
   cajero: 'Turno de caja: confirma pagos por Pago Móvil y deja los pedidos listos.',
   delivery: 'Ruta activa: toma los pedidos preparados y márcalos al entregar.',
 };

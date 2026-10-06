@@ -45,7 +45,8 @@ export async function writeAudit(entry: {
 }
 
 export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
-  const staff = requireStaff(ctx, ['admin', 'cajero']);
+  // Ronda 3: gerente también verifica pagos (rol de jefatura de operations).
+  const staff = requireStaff(ctx, ['admin', 'gerente', 'cajero']);
 
   const orderId = sanitizeStr(ctx.data?.['orderId'], 120);
   const approve = ctx.data?.['approve'] === true;
@@ -57,6 +58,28 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
   if (!snap.exists) throw new HttpsError('not-found', 'Orden no encontrada.');
   const order = snap.data()!;
   const status = String(order['status']);
+
+  // Ronda 5i-c — REPLAY IDEMPOTENTE. Con el arranque en frío de netlify dev
+  // (22-28 s) la 1ª llamada SÍ se aplicó en el servidor, pero su 200 llegó a
+  // un cliente que ya había abortado por timeout; el reintento (o el clic
+  // siguiente del admin) chocaba con el guardia de abajo y veía un 400
+  // «La orden no está en verificación de pago.» aunque el pago YA estaba
+  // aprobado. Si la orden ya está en el estado DESTINO de la acción,
+  // respondemos ok SIN re-aplicar nada (sin evento, sin notificación, sin
+  // auditoría duplicada).
+  if (approve && status === 'pagado') {
+    return { ok: true, alreadyApplied: true };
+  }
+  if (
+    !approve &&
+    status === 'cancelado' &&
+    String(order['payment']?.['status'] ?? '') === 'rechazado'
+  ) {
+    // 'cancelado' también lo produce fn-cancelOrder del cliente (que no toca
+    // payment.status): exigimos payment.status 'rechazado' para repasar SOLO
+    // el rechazo de pago propio y no cancelaciones ajenas.
+    return { ok: true, alreadyApplied: true };
+  }
 
   if (!['pendiente', 'en_verificacion'].includes(status)) {
     throw new HttpsError('failed-precondition', 'La orden no está en verificación de pago.');

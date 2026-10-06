@@ -15,8 +15,9 @@ import { writeAudit } from './payments';
 const db = () => admin.firestore(getAdminApp());
 
 /**
- * Transiciones permitidas por rol (el admin pasa todas las válidas).
- * Formato "desde>hasta"; el backend SIEMPRE re-valida con canTransition.
+ * Transiciones permitidas por rol (el admin y el gerente pasan todas las
+ * válidas). Formato "desde>hasta"; el backend SIEMPRE re-valida con
+ * canTransition.
  */
 const ROLE_MOVES: Record<string, readonly string[]> = {
   cajero: [
@@ -28,7 +29,7 @@ const ROLE_MOVES: Record<string, readonly string[]> = {
 };
 
 function canRoleMove(role: string, from: string, to: string): boolean {
-  if (role === 'admin') return true;
+  if (role === 'admin' || role === 'gerente') return true;
   return (ROLE_MOVES[role] ?? []).includes(`${from}>${to}`);
 }
 
@@ -40,7 +41,7 @@ function sanitizeStr(v: unknown, max: number): string {
 export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
   const role = String(ctx.auth.token['role'] ?? '');
-  if (!['admin', 'cajero', 'delivery'].includes(role)) {
+  if (!['admin', 'gerente', 'cajero', 'delivery'].includes(role)) {
     throw new HttpsError('permission-denied', 'No tienes permiso para esta acción.');
   }
 
@@ -57,6 +58,20 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   if (!snap.exists) throw new HttpsError('not-found', 'Orden no encontrada.');
   const order = snap.data()!;
   const from = String(order['status']);
+
+  // Ronda 5i-c — REPLAY IDEMPOTENTE: la orden YA está en el estado destino
+  // (el 200 de la llamada original no llegó al cliente por el arranque en
+  // frío de netlify dev y el clic se repitió). Respondemos ok sin escribir
+  // nada: sin evento duplicado, sin notificación, sin auditoría. Va ANTES
+  // de canTransition porque «X → X» no es una transición válida y produciría
+  // un 400 «Transición inválida» para una acción que ya se aplicó.
+  if (from === to) {
+    return {
+      ok: true,
+      alreadyApplied: true,
+      trackingCode: order['delivery']?.['trackingCode'] ?? null,
+    };
+  }
 
   if (!canTransition(from as never, to)) {
     throw new HttpsError('failed-precondition', `Transición inválida: ${from} → ${to}.`);

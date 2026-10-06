@@ -15,6 +15,11 @@ service firebase.storage {
     function isAdmin() {
       return request.auth != null && request.auth.token.role == 'admin';
     }
+    /* Ronda 3: gerencia también gestiona fotos de catálogo. */
+    function canEditCatalog() {
+      return request.auth != null
+        && (request.auth.token.role == 'admin' || request.auth.token.role == 'gerente');
+    }
     function isSignedIn() {
       return request.auth != null;
     }
@@ -31,7 +36,7 @@ service firebase.storage {
     /* Imágenes de producto: products/{productId}/{fileName} */
     match /products/{productId}/{fileName} {
       allow read: if true;
-      allow write: if isAdmin() && okImageType() && underMaxSize();
+      allow write: if canEditCatalog() && okImageType() && underMaxSize();
       allow delete: if isAdmin();
     }
 

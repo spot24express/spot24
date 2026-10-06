@@ -4,7 +4,7 @@
  * Consultas SIEMPRE con límite (7.1).
  */
 import {
-  collection, doc, getDocs, getCountFromServer,
+  collection, doc, getDoc, getDocs, getCountFromServer,
   limit as fbLimit, onSnapshot, orderBy, query, startAfter,
   where, type DocumentData, type QueryDocumentSnapshot, type Query,
 } from 'firebase/firestore';
@@ -279,6 +279,24 @@ export function subscribeCatalogPulse(cb: () => void): () => void {
     cancelled = true;
     unsubs?.forEach((u) => u());
   };
+}
+
+/**
+ * Lectura puntual de productos por id (ronda 5e): repara los snapshots de las
+ * líneas del carrito (marca/nombre viejos congelados al agregar) con los datos
+ * vigentes. Máximo 30 ids por llamada (un carrito real queda muy por debajo;
+ * el tope del carrito es 50 líneas). Devuelve solo los productos que siguen
+ * existiendo: los borrados no se reparan y la línea se muestra con su snapshot.
+ */
+export async function getProductsByIds(ids: string[]): Promise<Product[]> {
+  const wanted = [...new Set(ids)].slice(0, 30);
+  if (wanted.length === 0) return [];
+  const fb = await loadFirebase();
+  if (!fb) return [];
+  const snaps = await Promise.all(wanted.map((id) => getDoc(doc(fb.db, PRODUCTS, id))));
+  return snaps
+    .filter((s) => s.exists())
+    .map((s) => mapProduct(s.id, s.data()));
 }
 
 /* Re-export para uso interno de los hooks */

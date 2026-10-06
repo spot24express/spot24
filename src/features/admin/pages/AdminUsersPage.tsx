@@ -9,6 +9,7 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { adminListUsers, type AdminUserRow } from '../services/admin.service';
 import { callFunction } from '@/shared/lib/backend';
 import { userMessage } from '@/shared/lib/errors';
+import { useAuth } from '@/features/auth/hooks/useAuth';
 
 type Role = AdminUserRow['role'];
 
@@ -16,6 +17,7 @@ const ROLE_LABELS: Record<Role, string> = {
   customer: 'Cliente',
   cajero: 'Cajero/a',
   delivery: 'Delivery',
+  gerente: 'Gerente',
   admin: 'Admin',
 };
 
@@ -52,6 +54,10 @@ export default function AdminUsersPage() {
     return users.filter((u) => `${u.name} ${u.email} ${u.phone}`.toLowerCase().includes(t));
   }, [users, search]);
 
+  /** Ronda 3: el gerente VE la lista pero NO cambia roles ni cierra sesiones
+   *  (el backend lo rechaza: fn-setUserRole/fn-revokeUserSessions son admin). */
+  const canManage = useAuth().user?.role === 'admin';
+
   const applyRole = async () => {
     if (!roleTarget) return;
     setBusy(true);
@@ -86,7 +92,7 @@ export default function AdminUsersPage() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-display text-xl font-bold italic uppercase text-paper">Usuarios</h2>
-          <p className="spot-subtitle mt-1">Clientes, cajeros, deliverys y admins. Roles y sesiones desde aquí.</p>
+          <p className="spot-subtitle mt-1">Clientes, cajeros, deliverys, gerentes y admins. Roles y sesiones desde aquí.</p>
         </div>
       </div>
 
@@ -123,24 +129,31 @@ export default function AdminUsersPage() {
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Select
-                    label=""
-                    value={u.role}
-                    aria-label={`Rol de ${u.name || u.email}`}
-                    onChange={(e) => {
-                      const role = e.target.value as Role;
-                      if (role !== u.role) setRoleTarget({ user: u, role });
-                    }}
-                    className="sm:w-40"
-                  >
-                    <option value="customer">Cliente</option>
-                    <option value="cajero">Cajero/a</option>
-                    <option value="delivery">Delivery</option>
-                    <option value="admin">Admin</option>
-                  </Select>
-                  <Button variant="secondary" size="sm" onClick={() => setRevokeTarget(u)}>
-                    Cerrar sesiones
-                  </Button>
+                  {canManage ? (
+                    <>
+                      <Select
+                        label=""
+                        value={u.role}
+                        aria-label={`Rol de ${u.name || u.email}`}
+                        onChange={(e) => {
+                          const role = e.target.value as Role;
+                          if (role !== u.role) setRoleTarget({ user: u, role });
+                        }}
+                        className="sm:w-40"
+                      >
+                        <option value="customer">Cliente</option>
+                        <option value="cajero">Cajero/a</option>
+                        <option value="delivery">Delivery</option>
+                        <option value="gerente">Gerente</option>
+                        <option value="admin">Admin</option>
+                      </Select>
+                      <Button variant="secondary" size="sm" onClick={() => setRevokeTarget(u)}>
+                        Cerrar sesiones
+                      </Button>
+                    </>
+                  ) : (
+                    <span className="spot-label">Solo lectura</span>
+                  )}
                 </div>
               </li>
             ))}
@@ -149,8 +162,17 @@ export default function AdminUsersPage() {
       </div>
 
       <p className="mt-6 rounded-brand border-2 border-dashed border-line bg-surface-1 p-4 text-sm text-muted">
-        Al cambiar el rol, la persona debe <strong className="text-paper">cerrar sesión y volver a entrar</strong> para
-        que el nuevo rol le cargue. «Cerrar sesiones» la expulsa de todos sus dispositivos de inmediato.
+        {canManage ? (
+          <>
+            Al cambiar el rol, la persona debe <strong className="text-paper">cerrar sesión y volver a entrar</strong> para
+            que el nuevo rol le cargue. «Cerrar sesiones» la expulsa de todos sus dispositivos de inmediato.
+          </>
+        ) : (
+          <>
+            Vista de gerencia: puedes consultar el directorio. Los cambios de rol y el cierre de
+            sesiones son exclusivos del admin.
+          </>
+        )}
       </p>
 
       {/* Confirmación de cambio de rol */}
@@ -171,6 +193,13 @@ export default function AdminUsersPage() {
               <p className="rounded-brand border-2 border-line bg-surface-1 p-3 text-sm text-paper">
                 Una persona delivery ve los pedidos preparados, los lleva y los marca en ruta y
                 entregados. No ve pagos ni catálogo.
+              </p>
+            )}
+            {roleTarget.role === 'gerente' && (
+              <p className="rounded-brand border-2 border-line bg-surface-1 p-3 text-sm text-paper">
+                Gerencia: verifica pagos, mueve pedidos en todo el flujo, gestiona catálogo y
+                promos (sin borrar) y consulta métricas y usuarios. No cambia roles ni ajustes
+                de pago (eso queda en el admin).
               </p>
             )}
             {roleTarget.role === 'admin' && (

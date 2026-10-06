@@ -44,6 +44,24 @@ describe('validadores venezolanos', () => {
     expect(normalizePhoneVE('0414 123 4567')).toBe('04141234567');
   });
 
+  it('el +58 interno nunca llega al cliente: E.164 se normaliza a formato local', () => {
+    // users/{uid}.phoneE164 se guarda como +58XXXXXXXXX pero la UI del
+    // checkout y de Mi cuenta SIEMPRE muestra 04XXXXXXXXX.
+    expect(normalizePhoneVE('+584243036024')).toBe('04243036024');
+    expect(normalizePhoneVE('584243036024')).toBe('04243036024');
+    expect(normalizePhoneVE('+58 424-123-4567')).toBe('04241234567');
+    expect(normalizePhoneVE('00584141234567')).toBe('04141234567');
+    // Y la validación acepta pegar el número con o sin +58 (los 6 prefijos móviles).
+    expect(isValidPhoneVE('+584243036024')).toBe(true);
+    expect(isValidPhoneVE('+58 414-123-4567')).toBe(true);
+    expect(isValidPhoneVE('584161234567')).toBe(true);
+    expect(isValidPhoneVE('+584221234567')).toBe(true);
+    expect(isValidPhoneVE('+584261234567')).toBe(true);
+    expect(isValidPhoneVE('+584121234567')).toBe(true);
+    // Prefijo inexistente (0411) sigue inválido venga de donde venga.
+    expect(isValidPhoneVE('+584112345678')).toBe(false);
+  });
+
   it('cédulas con o sin prefijo V-/E- (1 a 8 dígitos)', () => {
     expect(isValidCedulaVE('V-12345678')).toBe(true);
     expect(isValidCedulaVE('e87654321')).toBe(true);

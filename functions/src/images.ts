@@ -24,8 +24,10 @@ interface ImgbbPayload {
 }
 
 export async function coreUploadImage(ctx: CoreCtx): Promise<{ url: string; deleteUrl: string }> {
-  if (!ctx.auth || ctx.auth.token['role'] !== 'admin') {
-    throw new HttpsError('permission-denied', 'Solo el administrador puede subir imágenes.');
+  // Ronda 3: gerente también gestiona fotos del catálogo.
+  const role = ctx.auth?.token['role'];
+  if (!ctx.auth || (role !== 'admin' && role !== 'gerente')) {
+    throw new HttpsError('permission-denied', 'Solo el administrador o gerente puede subir imágenes.');
   }
 
   const image = typeof ctx.data?.['image'] === 'string' ? String(ctx.data['image']).trim() : '';

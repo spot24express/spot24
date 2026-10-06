@@ -17,8 +17,9 @@ function sanitizeStr(v: unknown, max: number): string {
 
 export async function coreAdjustStock(ctx: CoreCtx): Promise<unknown> {
   if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
-  if (ctx.auth.token['role'] !== 'admin') {
-    throw new HttpsError('permission-denied', 'Solo administración.');
+  const role = ctx.auth.token['role'];
+  if (role !== 'admin' && role !== 'gerente') {
+    throw new HttpsError('permission-denied', 'Solo administración o gerencia.');
   }
 
   const productId = sanitizeStr(ctx.data?.['productId'], 120);

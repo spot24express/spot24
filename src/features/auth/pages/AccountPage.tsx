@@ -3,20 +3,40 @@ import { useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Button } from '@/shared/components/ui/Button';
 import { SpeedDivider, SpeedLines } from '@/shared/components/brand/Logo';
-import { Modal } from '@/shared/components/ui/Modal';
 import { useAuth } from '../hooks/useAuth';
-import { startPhoneVerification } from '../services/auth.service';
 import { enableOrderNotifications, hasRegisteredToken } from '@/features/delivery/services/notifications.service';
-import { userMessage } from '@/shared/lib/errors';
-import { isValidPhoneVE, normalizePhoneVE } from '@/shared/lib/validation';
-import type { ConfirmationResult } from 'firebase/auth';
+import { normalizePhoneVE } from '@/shared/lib/validation';
 
-/** Cuenta: datos, teléfono verificado, notificaciones y cierre de sesión. */
+/**
+ * Cuenta: datos del perfil, notificaciones push y cierre de sesión.
+ *
+ * Ronda 4 — DECISIÓN DE PRODUCTO: la verificación por SMS se retira del
+ * flujo del cliente. La cuota de ~10 SMS/día del plan gratuito de Firebase
+ * no escala con el volumen esperado (a partir del usuario 11 del día la
+ * verificación se bloquea) y migrar a plan de pago queda fuera del alcance
+ * comercial. El teléfono sigue siendo un dato obligatorio y validado por
+ * formato en el registro; su confirmación real pasa a ser OPERATIVA: el
+ * equipo contacta por llamada/WhatsApp al coordinar la entrega (práctica
+ * estándar del comercio venezolano), el antifraude del backend (fraud.ts)
+ * sigue evaluando cada pedido y el pago móvil lo valida el personal.
+ *
+ * El servicio de verificación queda DORMIDO pero completo en
+ * auth.service.ts (startPhoneVerification): si el proyecto migra a un plan
+ * con SMS, basta con devolver el botón y el modal a esta página.
+ */
+
+/** Etiqueta del panel según rol (fallback para roles futuros). */
+const PANEL_TITLES: Record<string, string> = {
+  admin: 'Panel de administración',
+  gerente: 'Panel de gerencia',
+  cajero: 'Panel de caja — verificación de pagos',
+  delivery: 'Panel de despacho — rutas y entregas',
+};
+
 export default function AccountPage() {
   useDocumentTitle('Mi cuenta');
-  const { user, signOut } = useAuth();
+  const { user, signOut, isStaff } = useAuth();
   const navigate = useNavigate();
-  const [phoneOpen, setPhoneOpen] = useState(false);
   const [pushState, setPushState] = useState<'unknown' | 'on' | 'off'>('unknown');
 
   useEffect(() => {
@@ -30,6 +50,23 @@ export default function AccountPage() {
     <div className="spot-container py-8">
       <SpeedLines className="mb-6" />
       <h1 className="spot-title">Mi cuenta</h1>
+
+      {/* PANEL INTERNO (personal: admin/gerente/cajero/delivery) — ronda 5i-i.
+          Entrada visible también en móvil: el enlace «Panel» del TopBar solo
+          existe en escritorio (≥sm) y aquí nadie debía adivinar la URL /admin. */}
+      {isStaff && (
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-brand-lg border-2 border-signal bg-surface-2 p-6">
+          <div>
+            <h2 className="font-display text-lg font-bold italic uppercase text-paper">
+              {PANEL_TITLES[user.role] ?? 'Panel interno'}
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              Tu cuenta tiene acceso al panel operativo. Los datos se cargan al abrir la sección.
+            </p>
+          </div>
+          <Button onClick={() => navigate('/admin')}>Abrir panel</Button>
+        </div>
+      )}
 
       <div className="mt-8 grid gap-6 md:grid-cols-2">
         {/* DATOS */}
@@ -46,12 +83,14 @@ export default function AccountPage() {
             </div>
             <div>
               <dt className="spot-label">Teléfono</dt>
-              <dd className="text-paper">{user.phone ?? 'Sin verificar'}</dd>
+              {/* Siempre formato local (04243036024): el +58 es interno, nunca se muestra. */}
+              <dd className="text-paper">{user.phone ? normalizePhoneVE(user.phone) : '—'}</dd>
             </div>
           </dl>
-          <Button variant="secondary" className="mt-5" onClick={() => setPhoneOpen(true)}>
-            Verificar teléfono
-          </Button>
+          <p className="mt-4 text-sm text-muted">
+            Coordinamos la entrega por llamada o WhatsApp al número de tu pedido.
+            Si cambias de número, actualízalo al registrar tu próxima compra.
+          </p>
         </section>
 
         {/* SESIÓN Y NOTIFICACIONES */}
@@ -86,90 +125,6 @@ export default function AccountPage() {
           </Button>
         </section>
       </div>
-
-      <PhoneVerifyModal open={phoneOpen} onClose={() => setPhoneOpen(false)} />
     </div>
-  );
-}
-
-/** Verificación por teléfono con Recaptcha invisible + código SMS (5.3). */
-function PhoneVerifyModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [phone, setPhone] = useState('');
-  const [code, setCode] = useState('');
-  const [confirmation, setConfirmation] = useState<ConfirmationResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const send = async () => {
-    setError(null);
-    if (!isValidPhoneVE(phone)) {
-      setError('Teléfono inválido. Ej.: 04141234567');
-      return;
-    }
-    setBusy(true);
-    try {
-      const normalized = normalizePhoneVE(phone);
-      const e164 = `+58${normalized.startsWith('0') ? normalized.slice(1) : normalized}`;
-      const result = await startPhoneVerification('spot-recaptcha', e164);
-      setConfirmation(result);
-    } catch (e) {
-      setError(userMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const verify = async () => {
-    if (!confirmation) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await confirmation.confirm(code);
-      onClose();
-      window.location.reload();
-    } catch {
-      setError('Código incorrecto. Revisa e intenta de nuevo.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title="Verificar teléfono">
-      <div id="spot-recaptcha" />
-      {!confirmation ? (
-        <div className="space-y-4">
-          <p className="text-body-base text-muted">
-            Enviaremos un SMS con un código de 6 dígitos.
-          </p>
-          <input
-            aria-label="Teléfono"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="04141234567"
-            className="w-full rounded-brand border-2 border-line bg-surface-1 px-4 py-3 text-paper focus:border-signal focus:outline-none"
-          />
-          {error && <p role="alert" className="text-sm font-semibold text-signal">{error}</p>}
-          <Button fullWidth loading={busy} onClick={() => void send()}>
-            Enviar código
-          </Button>
-        </div>
-      ) : (
-        <div className="space-y-4">
-          <input
-            aria-label="Código SMS"
-            value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            inputMode="numeric"
-            placeholder="000000"
-            className="w-full rounded-brand border-2 border-line bg-surface-1 px-4 py-3 text-center font-display text-2xl font-bold italic tracking-[0.4em] text-paper focus:border-signal focus:outline-none"
-          />
-          {error && <p role="alert" className="text-sm font-semibold text-signal">{error}</p>}
-          <Button fullWidth loading={busy} onClick={() => void verify()}>
-            Verificar
-          </Button>
-        </div>
-      )}
-    </Modal>
   );
 }

@@ -25,6 +25,13 @@ export interface CreateOrderPayload {
   notes: string;
   paymentMethod: PaymentMethod;
   paymentDetails: Record<string, string>; // valores crudos; se cifran en el backend
+  /**
+   * FLUJO ESTRICTO: comprobante de pago en base64 puro (sin prefijo data:),
+   * comprimido en el cliente. OBLIGATORIO: el backend lo sube a imgbb ANTES de
+   * crear la orden y el pedido nace en en_verificacion con hasReceipt: true.
+   * Si falta, el servidor rechaza la creación (no existen pedidos sin pago).
+   */
+  receiptImage: string;
 }
 
 /** Totales autoritativos devueltos por el backend. */
@@ -36,8 +43,13 @@ export interface OrderTotals {
   /** Monto del IVA en USD sobre subtotal + envío. Órdenes antiguas: undefined. */
   ivaUsd?: number;
   totalUsd: number;
-  totalVes: number; // total en Bs con la tasa BCV del momento
+  /** Total en Bs con la tasa BCV del momento (oficial, calculado en el servidor). */
+  totalVes: number;
   rateUsed: number;
+  /** Desglose oficial en Bs (Ronda 3). Órdenes/cotizaciones anteriores: undefined. */
+  subtotalVes?: number;
+  shippingVes?: number;
+  ivaVes?: number;
 }
 
 export interface QuoteRequest {

@@ -10,7 +10,7 @@ import { listMyOrders } from '../services/orders.service';
 import type { Order } from '../types';
 import type { Page } from '@/shared/types';
 import { VOICE } from '@/shared/constants/brand';
-import { formatBs, formatUsd } from '@/shared/lib/format';
+import { formatBs } from '@/shared/lib/format';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 
 /** Mis pedidos con paginación por cursor (7.1). */
@@ -82,8 +82,7 @@ export default function MyOrdersPage() {
                     </div>
                     <div className="flex items-center justify-between gap-4 sm:justify-end">
                       <span className="font-display text-lg font-extrabold italic text-paper">
-                        {formatUsd(o.totals.totalUsd)}{' '}
-                        <span className="text-sm font-medium not-italic text-muted">{formatBs(o.totals.totalVes)}</span>
+                        {formatBs(o.totals.totalVes)}
                       </span>
                       <StatusBadge status={o.status} />
                     </div>

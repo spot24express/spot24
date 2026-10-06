@@ -21,6 +21,19 @@ function requireAdmin(ctx: CoreCtx): string {
   return ctx.auth.uid;
 }
 
+/**
+ * Jefatura del panel: admin y gerente. El gerente ve métricas y usuarios,
+ * pero NO puede cambiar roles (eso sigue siendo exclusivo del admin).
+ */
+function requirePanel(ctx: CoreCtx): string {
+  if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
+  const role = ctx.auth.token['role'];
+  if (role !== 'admin' && role !== 'gerente') {
+    throw new HttpsError('permission-denied', 'Solo administración o gerencia.');
+  }
+  return ctx.auth.uid;
+}
+
 function sanitizeStr(v: unknown, max: number): string {
   if (typeof v !== 'string') return '';
   return v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim().slice(0, max);
@@ -30,7 +43,7 @@ export async function coreSetUserRole(ctx: CoreCtx): Promise<unknown> {
   const adminUid = requireAdmin(ctx);
   const targetUid = sanitizeStr(ctx.data?.['uid'], 128);
   const role = sanitizeStr(ctx.data?.['role'], 16);
-  if (!targetUid || !['customer', 'cajero', 'delivery', 'admin'].includes(role)) {
+  if (!targetUid || !['customer', 'cajero', 'delivery', 'gerente', 'admin'].includes(role)) {
     throw new HttpsError('invalid-argument', 'Datos inválidos.');
   }
   if (targetUid === adminUid && role !== 'admin') {
@@ -65,7 +78,8 @@ export async function coreRevokeUserSessions(ctx: CoreCtx): Promise<unknown> {
 }
 
 export async function coreGetAdminMetrics(ctx: CoreCtx): Promise<unknown> {
-  requireAdmin(ctx);
+  // Ronda 3: gerente también consulta métricas (solo lectura).
+  requirePanel(ctx);
 
   // Conteos por estado (agregación count, sin leer documentos).
   const statuses = ['pendiente', 'en_verificacion', 'pagado', 'preparado', 'en_camino', 'entregado', 'cancelado'];

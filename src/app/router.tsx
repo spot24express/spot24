@@ -61,7 +61,6 @@ function PanelIndex() {
   const { user } = useAuth();
   return <Navigate to={user?.role === 'delivery' ? '/admin/despacho' : '/admin/pagos'} replace />;
 }
-
 export const router = createBrowserRouter([
   {
     path: '/',
@@ -84,14 +83,14 @@ export const router = createBrowserRouter([
         element: <GuardPanel><Lazy><AdminLayout /></Lazy></GuardPanel>,
         children: [
           { index: true, element: <PanelIndex /> },
-          { path: 'productos', element: <GuardSection allow={['admin']}><Lazy><AdminProductsPage /></Lazy></GuardSection> },
-          { path: 'categorias', element: <GuardSection allow={['admin']}><Lazy><AdminCategoriesPage /></Lazy></GuardSection> },
-          { path: 'pagos', element: <GuardSection allow={['admin', 'cajero']}><Lazy><AdminPaymentsPage /></Lazy></GuardSection> },
-          { path: 'despacho', element: <GuardSection allow={['admin', 'cajero', 'delivery']}><Lazy><AdminDispatchPage /></Lazy></GuardSection> },
-          { path: 'zonas', element: <GuardSection allow={['admin']}><Lazy><AdminZonesPage /></Lazy></GuardSection> },
-          { path: 'promos', element: <GuardSection allow={['admin']}><Lazy><AdminPromosPage /></Lazy></GuardSection> },
-          { path: 'usuarios', element: <GuardSection allow={['admin']}><Lazy><AdminUsersPage /></Lazy></GuardSection> },
-          { path: 'metricas', element: <GuardSection allow={['admin']}><Lazy><AdminMetricsPage /></Lazy></GuardSection> },
+          { path: 'productos', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminProductsPage /></Lazy></GuardSection> },
+          { path: 'categorias', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminCategoriesPage /></Lazy></GuardSection> },
+          { path: 'pagos', element: <GuardSection allow={['admin', 'gerente', 'cajero']}><Lazy><AdminPaymentsPage /></Lazy></GuardSection> },
+          { path: 'despacho', element: <GuardSection allow={['admin', 'gerente', 'cajero', 'delivery']}><Lazy><AdminDispatchPage /></Lazy></GuardSection> },
+          { path: 'zonas', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminZonesPage /></Lazy></GuardSection> },
+          { path: 'promos', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminPromosPage /></Lazy></GuardSection> },
+          { path: 'usuarios', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminUsersPage /></Lazy></GuardSection> },
+          { path: 'metricas', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminMetricsPage /></Lazy></GuardSection> },
           { path: 'ajustes', element: <GuardSection allow={['admin']}><Lazy><AdminSettingsPage /></Lazy></GuardSection> },
         ],
       },

@@ -14,16 +14,18 @@ import type { CoreCtx } from '../../functions/src/lib/ctx';
 const MAX_BASE64_CHARS = 5_500_000;
 const IMGBB_ENDPOINT = 'https://api.imgbb.com/1/upload';
 
-function requireAdmin(ctx: CoreCtx): string {
+function requireStaff(ctx: CoreCtx): string {
   if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
-  if (ctx.auth.token['role'] !== 'admin') {
-    throw new HttpsError('permission-denied', 'Solo el administrador puede subir imágenes.');
+  const role = ctx.auth.token['role'];
+  // Ronda 3: gerente también gestiona fotos de productos y promos.
+  if (role !== 'admin' && role !== 'gerente') {
+    throw new HttpsError('permission-denied', 'Solo el administrador o gerente puede subir imágenes.');
   }
   return ctx.auth.uid;
 }
 
 export const coreUploadImage: Core = async (ctx) => {
-  requireAdmin(ctx);
+  requireStaff(ctx);
 
   const raw = ctx.data?.['image'];
   if (typeof raw !== 'string' || raw.length === 0) {

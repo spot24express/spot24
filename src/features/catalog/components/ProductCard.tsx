@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import type { Product } from '../types';
 import { trackEvent } from '@/shared/lib/analytics';
 import { formatBs, usdToBs } from '@/shared/lib/format';
+import { cleanProductName } from '@/shared/lib/display';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { getVariants } from '../services/catalog.service';
 import { useCart } from '@/features/cart/hooks/useCart';
@@ -17,7 +18,8 @@ interface ProductCardProps {
 /**
  * Tarjeta de producto (estilo referencia Farmatodo adaptado al tema pit stop):
  * imagen arriba con el círculo «+» de agregado rápido y aviso de stock, y en
- * el cuerpo nombre → precio en Bs. (tasa BCV en vivo) → marca.
+ * el cuerpo marca (sola, arriba) → nombre sin repetir la marca → precio en Bs.
+ * (tasa BCV en vivo).
  * El enlace estirado cubre toda la tarjeta (sin anidar interactivos) y el
  * «+» vive por encima (z-20). Agregado rápido:
  * · producto de UNA variante → agrega directo (consulta puntual de variantes);
@@ -30,6 +32,10 @@ export function ProductCard({ product }: ProductCardProps) {
   const [adding, setAdding] = useState(false);
   const image = product.images[0] ?? '/img/products/lubricantes.svg';
   const bs = rate ? usdToBs(product.basePriceUsd, rate.rate) : null;
+
+  // Nombre visible SIN repetir la marca (regla compartida con el carrito):
+  // «POLARCAR Caroreña Verano» con marca POLAR → tarjeta: POLAR / Caroreña Verano.
+  const displayName = cleanProductName(product.name, product.brand);
 
   const handleQuickAdd = async (): Promise<void> => {
     if (adding || product.stockTotal <= 0) return;
@@ -57,7 +63,8 @@ export function ProductCard({ product }: ProductCardProps) {
           productId: product.id,
           variantId: v.id,
           slug: product.slug,
-          name: product.name,
+          name: displayName, // sin la marca repetida: el carrito queda limpio
+          brand: product.brand, // ronda 5e: la marca viaja con la línea
           variantName: v.name,
           sku: v.sku,
           unitPriceUsd: v.priceUsd,
@@ -120,13 +127,15 @@ export function ProductCard({ product }: ProductCardProps) {
       />
 
       <div className="flex flex-1 flex-col gap-1.5 p-4">
+        {/* Marca SIEMPRE arriba, sola: si el admin incluyó la marca dentro del
+            nombre del producto, cleanProductName la recorta para no repetirla. */}
+        <p className="spot-label">{product.brand}</p>
         <h3 className="font-display text-base font-bold italic uppercase leading-tight text-paper line-clamp-2">
-          {product.name}
+          {displayName}
         </h3>
         <p className="font-display text-xl font-extrabold italic leading-tight text-signal">
           {bs !== null ? formatBs(bs) : 'Bs. —'}
         </p>
-        <p className="spot-label mt-auto">{product.brand}</p>
       </div>
     </article>
   );

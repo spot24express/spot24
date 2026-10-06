@@ -21,7 +21,9 @@ export function buildIdempotencyKey(seed: IdempotencySeed): string {
   const bucket = Math.floor(seed.now / BUCKET_MS);
   const raw = JSON.stringify([
     seed.uid,
-    seed.items.map((i) => `${i.variantId}:${i.qty}`).sort(),
+    // Ronda 5e: productId incluido — el variantId NO es único entre productos
+    // (admin crea «v1» en cada uno) y dos líneas distintas no deben colisionar.
+    seed.items.map((i) => `${i.productId}:${i.variantId}:${i.qty}`).sort(),
     seed.contact.name.toLowerCase(),
     seed.contact.phone,
     seed.address.zoneId,

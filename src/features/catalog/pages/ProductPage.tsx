@@ -16,6 +16,7 @@ import { categoryById } from '@/shared/constants/categories';
 import { validateAdd } from '@/features/cart/lib/cartLogic';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { formatBs, usdToBs } from '@/shared/lib/format';
+import { cleanProductName } from '@/shared/lib/display';
 import { VOICE } from '@/shared/constants/brand';
 
 /** Ficha de producto: galería, variantes, precio en Bs. en vivo, stock, relacionados. */
@@ -95,6 +96,10 @@ export default function ProductPage() {
   }
 
   const stock = liveStockTotal ?? product.stockTotal;
+  // Nombre SIN la marca repetida (regla compartida con el carrito): aunque el
+  // admin guardara «POLARCAR Caroreña Verano», la ficha y el carrito muestran
+  // solo el producto; la marca vive arriba en su campo propio.
+  const displayName = cleanProductName(product.name, product.brand);
   const canAdd = variant
     ? validateAdd(variant.stock, cartLineQty, qty).ok
     : false;
@@ -106,7 +111,8 @@ export default function ProductPage() {
         productId: product.id,
         variantId: variant.id,
         slug: product.slug,
-        name: product.name,
+        name: displayName, // sin la marca repetida: el carrito queda limpio
+        brand: product.brand, // ronda 5e: la marca viaja con la línea
         variantName: variant.name,
         sku: variant.sku,
         unitPriceUsd: variant.priceUsd,
@@ -132,7 +138,7 @@ export default function ProductPage() {
           {category ? `${category.code} · ${category.name}` : 'Catálogo'}
         </Link>
         <span className="mx-2">/</span>
-        <span className="text-paper">{product.name}</span>
+        <span className="text-paper">{displayName}</span>
       </nav>
 
       <div className="grid gap-8 lg:grid-cols-2">
@@ -166,7 +172,7 @@ export default function ProductPage() {
         <div>
           <p className="spot-label">{product.brand}</p>
           <h1 className="mt-1 font-display text-3xl font-extrabold italic uppercase leading-tight text-paper sm:text-4xl">
-            {product.name}
+            {displayName}
           </h1>
           <div className="mt-3">
             <StockBadge stock={stock} />
@@ -176,7 +182,7 @@ export default function ProductPage() {
             <p className="font-display text-3xl font-extrabold italic leading-tight text-signal">
               {bs !== null ? formatBs(bs) : 'Bs. —'}
             </p>
-            <p className="mt-1 spot-label">Tasa BCV</p>
+            <p className="mt-1 spot-label">Precio en bolívares</p>
           </div>
 
           {variants && variants.length > 1 && (

@@ -8,7 +8,7 @@
  */
 import {
   addDoc, collection, deleteDoc, doc, getDoc, getDocs, limit as fbLimit, orderBy,
-  query, serverTimestamp, setDoc, where, updateDoc, writeBatch,
+  onSnapshot, query, serverTimestamp, setDoc, where, updateDoc, writeBatch,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { callFunction } from '@/shared/lib/backend';
@@ -130,10 +130,15 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
     });
   }
 
-  // Variantes con id determinista (v1, v2, …): reescribir el mismo producto
-  // no duplica variantes y el ajuste de stock con auditoría apunta al doc correcto.
+  // Variantes: id ÚNICO EN TODO EL CATÁLOGO (ronda 5e). Antes se usaba
+  // «v1, v2, …» en TODOS los productos: como el carrito agrupa líneas por
+  // productId+variantId, dos productos con variante «v1» colisionaban y al
+  // agregar el segundo se incrementaba la línea del primero. Con el id del
+  // producto como prefijo, cada variante es única y estable entre guardados.
+  // Las variantes ya existentes conservan su id original (v.id) para no
+  // romper líneas de carrito ni ajustes de stock con auditoría.
   for (const [i, v] of draft.variants.entries()) {
-    const variantId = v.id ?? `v${i + 1}`;
+    const variantId = v.id ?? `${productRef.id}-v${i + 1}`;
     batch.set(doc(fb.db, 'products', productRef.id, 'variants', variantId), {
       name: v.name.trim().slice(0, 80),
       sku: v.sku.trim().slice(0, 40).toUpperCase(),
@@ -196,6 +201,47 @@ export async function adminListOrders(statuses?: OrderStatus[]): Promise<Order[]
     ),
   );
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as unknown as Omit<Order, 'id'>) }));
+}
+
+/**
+ * Suscripción EN VIVO a la cola del panel (ronda 5i-j): onSnapshot acotado a
+ * los estados dados (≤5, límite de Firestore) y a 60 docs. La usan la página
+ * de pagos (lista que se actualiza sola) y la alerta global de pedidos
+ * nuevos (NewOrderAlert). Devuelve la función de desuscripción.
+ */
+export function adminSubscribeOrders(
+  statuses: OrderStatus[],
+  onData: (orders: Order[]) => void,
+  onError: (e: unknown) => void,
+): () => void {
+  let unsub: (() => void) | null = null;
+  let cancelled = false;
+  void loadFirebase()
+    .then((fb) => {
+      if (!fb) {
+        onError(new Error('Firebase no disponible.'));
+        return;
+      }
+      if (cancelled) return;
+      const q = query(
+        collection(fb.db, 'orders'),
+        where('status', 'in', statuses.slice(0, 5)),
+        orderBy('createdAt', 'desc'),
+        fbLimit(60),
+      );
+      unsub = onSnapshot(
+        q,
+        (snap) => {
+          onData(snap.docs.map((d) => ({ id: d.id, ...(d.data() as unknown as Omit<Order, 'id'>) })));
+        },
+        (e) => onError(e),
+      );
+    })
+    .catch(onError);
+  return () => {
+    cancelled = true;
+    unsub?.();
+  };
 }
 
 export async function adminVerifyPayment(orderId: string, approve: boolean, note: string): Promise<void> {
@@ -311,7 +357,7 @@ export interface AdminUserRow {
   name: string;
   email: string;
   phone: string;
-  role: 'customer' | 'cajero' | 'delivery' | 'admin';
+  role: 'customer' | 'cajero' | 'delivery' | 'gerente' | 'admin';
   createdAtMs: number;
 }
 
@@ -331,11 +377,13 @@ export async function adminListUsers(): Promise<AdminUserRow[]> {
     const role =
       u['role'] === 'admin'
         ? 'admin'
-        : u['role'] === 'cajero'
-          ? 'cajero'
-          : u['role'] === 'delivery'
-            ? 'delivery'
-            : 'customer';
+        : u['role'] === 'gerente'
+          ? 'gerente'
+          : u['role'] === 'cajero'
+            ? 'cajero'
+            : u['role'] === 'delivery'
+              ? 'delivery'
+              : 'customer';
     return {
       uid: d.id,
       name: String(u['name'] ?? ''),
@@ -432,6 +480,8 @@ export interface BcvRateInfo {
   /** Último intento de lectura (cron o manual): cambia aunque la tasa siga igual. */
   lastAttemptAt: number;
   source: string;
+  /** Motivo del último fallo de lectura ('red'|'html'|'rango'|'presupuesto'); vacío si fue exitosa. */
+  lastError: string;
   /** Tasa capturada hoy en la tarde: se activa sola a las 12:00 AM. */
   nextUsdToVes: number;
   nextFechaValor: string;
@@ -455,6 +505,7 @@ export async function adminGetBcvRate(): Promise<BcvRateInfo | null> {
     updatedAt: Number(d['updatedAt'] ?? 0),
     lastAttemptAt: Number(d['lastAttemptAt'] ?? 0),
     source: String(d['source'] ?? 'fallback'),
+    lastError: String(d['lastError'] ?? ''),
     nextUsdToVes: Number(d['nextUsdToVes'] ?? 0),
     nextFechaValor: String(d['nextFechaValor'] ?? ''),
     nextCapturedAt: Number(d['nextCapturedAt'] ?? 0),

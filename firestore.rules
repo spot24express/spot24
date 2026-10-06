@@ -1,14 +1,19 @@
 rules_version = '2';
 
 /*
- * SPOT 24 · Firestore Security Rules — DENY BY DEFAULT (6.1)
- * ═══════════════════════════════════════════════════════════
+ * SPOT 24 · Firestore Security Rules — DENY BY DEFAULT (6.1) · Ronda 3
+ * ═══════════════════════════════════════════════════════════════════════
  * · Ninguna colección abierta: todo lo no listado queda DENEGADO.
  * · El cliente NUNCA escribe en orders, reservations, counters,
  *   idempotency, auditLog, fraudReview ni rates (solo Cloud Functions).
- * · Roles vía custom claim `role`: admin (todo), cajero (pagos/despacho),
- *   delivery (ruta). Solo lectura de pedidos para el personal.
+ * · Roles vía custom claim `role`: admin (todo), gerente (jefatura:
+ *   catálogo sin borrar, pagos, despacho, métricas, lectura de usuarios),
+ *   cajero (pagos/despacho), delivery (ruta).
  * · Validación de tipos/tamaños en cada write permitido (6.5).
+ * · NUEVO Ronda 3: users con lista blanca (el dueño solo cambia nombre y
+ *   teléfono; createdAtMs —insumo del antifraude— queda congelado) y carts
+ *   con validación de CADA ítem (antes un usuario podía inflar su doc con
+ *   megas de basura hasta el tope de 1 MB).
  */
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -19,6 +24,14 @@ service cloud.firestore {
     }
     function isAdmin() {
       return signedIn() && request.auth.token.role == 'admin';
+    }
+    /* Gerencia: catálogo sin borrar, pagos, despacho, métricas, ver usuarios. */
+    function isGerente() {
+      return signedIn() && request.auth.token.role == 'gerente';
+    }
+    /* Edición de catálogo (crear/editar, NO borrar). */
+    function canEditCatalog() {
+      return isAdmin() || isGerente();
     }
     /* Personal del panel: cajero y delivery tienen SOLO lectura de pedidos. */
     function isStaff() {
@@ -32,7 +45,7 @@ service cloud.firestore {
       return v is string && v.size() >= minLen && v.size() <= maxLen;
     }
 
-    /* ── products: lectura pública, escritura solo admin ── */
+    /* ── products: lectura pública, escritura admin/gerente ── */
     match /products/{productId} {
       function productValid(d) {
         return d.keys().hasAll(['name', 'brand', 'slug', 'categoryId', 'active'])
@@ -50,14 +63,14 @@ service cloud.firestore {
           && (!('images' in d) || (d.images is list && d.images.size() <= 10));
       }
       allow read: if true;
-      allow create, update: if isAdmin() && productValid(request.resource.data);
+      allow create, update: if canEditCatalog() && productValid(request.resource.data);
       allow delete: if isAdmin();
 
-      /* Variantes: lectura pública; escritura solo admin (panel). SIN peso:
+      /* Variantes: lectura pública; escritura admin/gerente (panel). SIN peso:
          el envío es tarifa plana por zona (stock ajustable vía fn-adjustStock). */
       match /variants/{variantId} {
         allow read: if true;
-        allow write: if isAdmin()
+        allow write: if canEditCatalog()
           && request.resource.data.keys().hasAll(['name', 'sku', 'priceUsd', 'stock'])
           && str(request.resource.data.name, 1, 80)
           && str(request.resource.data.sku, 3, 40)
@@ -70,15 +83,15 @@ service cloud.firestore {
       }
     }
 
-    /* ── categories y zones: lectura pública, escritura admin ── */
+    /* ── categories y zones: lectura pública, escritura admin/gerente ── */
     match /categories/{categoryId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if canEditCatalog();
     }
 
     match /zones/{zoneId} {
       allow read: if true;
-      allow create, update: if isAdmin()
+      allow create, update: if canEditCatalog()
         && request.resource.data.keys().hasAll(['name', 'state', 'feeUsd', 'active'])
         && str(request.resource.data.name, 2, 120)
         && request.resource.data.feeUsd is number
@@ -88,10 +101,10 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    /* ── promos: lectura pública (carrusel del Home), escritura solo admin ── */
+    /* ── promos: lectura pública (carrusel del Home), escritura admin/gerente ── */
     match /promos/{promoId} {
       allow read: if true;
-      allow create, update: if isAdmin()
+      allow create, update: if canEditCatalog()
         && request.resource.data.keys().hasAll(['title', 'imageUrl', 'active'])
         && str(request.resource.data.title, 2, 80)
         && request.resource.data.imageUrl is string
@@ -101,7 +114,8 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
-    /* ── settings: lectura pública (cuentas de pago), escritura admin ── */
+    /* ── settings: lectura pública (cuentas de pago), escritura SOLO admin ──
+       Las cuentas de pago y el IVA son demasiado sensibles para gerencia. */
     match /settings/{docId} {
       allow read: if true;
       allow write: if isAdmin();
@@ -113,16 +127,33 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    /* ── users: el dueño lee/escribe campos propios SIN roles ni época ── */
+    /* ── users: el dueño lee/escribe SOLO sus campos de perfil ──
+       Ronda 3: create con validación estricta; update con LISTA BLANCA
+       (name, phoneE164). email, createdAt, createdAtMs (antifraude), role y
+       sessionEpoch quedan congelados para el cliente. */
     match /users/{uid} {
-      allow read: if isOwner(uid) || isAdmin();
+      allow read: if isOwner(uid) || isAdmin() || isGerente();
       allow create: if isOwner(uid)
+        && request.resource.data.keys().hasAll(['name', 'email', 'role', 'sessionEpoch', 'createdAt'])
+        && request.resource.data.keys().hasOnly(['name', 'email', 'phoneE164', 'role', 'sessionEpoch', 'createdAt', 'createdAtMs'])
         && request.resource.data.role == 'customer'
-        && (!('sessionEpoch' in request.resource.data) || request.resource.data.sessionEpoch is number);
+        && str(request.resource.data.name, 1, 80)
+        && request.resource.data.email is string
+        && request.resource.data.email.size() >= 5
+        && request.resource.data.email.size() <= 320
+        && (!('phoneE164' in request.resource.data) || str(request.resource.data.phoneE164, 0, 20))
+        && request.resource.data.sessionEpoch is number
+        && request.resource.data.createdAt == request.time
+        && (!('createdAtMs' in request.resource.data)
+              || (request.resource.data.createdAtMs is number
+                  && request.resource.data.createdAtMs >= 0
+                  && request.resource.data.createdAtMs <= request.time.toMillis() + 60000));
       allow update: if isOwner(uid)
-        // El cliente no puede cambiar role ni sessionEpoch (claims mandan).
-        && (!request.resource.data.diff(resource.data).affectedKeys()
-              .hasAny(['role', 'sessionEpoch']));
+        // Lista blanca: nada más que nombre y teléfono puede cambiar el dueño.
+        && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['name', 'phoneE164'])
+        && (!('name' in request.resource.data) || str(request.resource.data.name, 1, 80))
+        && (!('phoneE164' in request.resource.data) || str(request.resource.data.phoneE164, 0, 20));
       allow delete: if false;
 
       /* Tokens FCM del propio usuario (5.5). La validación de datos aplica
@@ -137,25 +168,39 @@ service cloud.firestore {
     }
 
     /* ── carts: dueño únicamente, tamaño acotado (5.2) ──
-       Lectura simple: request.resource no existe en reads (bug que bloqueaba
-       el carrito remoto al iniciar sesión). */
+       Ronda 5i-d: SIN .every() por ítem. El método List.every() NO existe en
+       el motor de reglas del toolchain oficial actual (emulador de
+       firebase-tools 13-15: «Function not found: every») y era frágil entre
+       generaciones de motor. La whitelist ÍTEM POR ÍTEM ya se aplica en las
+       dos capas que sí pueden iterar:
+         · cart.service.ts (cliente): sanitiza cada línea contra la lista
+           blanca antes de escribir (Ronda 5e/5h).
+         · El SERVIDOR (reserveStock/quoteTotals/createOrder) re-valida cada
+           línea contra el catálogo real de Firestore: un carrito malicioso
+           jamás afecta precios, montos ni stock de las órdenes.
+       En reglas se conservan los invariantes expresables sin iteración. */
     match /carts/{uid} {
       allow read: if isOwner(uid);
       allow create, update: if isOwner(uid)
         && request.resource.data.keys().hasAll(['items'])
+        && request.resource.data.keys().hasOnly(['items', 'updatedAt'])
         && request.resource.data.items is list
         && request.resource.data.items.size() <= 50;
       allow delete: if false;
     }
 
-    /* ── orders: SOLO Cloud Functions escribe (5.4, 6.3) ── */
+    /* ── orders: SOLO Cloud Functions escribe (5.4, 6.3) ──
+       Lectura: admin, gerente, personal (cajero/delivery) y el dueño. */
     match /orders/{orderId} {
-      allow read: if isAdmin() || isStaff() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow read: if isAdmin() || isGerente() || isStaff()
+        || (signedIn() && resource.data.uid == request.auth.uid);
       allow create, update, delete: if false;
 
-      /* Timeline del pedido: lectura para dueño, personal y admin. */
+      /* Timeline del pedido: lectura para dueño, personal y jefatura. */
       match /events/{eventId} {
-        allow read: if isAdmin() || isStaff() || (signedIn() && get(/databases/$(database)/documents/orders/$(orderId)).data.uid == request.auth.uid);
+        allow read: if isAdmin() || isGerente() || isStaff()
+          || (signedIn()
+              && get(/databases/$(database)/documents/orders/$(orderId)).data.uid == request.auth.uid);
         allow write: if false;
       }
     }

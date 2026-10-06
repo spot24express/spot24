@@ -4,7 +4,7 @@ import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Button } from '@/shared/components/ui/Button';
 import { SpeedLines } from '@/shared/components/brand/Logo';
 import { PAYMENT_METHOD_LABELS } from '@/shared/constants/orders';
-import { formatBs, formatUsd } from '@/shared/lib/format';
+import { formatBs } from '@/shared/lib/format';
 import { subscribeOrder } from '@/features/orders/services/orders.service';
 import type { Order } from '@/features/orders/types';
 
@@ -38,7 +38,7 @@ export default function CheckoutSuccessPage() {
               <div className="flex justify-between">
                 <dt className="text-muted">Total</dt>
                 <dd className="font-display text-xl font-extrabold italic text-signal">
-                  {formatUsd(order.totals.totalUsd)} · {formatBs(order.totals.totalVes)}
+                  {formatBs(order.totals.totalVes)}
                 </dd>
               </div>
               <div className="flex justify-between">

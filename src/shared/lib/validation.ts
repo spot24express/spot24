@@ -38,10 +38,21 @@ export function isValidEmail(value: string): boolean {
 /** Operadoras venezolanas: Movilnet, Movistar, Digitel (todos los prefijos móviles). */
 const VE_MOBILE_PREFIXES = ['0412', '0414', '0416', '0422', '0424', '0426'];
 
-/** Acepta 04141234567 / 0414-123-4567 / 4141234567 → normaliza a 11 dígitos con 0. */
+/**
+ * Normaliza CUALQUIER formato venezolano a 11 dígitos locales con 0 inicial.
+ * El cliente de SPOT 24 SIEMPRE ve y escribe el teléfono en formato local
+ * (ej. 04243036024); el prefijo internacional +58 nunca se muestra en la UI:
+ *   04141234567      → 04141234567
+ *   4141234567       → 04141234567
+ *   +584141234567    → 04141234567   (E.164 guardado en users/{uid}.phoneE164)
+ *   584141234567     → 04141234567
+ *   0058 424-1234567 → 04241234567
+ */
 export function normalizePhoneVE(value: string): string {
   let d = value.replace(/\D/g, '');
-  if (d.length === 10 && d.startsWith('4')) d = `0${d}`;
+  if (d.startsWith('00')) d = d.slice(2); // marca internacional 0058…
+  if (d.length === 12 && d.startsWith('58')) d = d.slice(2); // 58 + 10 dígitos
+  if (d.length === 10 && d.startsWith('4')) d = `0${d}`; // 4241234567 → 0424…
   return d;
 }
 

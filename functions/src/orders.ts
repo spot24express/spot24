@@ -1,9 +1,13 @@
 /**
  * SPOT 24 · Operaciones sensibles de pedidos (5.2/5.4, 6.3).
- * · fn-reserveStock: reserva de stock 2 h al entrar al checkout.
+ * · fn-reserveStock: reserva de stock 2 h al entrar al checkout. ÚNICA activa
+ *   por usuario (doc u_{uid}): re-reservar libera el hold anterior (5i-b).
  * · fn-quoteTotals: cotización autoritativa (subtotal + envío por zona + IVA + Bs).
  * · fn-createOrder: ÚNICO escritor de orders. Idempotente, con App Check,
  *   validación de stock, montos calculados SOLO aquí y antifraude.
+ *   FLUJO ESTRICTO (5i-k): exige el comprobante de pago (base64 → imgbb) y
+ *   la orden NACE en en_verificacion con hasReceipt: true. Si la subida del
+ *   comprobante falla, NO se crea la orden: no existen pedidos sin pago.
  * · fn-cancelOrder: liberación de reserva y reposición de stock.
  * El cliente NUNCA calcula precios ni escribe en orders.
  *
@@ -33,6 +37,12 @@ const RESERVATION_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_QTY_PER_LINE = 20;
 const MAX_LINES = 50;
 const MAX_PRICE_USD = 10_000;
+
+/* Comprobante de pago: tope defensivo del base64 sin prefijo data: (el
+ * cliente comprime antes) y endpoint del host de imágenes. Funciona sin
+ * bucket de Storage (plan Spark): la imagen vive en imgbb. */
+const MAX_RECEIPT_BASE64 = 5_500_000;
+const IMGBB_ENDPOINT = 'https://api.imgbb.com/1/upload';
 
 /* ─────────────────────────── utilidades ─────────────────────────── */
 
@@ -79,6 +89,64 @@ function isFinitePositive(n: unknown): n is number {
   return typeof n === 'number' && Number.isFinite(n) && n > 0;
 }
 
+/**
+ * Normaliza y valida el comprobante en base64 que envía el cliente (5i-k).
+ * Compartido por fn-createOrder (obligatorio) y fn-uploadReceipt (re-subida).
+ * · Defensa: si el cliente envió data:image/...;base64,XX, conservamos XX.
+ * · Quita espacios, valida el cuerpo base64 y el tope de tamaño.
+ * Lanza HttpsError con mensaje accionable si algo no cuadra.
+ */
+function requireReceiptImage(raw: unknown): string {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new HttpsError('invalid-argument', 'Falta el comprobante de pago: adjunta la foto antes de confirmar.');
+  }
+  const image = raw.slice(raw.indexOf(',') + 1).replace(/\s/g, '');
+  if (image.length > MAX_RECEIPT_BASE64) {
+    throw new HttpsError('invalid-argument', 'La imagen pasa de 5 MB comprimida.');
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(image)) {
+    throw new HttpsError('invalid-argument', 'Imagen inválida (base64 esperado).');
+  }
+  return image;
+}
+
+/**
+ * Sube el comprobante a imgbb y devuelve la URL pública.
+ * La clave IMGBB_API_KEY vive SOLO en el servidor (nunca en el cliente).
+ */
+async function uploadReceiptToImgbb(image: string): Promise<string> {
+  const key = process.env['IMGBB_API_KEY'] ?? '';
+  if (!key) {
+    throw new HttpsError(
+      'failed-precondition',
+      'IMGBB_API_KEY no configurada en el servidor (Netlify → Environment variables) y redeploy.',
+    );
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(IMGBB_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ key, image }).toString(),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw new HttpsError('unavailable', 'No pudimos contactar a imgbb. Reintenta en unos segundos.');
+  }
+  if (!res.ok) {
+    throw new HttpsError('unavailable', `imgbb rechazó la subida (HTTP ${res.status}).`);
+  }
+  const json = (await res.json().catch(() => null)) as
+    | { success?: boolean; data?: { url?: string } }
+    | null;
+  const url = json?.data?.url;
+  if (json?.success !== true || typeof url !== 'string' || !url.startsWith('https://')) {
+    throw new HttpsError('internal', 'imgbb no devolvió la dirección del comprobante.');
+  }
+  return url;
+}
+
 /* ─────────────────────── reserva de stock (2 h) ─────────────────────── */
 
 export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
@@ -94,48 +162,168 @@ export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
     }
 
     const expiresAt = Date.now() + RESERVATION_TTL_MS;
-    const reservationRef = db().collection('reservations').doc();
+    // Ronda 5i-b — RESERVA ÚNICA POR USUARIO (id determinista u_{uid}).
+    // Antes: doc() aleatorio → CADA llamada creaba OTRA reserva y apilaba
+    // stockReserved += qty sobre las mismas variantes (el doble disparo de
+    // StrictMode en dev, un reintento tras un timeout de 25 s — el servidor
+    // completó la reserva igual: el 200 llegó a un cliente que ya colgó — o
+    // dos pestañas del mismo usuario). Resultado: holds fantasma hasta 2 h
+    // y «Sin stock suficiente» espectral. Ahora: re-reservar LIBERA los
+    // holds de la reserva 'activa' previa del mismo uid y crea la nueva en
+    // la MISMA transacción → resultado idempotente, a lo sumo 1 hold vivo
+    // por usuario. Los doc aleatorios históricos los sigue barriendo el
+    // bloque de abajo cuando vencen.
+    const reservationRef = db().collection('reservations').doc(`u_${uid}`);
+
+    // Ronda 5i — BARRIDO de reservas EXPIRADAS que siguen 'activa'.
+    // Sin esto, cada checkout abandonado (cerrar pestaña, reserva vencida,
+    // orden que nunca llegó a crearse) dejaba stockReserved inflado PARA
+    // SIEMPRE: available = stock - stockReserved acababa en 0 y TODO
+    // checkout posterior fallaba con «Sin stock suficiente.» (out-of-range).
+    // Consulta por campo único (status) — NO requiere índice compuesto — y
+    // el filtro de vencimiento va en código. Tope 10 por llamada para acotar
+    // latencia: el resto lo barre la siguiente llamada (rate limit 30/h).
+    try {
+      const staleSnap = await db()
+        .collection('reservations')
+        .where('status', '==', 'activa')
+        .limit(10)
+        .get();
+      const nowMs = Date.now();
+      const expired = staleSnap.docs.filter(
+        (d) => Number(d.data()?.['expiresAt'] ?? 0) < nowMs,
+      );
+      for (const stale of expired) {
+        await db().runTransaction(async (tx) => {
+          // Re-lectura DENTRO de la tx: pudo ser consumida/liberada mientras
+          // tanto por createOrder/cancelOrder de otra petición.
+          const fresh = await tx.get(stale.ref);
+          if (!fresh.exists || fresh.data()?.['status'] !== 'activa') return;
+          if (Number(fresh.data()?.['expiresAt'] ?? 0) >= nowMs) return;
+          const held = (fresh.data()?.['items'] ?? []) as Array<{
+            productId: string;
+            variantId: string;
+            qty: number;
+          }>;
+          const unreserve: Array<{
+            ref: admin.firestore.DocumentReference;
+            newReserved: number;
+          }> = [];
+          for (const item of held) {
+            const vref = db().doc(`products/${item.productId}/variants/${item.variantId}`);
+            const vsnap = await tx.get(vref);
+            if (vsnap.exists) {
+              unreserve.push({
+                ref: vref,
+                newReserved: Math.max(0, Number(vsnap.data()?.['stockReserved'] ?? 0) - Number(item.qty ?? 0)),
+              });
+            }
+          }
+          // ── Escrituras al final (regla de transacciones Firestore) ──
+          for (const p of unreserve) {
+            tx.update(p.ref, { stockReserved: p.newReserved });
+          }
+          tx.set(stale.ref, { status: 'vencida', liberadaEn: Date.now() }, { merge: true });
+        });
+      }
+    } catch (sweepErr) {
+      // Best-effort: si el barrido falla, la reserva sigue viva y se
+      // reintentará en la próxima llamada. NUNCA bloquea la reserva nueva.
+      console.warn('[reserveStock] barrido de reservas vencidas falló:', sweepErr);
+    }
 
     await db().runTransaction(async (tx) => {
       // REGLA DE TRANSACCIONES FIRESTORE: TODAS las lecturas antes que
-      // CUALQUIER escritura. Con 2+ ítems, el tx.get de la iteración
-      // siguiente llegaba después del tx.update anterior → «Firestore
-      // transactions require all reads to be executed before all writes».
-      // Se leen y validan TODAS las variantes primero; las escrituras van
-      // al final.
-      const pending: Array<{ ref: admin.firestore.DocumentReference; newReserved: number }> = [];
+      // CUALQUIER escritura. Se lee la reserva previa del usuario y se leen y
+      // validan TODAS las variantes (las nuevas y las del hold anterior);
+      // las escrituras van al final.
+
+      // Ronda 5i-b: hold de la reserva previa del MISMO usuario que vamos a
+      // reemplazar. Solo si sigue 'activa' (consumida/liberada/vencida ya no
+      // retiene stock: eso lo liquidaron createOrder/cancelOrder/barrido).
+      const prevSnap = await tx.get(reservationRef);
+      const prevHeld = new Map<string, { ref: admin.firestore.DocumentReference; qty: number }>();
+      if (prevSnap.exists && prevSnap.data()?.['status'] === 'activa') {
+        for (const item of (prevSnap.data()?.['items'] ?? []) as Array<{
+          productId: string;
+          variantId: string;
+          qty: number;
+        }>) {
+          if (!item.productId || !item.variantId) continue;
+          const key = `${item.productId}/${item.variantId}`;
+          const cur = prevHeld.get(key) ?? {
+            ref: db().doc(`products/${item.productId}/variants/${item.variantId}`),
+            qty: 0,
+          };
+          cur.qty += Number(item.qty ?? 0);
+          prevHeld.set(key, cur);
+        }
+      }
+
+      // Líneas nuevas fusionadas por productId+variantId (defensivo: el
+      // carrito del cliente ya deduplica desde la 5e, pero el endpoint es
+      // público; sin merge, dos líneas de la misma variante pisaban su
+      // propia escritura de stockReserved).
+      const merged = new Map<string, { productId: string; variantId: string; qty: number }>();
       for (const it of items) {
         const productId = sanitizeStr(it.productId, 120);
         const variantId = sanitizeStr(it.variantId, 140);
-        const qty = sanitizeDigits(String(it.qty ?? ''), 3);
+        const qty = Number(sanitizeDigits(String(it.qty ?? ''), 3));
         if (!productId || !variantId || !qty) {
           throw new HttpsError('invalid-argument', 'Ítem inválido.');
         }
-        const qtyN = Number(qty);
-        if (qtyN < 1 || qtyN > MAX_QTY_PER_LINE) {
+        if (qty < 1 || qty > MAX_QTY_PER_LINE) {
           throw new HttpsError('invalid-argument', 'Cantidad fuera de rango.');
         }
-        const variantRef = db().doc(`products/${productId}/variants/${variantId}`);
+        const key = `${productId}/${variantId}`;
+        const cur = merged.get(key);
+        if (cur) {
+          cur.qty = Math.min(MAX_QTY_PER_LINE, cur.qty + qty);
+        } else {
+          merged.set(key, { productId, variantId, qty });
+        }
+      }
+
+      const writes: Array<{ ref: admin.firestore.DocumentReference; newReserved: number }> = [];
+      for (const line of merged.values()) {
+        const variantRef = db().doc(`products/${line.productId}/variants/${line.variantId}`);
         const vsnap = await tx.get(variantRef);
         if (!vsnap.exists) throw new HttpsError('out-of-range', 'Variante inexistente.');
         const stock = Number(vsnap.data()?.['stock'] ?? 0);
         const reserved = Number(vsnap.data()?.['stockReserved'] ?? 0);
-        const available = stock - reserved;
-        if (qtyN > available) {
+        // Disponible EXCLUYENDO el hold propio anterior: fue puesto por ESTA
+        // re-reserva (mismo uid) y lo estamos reemplazando, así que no
+        // compite contra la nueva cantidad. Sin esto, re-entrar al checkout
+        // con stock justo fallaría contra sí misma (patrón idéntico al de
+        // createOrder con reservation.holdQty).
+        const ownHold = prevHeld.get(`${line.productId}/${line.variantId}`)?.qty ?? 0;
+        const available = stock - reserved + ownHold;
+        if (line.qty > available) {
           throw new HttpsError('out-of-range', 'Sin stock suficiente.');
         }
-        pending.push({ ref: variantRef, newReserved: reserved + qtyN });
+        writes.push({ ref: variantRef, newReserved: Math.max(0, reserved - ownHold + line.qty) });
+        prevHeld.delete(`${line.productId}/${line.variantId}`);
+      }
+      // Variantes que SOLO estaban en la reserva previa: liberar su hold.
+      for (const held of prevHeld.values()) {
+        const vsnap = await tx.get(held.ref);
+        if (vsnap.exists) {
+          writes.push({
+            ref: held.ref,
+            newReserved: Math.max(0, Number(vsnap.data()?.['stockReserved'] ?? 0) - held.qty),
+          });
+        }
       }
       // ── Escrituras: cuando ya no queda ninguna lectura pendiente ──
-      for (const p of pending) {
+      for (const p of writes) {
         tx.update(p.ref, { stockReserved: p.newReserved });
       }
       tx.set(reservationRef, {
         uid,
-        items: items.map((it) => ({
-          productId: sanitizeStr(it.productId, 120),
-          variantId: sanitizeStr(it.variantId, 140),
-          qty: Number(sanitizeDigits(String(it.qty ?? ''), 3)),
+        items: Array.from(merged.values()).map((line) => ({
+          productId: line.productId,
+          variantId: line.variantId,
+          qty: line.qty,
         })),
         status: 'activa',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -176,6 +364,9 @@ export async function coreQuoteTotals(ctx: CoreCtx): Promise<unknown> {
       totalUsd: totals.totalUsd,
       totalVes: totals.totalVes,
       rateUsed: totals.rateUsed,
+      subtotalVes: totals.subtotalVes,
+      shippingVes: totals.shippingVes,
+      ivaVes: totals.ivaVes,
       zoneName: totals.zoneName,
       freeShipping: totals.shippingUsd === 0,
     };
@@ -240,6 +431,7 @@ async function computeTotals(
   subtotalUsd: number; shippingUsd: number;
   ivaPercent: number; ivaUsd: number;
   totalUsd: number; totalVes: number; rateUsed: number;
+  subtotalVes: number; shippingVes: number; ivaVes: number;
   zoneName: string;
   linesSnapshot: ValidLineWithPrice[];
 }> {
@@ -259,10 +451,26 @@ async function computeTotals(
   let subtotal = 0;
   const linesSnapshot: ValidLineWithPrice[] = [];
 
+  // ESCALABILIDAD (Ronda 3): lectura EN LOTE con getAll en vez de 2 lecturas
+  // secuenciales por línea (hasta 100 round-trips con 50 líneas). Ahora son
+  // como máximo 2 lotes en paralelo; mismas lecturas facturadas, una fracción
+  // del tiempo. Límite duro de getAll: 100 refs por llamada → trozos de 90.
+  const refs: admin.firestore.DocumentReference[] = [];
   for (const line of lines) {
-    const vsnap = await db().doc(`products/${line.productId}/variants/${line.variantId}`).get();
-    const psnap = await db().doc(`products/${line.productId}`).get();
-    if (!vsnap.exists || !psnap.exists) {
+    refs.push(db().doc(`products/${line.productId}/variants/${line.variantId}`));
+    refs.push(db().doc(`products/${line.productId}`));
+  }
+  const byPath = new Map<string, admin.firestore.DocumentSnapshot>();
+  const CHUNK = 90;
+  for (let i = 0; i < refs.length; i += CHUNK) {
+    const snaps = await db().getAll(...refs.slice(i, i + CHUNK));
+    for (const s of snaps) byPath.set(s.ref.path, s);
+  }
+
+  for (const line of lines) {
+    const vsnap = byPath.get(`products/${line.productId}/variants/${line.variantId}`);
+    const psnap = byPath.get(`products/${line.productId}`);
+    if (!vsnap || !psnap || !vsnap.exists || !psnap.exists) {
       throw new HttpsError('out-of-range', 'Producto inexistente.');
     }
     if (psnap.data()?.['active'] !== true || vsnap.data()?.['active'] !== true) {
@@ -276,6 +484,7 @@ async function computeTotals(
     subtotal += lineTotal;
     linesSnapshot.push({
       ...line,
+      brand: sanitizeStr(psnap.data()?.['brand'], 60),
       name: sanitizeStr(psnap.data()?.['name'], 120),
       variantName: sanitizeStr(vsnap.data()?.['name'], 80),
       sku: sanitizeStr(vsnap.data()?.['sku'], 40),
@@ -305,6 +514,11 @@ async function computeTotals(
 
   const totalUsd = round2(subtotal + shipping + ivaUsd);
   const totalVes = round2(totalUsd * rate);
+  // Desglose en Bs autoritativo (Ronda 3): el cliente ya NO convierte ni
+  // muestra USD; cada partida viaja redondeada desde el servidor.
+  const subtotalVes = round2(subtotal * rate);
+  const shippingVes = round2(shipping * rate);
+  const ivaVes = round2(ivaUsd * rate);
   return {
     subtotalUsd: subtotal,
     shippingUsd: shipping,
@@ -313,12 +527,16 @@ async function computeTotals(
     totalUsd,
     totalVes,
     rateUsed: rate,
+    subtotalVes,
+    shippingVes,
+    ivaVes,
     zoneName: zoneId && zoneSnap ? String(zoneSnap.get('name') ?? zoneId) : 'Retiro en tienda',
     linesSnapshot,
   };
 }
 
 interface ValidLineWithPrice extends ValidLine {
+  brand: string;
   name: string;
   variantName: string;
   sku: string;
@@ -341,6 +559,8 @@ interface CreateOrderReq {
   notes: unknown;
   paymentMethod: unknown;
   paymentDetails: unknown;
+  /** FLUJO ESTRICTO (5i-k): comprobante en base64 puro. OBLIGATORIO. */
+  receiptImage: unknown;
 }
 
 const PAYMENT_METHODS = new Set(['pago_movil']);
@@ -409,6 +629,12 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       reservation = rsnap;
     }
 
+    // FLUJO ESTRICTO (5i-k): el comprobante se sube a imgbb ANTES de crear la
+    // orden. Si imgbb falla, NO hay pedido (cero pedidos sin pago) y el
+    // cliente reintenta con la misma imagen en el estado. Va DESPUÉS del
+    // chequeo de idempotencia para que un replay no duplique la imagen.
+    const receiptUrl = await phase('comprobante', () => uploadReceiptToImgbb(req.receiptImage));
+
     // Totales calculados SOLO aquí (6.3): precios, envío, IVA y Bs.
     const totals = await phase('montos', () => computeTotals(uid, req.lines, isPickup ? null : req.address['zoneId']));
 
@@ -452,10 +678,14 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
     const orderDoc = {
       code,
       uid,
-      status: 'pendiente' as const,
+      // FLUJO ESTRICTO (5i-k): nace EN VERIFICACIÓN — el cliente ya pagó y
+      // su comprobante viaja en este mismo documento. El estado «pendiente»
+      // queda reservado para pedidos legacy anteriores a esta ronda.
+      status: 'en_verificacion' as const,
       lines: totals.linesSnapshot.map((l) => ({
         productId: l.productId,
         variantId: l.variantId,
+        brand: l.brand,
         name: l.name,
         variantName: l.variantName,
         sku: l.sku,
@@ -472,18 +702,28 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
         totalUsd: totals.totalUsd,
         totalVes: totals.totalVes,
         rateUsed: totals.rateUsed,
+        subtotalVes: totals.subtotalVes,
+        shippingVes: totals.shippingVes,
+        ivaVes: totals.ivaVes,
       },
       payment: {
         method: req.paymentMethod,
         status: 'pendiente',
         refHash,
         detailsEncrypted: encPaymentDetails,
-        hasReceipt: false,
+        // FLUJO ESTRICTO: nace con comprobante (pago realizado y probado).
+        hasReceipt: true,
+        receiptUrl,
         masked: {
           banco: req.paymentDetails['banco'] ?? req.paymentDetails['bancoOrigen'] ?? '',
           telefono: req.paymentDetails['telefono'] ? `•••${String(req.paymentDetails['telefono']).slice(-4)}` : '',
           correo: req.paymentDetails['correo'] ? '•••' + String(req.paymentDetails['correo']).slice(-12) : '',
         },
+        // Ronda 5.9: la referencia COMPLETA en claro. Es el dato que el cajero
+        // necesita para cotejar el pago en el banco. El propio cliente la
+        // escribió y el doc solo lo leen el dueño y el panel: no expone nada
+        // nuevo. referenceMasked queda como fallback para órdenes viejas.
+        reference: refRaw,
         referenceMasked: refRaw ? `•••${refRaw.slice(-3)}` : '',
       },
       delivery: {
@@ -501,6 +741,10 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       },
       contact: {
         name: encContact.name,
+        // Ronda 5.9: teléfono COMPLETO en claro — cajera y delivery lo usan
+        // para llamar/WhatsApp al cliente (el cliente ya lo escribió y el doc
+        // solo lo leen el dueño y el panel). phoneMasked queda de fallback.
+        phone: req.contact['phone'],
         phoneMasked: `•••••${req.contact['phone'].slice(-4)}`,
         phoneEncrypted: encContact.phone,
         cedulaEncrypted: encContact.cedula,
@@ -522,12 +766,21 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       if (idemAgain.exists) {
         throw new HttpsError('already-exists', 'Orden en proceso.');
       }
-      // Flujo fallback (sin reserva): leer y validar TODAS las variantes
-      // ANTES de encolar cualquier escritura. El «falló fase escritura-orden:
-      // Firestore transactions require all reads to be executed before all
-      // writes» venía de hacer tx.get de variantes aquí abajo, después de
-      // los tx.set de la orden.
-      const restock: Array<{ ref: admin.firestore.DocumentReference; newStock: number }> = [];
+      // Leer y validar TODAS las variantes ANTES de encolar cualquier
+      // escritura. El «falló fase escritura-orden: Firestore transactions
+      // require all reads to be executed before all writes» venía de hacer
+      // tx.get de variantes aquí abajo, después de los tx.set de la orden.
+      //
+      // Ronda 5i — CONTABILIDAD DE STOCK CONSISTENTE EN AMBOS FLUJOS:
+      // · Fallback (sin reserva): descuenta stock directo (igual que antes).
+      // · Con reserva: consumir la reserva NO descontaba NI el stock NI el
+      //   hold (stockReserved): cada orden dejaba stockReserved inflado para
+      //   siempre y el catálogo dejaba de poder vender («Sin stock
+      //   suficiente» fantasma). Ahora consumir la reserva = venta real:
+      //   stock -= qty (venta) y stockReserved -= qty (libera el hold). Con
+      //   esto cuadran el rechazo del pago (repone stock) y cancelOrder.
+      const stockWrites: Array<{ ref: admin.firestore.DocumentReference; newStock: number }> = [];
+      const holdWrites: Array<{ ref: admin.firestore.DocumentReference; newReserved: number }> = [];
       if (!reservation) {
         for (const l of req.lines) {
           const vref = db().doc(`products/${l.productId}/variants/${l.variantId}`);
@@ -538,32 +791,82 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
           if (l.qty > stock - reserved) {
             throw new HttpsError('out-of-range', 'Sin stock suficiente.');
           }
-          restock.push({ ref: vref, newStock: stock - l.qty });
+          stockWrites.push({ ref: vref, newStock: stock - l.qty });
+        }
+      } else {
+        // El hold lo fijó reserveStock sobre los ítems de la RESERVA; la
+        // venta es sobre las LÍNEAS de la orden. Se agrupan por variante:
+        // una lectura por variante, dos escrituras coherentes.
+        const perVariant = new Map<
+          string,
+          { ref: admin.firestore.DocumentReference; saleQty: number; holdQty: number }
+        >();
+        for (const l of req.lines) {
+          const key = `${l.productId}/${l.variantId}`;
+          const cur = perVariant.get(key) ?? {
+            ref: db().doc(`products/${l.productId}/variants/${l.variantId}`),
+            saleQty: 0,
+            holdQty: 0,
+          };
+          cur.saleQty += l.qty;
+          perVariant.set(key, cur);
+        }
+        for (const item of (reservation.data()?.['items'] ?? []) as Array<{
+          productId: string;
+          variantId: string;
+          qty: number;
+        }>) {
+          const key = `${item.productId}/${item.variantId}`;
+          const cur = perVariant.get(key) ?? {
+            ref: db().doc(`products/${item.productId}/variants/${item.variantId}`),
+            saleQty: 0,
+            holdQty: 0,
+          };
+          cur.holdQty += Number(item.qty ?? 0);
+          perVariant.set(key, cur);
+        }
+        for (const v of perVariant.values()) {
+          const vsnap = await tx.get(v.ref);
+          if (!vsnap.exists) throw new HttpsError('out-of-range', 'Variante inexistente.');
+          const stock = Number(vsnap.data()?.['stock'] ?? 0);
+          const reserved = Number(vsnap.data()?.['stockReserved'] ?? 0);
+          // Disponible EXCLUYENDO el hold de ESTA reserva: el hold fue puesto
+          // por reserveStock para ESTA compra, así que no compite contra ella.
+          // (stock - reserved + holdQty): sin esto, una reserva propia de 3
+          // sobre stock 5 haría fallar la confirmación con stock «insuficiente».
+          if (v.saleQty > stock - reserved + v.holdQty) {
+            throw new HttpsError('out-of-range', 'Sin stock suficiente.');
+          }
+          stockWrites.push({ ref: v.ref, newStock: stock - v.saleQty });
+          holdWrites.push({ ref: v.ref, newReserved: Math.max(0, reserved - v.holdQty) });
         }
       }
       // ── A partir de aquí SOLO escrituras: ninguna lectura después ──
       tx.set(db().collection('orders').doc(orderId), orderDoc);
       tx.set(idemRef, { orderId, createdAt: now }, { merge: false });
-      // Evento inicial del timeline.
+      // Evento inicial del timeline: nace ya con pago realizado (5i-k).
       tx.set(db().collection('orders').doc(orderId).collection('events').doc('e0'), {
-        status: 'pendiente',
+        status: 'en_verificacion',
         at: now,
         by: 'system',
         note: isPickup
-          ? 'Pedido creado. Retiro en tienda. Espera comprobante de pago.'
-          : 'Pedido creado. Espera comprobante de pago.',
+          ? 'Pedido creado con comprobante de pago. Retiro en tienda. Pago en verificación.'
+          : 'Pedido creado con comprobante de pago. Pago en verificación.',
       });
-      // Consume la reserva.
+      // Consume la reserva y liquida hold + venta (Ronda 5i).
       if (reservation) {
         tx.set(db().collection('reservations').doc(req.reservationId!), { status: 'consumida', orderId }, { merge: true });
+        for (const p of holdWrites) {
+          tx.update(p.ref, { stockReserved: p.newReserved });
+        }
       }
-      // Sin reserva explícita (flujo fallback): descuenta el stock ya validado.
-      for (const p of restock) {
+      // Venta real: descuenta el stock validado (ambos flujos).
+      for (const p of stockWrites) {
         tx.update(p.ref, { stock: p.newStock });
       }
     }));
 
-    void ORDER_NOTIFICATIONS.send(uid, code, 'pendiente');
+    void ORDER_NOTIFICATIONS.send(uid, code, 'en_verificacion');
 
     const after = await db().collection('orders').doc(orderId).get();
     return buildCreateResponse(orderId, after.data() ?? {});
@@ -593,6 +896,9 @@ function buildCreateResponse(orderId: string, data: admin.firestore.DocumentData
       totalUsd: Number(totals?.['totalUsd'] ?? 0),
       totalVes: Number(totals?.['totalVes'] ?? 0),
       rateUsed: Number(totals?.['rateUsed'] ?? 0),
+      subtotalVes: Number(totals?.['subtotalVes'] ?? 0),
+      shippingVes: Number(totals?.['shippingVes'] ?? 0),
+      ivaVes: Number(totals?.['ivaVes'] ?? 0),
     },
     riskFlags: Array.isArray(data['riskFlags']) ? (data['riskFlags'] as string[]) : [],
   };
@@ -609,6 +915,7 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
   notes: string;
   paymentMethod: string;
   paymentDetails: Record<string, string>;
+  receiptImage: string;
 } {
   if (!data) throw new HttpsError('invalid-argument', 'Datos faltantes.');
 
@@ -707,7 +1014,11 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
   const notes = sanitizeStr(data.notes, 300);
   const reservationId = data.reservationId ? sanitizeStr(data.reservationId, 120) || null : null;
 
-  return { idempotencyKey, reservationId, fulfillment, lines, contact, address: { ...address, location }, deliveryWindow, notes, paymentMethod, paymentDetails };
+  // FLUJO ESTRICTO (5i-k): el comprobante es OBLIGATORIO. Sin este campo la
+  // creación se rechaza aquí, antes de tocar Firestore o imgbb.
+  const receiptImage = requireReceiptImage(data.receiptImage);
+
+  return { idempotencyKey, reservationId, fulfillment, lines, contact, address: { ...address, location }, deliveryWindow, notes, paymentMethod, paymentDetails, receiptImage };
 }
 
 /* ─────────────────────────── cancelar orden ─────────────────────────── */
@@ -741,7 +1052,8 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
         throw new HttpsError('failed-precondition', 'Estado no cancelable.');
       }
 
-      // Reposición de stock: reserva viva → libera; si no, repone directo.
+      // Reposición de stock: reserva 'activa' → libera el hold; cualquier
+      // otro caso = la orden YA descontó stock al crearse (Ronda 5i) → repone.
       // REGLA DE TRANSACCIONES FIRESTORE: las lecturas de stock van ANTES
       // de cualquier escritura (tx.get tras tx.update revienta la transacción).
       const reservationId = data['reservationId'] as string | null;
@@ -751,6 +1063,10 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
       if (reservationId && status === 'pendiente') {
         const rsnap = await tx.get(db().collection('reservations').doc(reservationId));
         if (rsnap.exists && rsnap.data()?.['status'] === 'activa') {
+          // Caso defensivo: createOrder consume la reserva en SU transacción,
+          // así que una orden 'pendiente' con reserva 'activa' no debe existir.
+          // Si apareciera (datos heredados), solo se libera el hold: bajo el
+          // modelo 5i ese stock nunca llegó a descontarse.
           releaseReservation = true;
           for (const item of (rsnap.data()?.['items'] ?? []) as Array<{ productId: string; variantId: string; qty: number }>) {
             const vref = db().doc(`products/${item.productId}/variants/${item.variantId}`);
@@ -760,6 +1076,17 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
                 ref: vref,
                 newReserved: Math.max(0, Number(vsnap.data()?.['stockReserved'] ?? 0) - item.qty),
               });
+            }
+          }
+        } else {
+          // Ronda 5i: reserva 'consumida' (o inexistente) en una orden
+          // 'pendiente' → el stock SÍ se descontó al crear la orden.
+          // Antes este camino no tocaba nada y cada cancelación filtraba stock.
+          for (const line of (data['lines'] ?? []) as Array<{ productId: string; variantId: string; qty: number }>) {
+            const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
+            const vsnap = await tx.get(vref);
+            if (vsnap.exists) {
+              restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty });
             }
           }
         }
@@ -802,15 +1129,14 @@ export const fnCancelOrder = onCall(
 
 /* ─────────────────── comprobante de pago (cliente) ─────────────────── */
 
-/** Tope defensivo: base64 sin prefijo data: (el cliente comprime antes). */
-const MAX_RECEIPT_BASE64 = 5_500_000;
-const IMGBB_ENDPOINT = 'https://api.imgbb.com/1/upload';
-
 /**
- * El CLIENTE sube el comprobante de pago de SU orden → imgbb → URL pública.
+ * El CLIENTE re-subel el comprobante de pago de SU orden → imgbb → URL pública.
+ * Desde la ronda 5i-k el flujo normal ya NO pasa por aquí: el comprobante viaja
+ * con fn-createOrder y la orden nace con él. Este callable queda para:
+ * · Pedidos LEGACY anteriores a la ronda (nacidos «pendiente» sin comprobante).
+ * · Reemplazar la foto si el banco anula y emite un nuevo comprobante.
  * · Requiere sesión y propiedad de la orden (uid === order.uid).
  * · Marca payment.hasReceipt/receiptUrl y registra evento del timeline.
- * · Funciona sin bucket de Storage (plan Spark): la imagen vive en imgbb.
  */
 export async function coreUploadReceipt(ctx: CoreCtx): Promise<unknown> {
   const { uid } = requireAuth(ctx);
@@ -819,18 +1145,7 @@ export async function coreUploadReceipt(ctx: CoreCtx): Promise<unknown> {
 
   const orderId = sanitizeStr(ctx.data?.['orderId'], 120);
   if (!orderId) throw new HttpsError('invalid-argument', 'orderId requerido.');
-  const raw = ctx.data?.['image'];
-  if (typeof raw !== 'string' || raw.length === 0) {
-    throw new HttpsError('invalid-argument', 'Falta la imagen del comprobante.');
-  }
-  // Defensa: si el cliente envió data:image/...;base64,XX, conservamos XX.
-  const image = raw.slice(raw.indexOf(',') + 1).replace(/\s/g, '');
-  if (image.length > MAX_RECEIPT_BASE64) {
-    throw new HttpsError('invalid-argument', 'La imagen pasa de 5 MB comprimida.');
-  }
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(image)) {
-    throw new HttpsError('invalid-argument', 'Imagen inválida (base64 esperado).');
-  }
+  const image = requireReceiptImage(ctx.data?.['image']);
 
   // Propiedad y estado de la orden: solo el dueño, y solo si aún tiene sentido.
   const ref = db().collection('orders').doc(orderId);
@@ -844,42 +1159,35 @@ export async function coreUploadReceipt(ctx: CoreCtx): Promise<unknown> {
     throw new HttpsError('failed-precondition', 'Esta orden ya no acepta comprobantes.');
   }
 
-  const key = process.env['IMGBB_API_KEY'] ?? '';
-  if (!key) {
-    throw new HttpsError(
-      'failed-precondition',
-      'IMGBB_API_KEY no configurada en el servidor (Netlify → Environment variables) y redeploy.',
-    );
-  }
-
-  let res: Response;
-  try {
-    res = await fetch(IMGBB_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ key, image }).toString(),
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    throw new HttpsError('unavailable', 'No pudimos contactar a imgbb. Reintenta en unos segundos.');
-  }
-  if (!res.ok) {
-    throw new HttpsError('unavailable', `imgbb rechazó la subida (HTTP ${res.status}).`);
-  }
-  const json = (await res.json().catch(() => null)) as
-    | { success?: boolean; data?: { url?: string } }
-    | null;
-  const url = json?.data?.url;
-  if (json?.success !== true || typeof url !== 'string' || !url.startsWith('https://')) {
-    throw new HttpsError('internal', 'imgbb no devolvió la dirección del comprobante.');
-  }
+  const url = await uploadReceiptToImgbb(image);
 
   const now = Date.now();
+  // Ronda 5i-j — SUBIR COMPROBANTE = PAGO REALIZADO. La orden sale de
+  // «pendiente» y entra SOLA a la cola de verificación (en_verificacion):
+  // el cajero jamás recibe pedidos sin pago en su cola de aprobación.
+  // Lectura DENTRO de la transacción: el estado pudo cambiar entre el
+  // chequeo inicial y aquí (p. ej. cancelada mientras imgbb respondía).
   await db().runTransaction(async (tx) => {
-    tx.update(ref, { 'payment.hasReceipt': true, 'payment.receiptUrl': url, updatedAt: now });
+    const fresh = await tx.get(ref);
+    const cur = String(fresh.data()?.['status'] ?? '');
+    if (cur === 'entregado' || cur === 'cancelado') {
+      throw new HttpsError('failed-precondition', 'Esta orden ya no acepta comprobantes.');
+    }
+    const nextStatus = cur === 'pendiente' ? 'en_verificacion' : cur;
+    tx.update(ref, {
+      'payment.hasReceipt': true,
+      'payment.receiptUrl': url,
+      ...(nextStatus !== cur ? { status: nextStatus } : {}),
+      updatedAt: now,
+    });
     tx.set(
       ref.collection('events').doc(),
-      { status, at: now, by: 'customer', note: 'Comprobante de pago subido por el cliente.' },
+      {
+        status: nextStatus,
+        at: now,
+        by: 'customer',
+        note: 'Comprobante de pago subido por el cliente. Pago realizado.',
+      },
     );
   });
 
