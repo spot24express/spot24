@@ -4,6 +4,7 @@ import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Input } from '@/shared/components/ui/Input';
 import { Button } from '@/shared/components/ui/Button';
 import { SpeedLines } from '@/shared/components/brand/Logo';
+import { AuthBackdrop } from '@/shared/components/brand/AuthBackdrop';
 import { useAuth } from '../hooks/useAuth';
 import { isValidEmail } from '@/shared/lib/validation';
 
@@ -28,8 +29,8 @@ export default function ResetPage() {
   };
 
   return (
-    <div className="spot-container flex min-h-[70dvh] items-center justify-center py-10">
-      <div className="w-full max-w-md rounded-brand-lg border-2 border-line bg-surface-1 p-8">
+    <AuthBackdrop>
+      <div className="w-full max-w-md rounded-brand-lg border-2 border-line bg-surface-1/95 p-8 backdrop-blur">
         <SpeedLines className="mb-6" />
         <h1 className="font-display text-2xl font-extrabold italic uppercase text-paper">
           Recuperar clave
@@ -67,6 +68,6 @@ export default function ResetPage() {
           </form>
         )}
       </div>
-    </div>
+    </AuthBackdrop>
   );
 }

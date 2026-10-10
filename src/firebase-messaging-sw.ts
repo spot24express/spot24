@@ -16,7 +16,7 @@ interface SwScope {
   addEventListener(type: 'notificationclick', cb: (e: NotificationEventLike) => void): void;
 }
 interface NotificationEventLike {
-  notification: { close(): void };
+  notification: { close(): void; data?: Record<string, unknown> };
   waitUntil(p: Promise<unknown>): void;
 }
 const sw = self as unknown as SwScope;
@@ -37,18 +37,30 @@ try {
   onBackgroundMessage(messaging, (payload) => {
     const title = payload.notification?.title ?? 'SPOT 24';
     const body = payload.notification?.body ?? 'Tu pedido cambió de estado. Abierto cuando importa.';
+    // 5.28: los avisos de despacho (aud=dispatch) APILAN por pedido
+    // (no se tapan entre sí: el personal ve cada pedido disponible);
+    // los del cliente se reemplazan entre sí como siempre (spot24-order).
+    const isDispatch = payload.data?.['aud'] === 'dispatch';
+    const tag = isDispatch
+      ? `spot24-disp-${payload.data?.['orderCode'] ?? ''}`
+      : 'spot24-order';
+    // 5.28: al tocar un aviso de despacho abre la cola de despacho.
+    const clickUrl = isDispatch ? '/admin/despacho' : '/pedidos';
     void sw.registration.showNotification(title, {
       body,
+      // Escudo con fondo transparente: se ve el escudo, no un cuadrado.
       icon: '/icons/icon-192.png',
-      badge: '/icons/icon-192.png',
-      tag: 'spot24-order',
-      data: payload.data ?? {},
+      // El badge de Android exige monocromo blanco+alpha: silueta del escudo.
+      badge: '/icons/badge-96.png',
+      tag,
+      data: { ...payload.data, clickUrl },
     });
   });
 
   sw.addEventListener('notificationclick', (event) => {
     event.notification.close();
-    event.waitUntil(sw.clients.openWindow('/pedidos'));
+    const url = (event.notification.data?.['clickUrl'] as string) || '/pedidos';
+    event.waitUntil(sw.clients.openWindow(url));
   });
 } catch {
   // Sin configuración (modo demo): el SW queda inerte sin romper el registro principal.

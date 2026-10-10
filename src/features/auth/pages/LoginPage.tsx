@@ -4,6 +4,7 @@ import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Input } from '@/shared/components/ui/Input';
 import { Button } from '@/shared/components/ui/Button';
 import { SpeedLines } from '@/shared/components/brand/Logo';
+import { AuthBackdrop } from '@/shared/components/brand/AuthBackdrop';
 import { useAuth } from '../hooks/useAuth';
 import { userMessage } from '@/shared/lib/errors';
 import { isValidEmail } from '@/shared/lib/validation';
@@ -39,22 +40,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="relative flex min-h-[75dvh] items-center justify-center overflow-hidden py-10">
-      {/* Fondo: la insignia SPOT 24 pintada en el asfalto */}
-      <img
-        src="/img/local-insignia.jpg"
-        alt=""
-        aria-hidden="true"
-        loading="lazy"
-        decoding="async"
-        className="absolute inset-0 h-full w-full object-cover"
-      />
-      <div
-        aria-hidden="true"
-        className="absolute inset-0 bg-gradient-to-t from-ink via-ink/75 to-ink/55"
-      />
-
-      <div className="spot-container relative flex justify-center">
+    <AuthBackdrop>
       <div className="w-full max-w-md rounded-brand-lg border-2 border-line bg-surface-1/95 p-8 backdrop-blur">
         <SpeedLines className="mb-6" />
         <h1 className="font-display text-2xl font-extrabold italic uppercase text-paper">Entrar</h1>
@@ -96,7 +82,6 @@ export default function LoginPage() {
           </Link>
         </p>
       </div>
-      </div>
-    </div>
+    </AuthBackdrop>
   );
 }

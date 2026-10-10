@@ -57,6 +57,27 @@
  *     log de Netlify dice SI el WAF bloqueó (red) o SI el BCV cambió su HTML
  *     (html) — antes ambos se veían igual («fallback»).
  *  D. lastError queda en el doc (fallback) y se limpia al capturar/activar.
+ *
+ * VIGÍA AUTOREPARABLE (ronda 5.11): el scheduler de Netlify dejó de disparar
+ * la lectura DOS veces en una semana (2026-10-03 y 2026-10-06) y la tienda
+ * amaneció con la tasa congelada y la nueva pendiente de activar. Ahora cada
+ * pestaña abierta (tienda o panel) vigía la edad de la última lectura y, si
+ * pasó los 70 min (el cron corre cada hora: pasarse = cron muerto), dispara
+ * fn-selfhealBcv (función background: Netlify responde 202 al instante y la
+ * lectura corre completa en segundo plano). Autocorregido: la propia lectura
+ * escribe lastAttemptAt y el vigía se apaga solo. El cron de Netlify sigue
+ * siendo el mecanismo primario; esto es la red de seguridad que garantiza
+ * que la tasa NUNCA se congela más de ~1 h aunque el scheduler muera.
+ *
+ * ACTIVACIÓN DESDE EL DOC (ronda 5.12): la activación de las 12:00 AM ya no
+ * depende de que la página del BCV responda a medianoche. Antes, promover la
+ * pendiente exigía re-leer bcv.org.ve en esa corrida; si el WAF la bloqueaba
+ * justo a las 00:00, la tasa nueva varaba hasta la primera lectura exitosa
+ * (hasta ~1 h más tarde). Ahora, si existe una pendiente capturada en un día
+ * ANTERIOR, coreUpdateBcvRate la promueve DIRECTO desde el doc rates/bcv
+ * ANTES de intentar la lectura: puntual a las 12:00 AM aunque el BCV esté
+ * caído. Idempotente: promote() limpia la pendiente, así que la rama solo
+ * dispara UNA vez por publicación.
  */
 import admin from 'firebase-admin';
 import https from 'node:https';
@@ -109,7 +130,6 @@ interface BcvFetch {
 function httpsGet(url: string, agent: https.Agent, timeoutMs: number): Promise<HttpResult> {
   return new Promise((resolve, reject) => {
     let settled = false;
-    let hardDeadline: NodeJS.Timeout;
     const finish = (err: Error | null, val?: HttpResult): void => {
       if (settled) return;
       settled = true;
@@ -121,6 +141,10 @@ function httpsGet(url: string, agent: https.Agent, timeoutMs: number): Promise<H
       }
       resolve(val!);
     };
+    const hardDeadline = setTimeout(
+      () => finish(new Error(`límite duro de ${timeoutMs}ms alcanzado`)),
+      timeoutMs,
+    );
     const req = https.get(url, { agent, headers: BCV_HEADERS }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (c) => chunks.push(c as Buffer));
@@ -133,7 +157,6 @@ function httpsGet(url: string, agent: https.Agent, timeoutMs: number): Promise<H
       );
       res.on('error', (e) => finish(e as Error));
     });
-    hardDeadline = setTimeout(() => finish(new Error(`límite duro de ${timeoutMs}ms alcanzado`)), timeoutMs);
     req.on('error', (e) => finish(e as Error));
     // Red de seguridad adicional: inactividad total del socket.
     req.setTimeout(timeoutMs, () => finish(new Error('socket inactivo')));
@@ -290,6 +313,30 @@ async function promote(
  *     y deja el MOTIVO en lastError (visible en fn-getBcvRate y en el log).
  */
 export async function coreUpdateBcvRate(): Promise<void> {
+  const ref = db().collection('rates').doc('bcv');
+  const todayVe = veToday();
+
+  // ── ACTIVACIÓN DE MEDIANCHE DESDE EL DOC (ronda 5.12) ─────────────────
+  // Regla del dueño: la publicación de la tarde rige desde las 12:00 AM
+  // «sin excepción». Si ya existe una pendiente capturada en un día ANTERIOR
+  // (nextCapturedVe < hoy VE), es exactamente la tasa que el BCV publicó para
+  // regir HOY: se promueve directo del doc, sin leer la página. Así la
+  // activación es puntual a las 12:00 AM aunque el WAF bloquee la corrida de
+  // las 00:00. Barata (1 lectura de doc, sin red externa) e idempotente.
+  const pre = await ref.get();
+  const preD = (pre.data() ?? {}) as Record<string, unknown>;
+  const preRate = Number(preD['nextUsdToVes'] ?? 0);
+  const preVe =
+    typeof preD['nextCapturedVe'] === 'string' ? String(preD['nextCapturedVe']) : '';
+  if (Number.isFinite(preRate) && preRate > 0 && preVe !== '' && preVe < todayVe) {
+    const preFv =
+      typeof preD['nextFechaValor'] === 'string' && preD['nextFechaValor']
+        ? String(preD['nextFechaValor'])
+        : todayVe;
+    await promote(ref, preRate, preFv);
+    return;
+  }
+
   // Presupuesto TOTAL de lectura con deadline ABSOLUTO compartido: pase lo que
   // pase, la lectura termina antes del tope externo (30.00 s de lambda-local
   // en `netlify dev`; 26 s en producción) y registra el fallback.
@@ -299,15 +346,23 @@ export async function coreUpdateBcvRate(): Promise<void> {
     if (left <= 0) {
       return Promise.resolve({ rate: null, fechaValor: null, reason: 'presupuesto' });
     }
+    // Ronda 5.11: el temporizador del presupuesto se LIMPIA cuando la lectura
+    // resuelve (éxito o fallo). Sin clearTimeout, cada corrida exitosa dejaba
+    // un temporizador zombi que, al reciclarse la lambda, pintaba en el log
+    // un «presupuesto total de 22s agotado → fallback» fantasma (visto en
+    // vivo 2026-10-06 10:57 PM: confundió el diagnóstico del cron).
+    let budgetTimer: NodeJS.Timeout | undefined;
     return Promise.race([
       fetchBcvUsd(),
-      new Promise<BcvFetch>((resolve) =>
-        setTimeout(() => {
+      new Promise<BcvFetch>((resolve) => {
+        budgetTimer = setTimeout(() => {
           logger.warn(`BCV: presupuesto total de ${TOTAL_BUDGET_MS / 1000}s agotado → fallback`);
           resolve({ rate: null, fechaValor: null, reason: 'presupuesto' });
-        }, left),
-      ),
-    ]);
+        }, left);
+      }),
+    ]).finally(() => {
+      if (budgetTimer) clearTimeout(budgetTimer);
+    });
   };
 
   let read = await withBudget();
@@ -319,7 +374,6 @@ export async function coreUpdateBcvRate(): Promise<void> {
   }
   const { rate, fechaValor, reason } = read;
 
-  const ref = db().collection('rates').doc('bcv');
   if (rate === null) {
     await ref.set(
       { source: 'fallback', lastAttemptAt: Date.now(), lastError: reason ?? 'desconocido' },
@@ -330,7 +384,6 @@ export async function coreUpdateBcvRate(): Promise<void> {
     return;
   }
 
-  const todayVe = veToday();
   const snap = await ref.get();
   const d = (snap.data() ?? {}) as Record<string, unknown>;
   const active = Number(d['usdToVes'] ?? 0);
@@ -420,6 +473,21 @@ export async function coreGetBcvRate(_ctx: CoreCtx): Promise<unknown> {
     nextFechaValor: String(d['nextFechaValor'] ?? ''),
     nextCapturedAt: Number(d['nextCapturedAt'] ?? 0),
   };
+}
+
+/**
+ * Ronda 5.11 — ¿Hace falta un vigía de emergencia?
+ * true si la ÚLTIMA lectura del BCV (exitosa o fallback) tiene más de
+ * `minFreshMs`. Dos consumidores con umbrales distintos:
+ *  · Frontend (useBcvRate): 70 min — el cron corre cada hora, pasarse = muerto.
+ *  · Servidor (fn-selfhealBcv): 10 min — guarda anti-martilleo: si algo leyó
+ *    hace menos de eso (cron, otro vigía, el botón del dueño), no repite.
+ * Sin marca (doc recién creado) → también hace falta leer.
+ */
+export async function bcvNeedsSelfHeal(minFreshMs: number): Promise<boolean> {
+  const snap = await db().collection('rates').doc('bcv').get();
+  const last = Number(snap.data()?.['lastAttemptAt'] ?? 0);
+  return !last || Date.now() - last > minFreshMs;
 }
 
 export const updateBcvRate = onSchedule(

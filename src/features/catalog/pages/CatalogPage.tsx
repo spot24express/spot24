@@ -27,7 +27,7 @@ export default function CatalogPage() {
     maxPriceUsd: maxPrice ?? undefined,
     q,
   };
-  const { data, isError, refetch, isFetching, hasNextPage, fetchNextPage } = useProductList(filters, 12);
+  const { data, isError, error, refetch, isFetching, hasNextPage, fetchNextPage } = useProductList(filters, 12);
 
   const category = categories?.find((c) => c.id === cat);
 
@@ -88,7 +88,15 @@ export default function CatalogPage() {
 
       <div className="mt-8">
         {isError ? (
-          <ErrorState onRetry={() => void refetch()} />
+          <>
+            <ErrorState onRetry={() => void refetch()} />
+            {/* Ronda 5.20: detalle técnico visible. Si el catálogo falla, este texto
+                dice exactamente qué consulta falló (índice faltante, permisos, etc.).
+                El error de Firestore incluye el enlace para crear el índice que falta. */}
+            <p className="mt-4 break-all rounded-brand border-2 border-line bg-surface-1 p-3 text-xs text-muted">
+              Detalle técnico: {error instanceof Error ? error.message : String(error ?? 'desconocido')}
+            </p>
+          </>
         ) : data ? (
           items.length ? (
             <>

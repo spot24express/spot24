@@ -17,7 +17,6 @@ import { getProductsByIds } from '@/features/catalog/services/catalog.service';
 import { cleanProductName } from '@/shared/lib/display';
 import { userMessage } from '@/shared/lib/errors';
 import { AppError } from '@/shared/lib/errors';
-import { canTransition } from '@/shared/constants/orders';
 
 /** Seguimiento en vivo: listener acotado a un documento (5.5). */
 export default function OrderDetailPage() {
@@ -32,6 +31,9 @@ export default function OrderDetailPage() {
   const [busy, setBusy] = useState(false);
   const [brands, setBrands] = useState<Record<string, string>>({});
   const fileRef = useRef<HTMLInputElement>(null);
+  // POLÍTICA DEL DUEÑO (5.26): confirmación previa. Sin bloque de WhatsApp:
+  // tras pagar NO se ofrece cancelación al cliente (la gestiona el personal).
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
 
   useEffect(() => {
     if (!orderId) return;
@@ -88,7 +90,11 @@ export default function OrderDetailPage() {
     );
   }
 
-  const canCancel = canTransition(order.status, 'cancelado');
+  /* POLÍTICA DEL DUEÑO (5.26): el cliente cancela solo ANTES de efectuar el
+   * pago. Todo pedido nuevo nace con comprobante (5i-k), así que el botón
+   * solo aparece en los legacy sin comprobante; con pago registrado NO hay
+   * cancelación para el cliente y NO se ofrece ningún canal (WhatsApp fuera). */
+  const canCancel = order.status === 'pendiente' && !order.payment.hasReceipt;
   const needsReceipt = !order.payment.hasReceipt && order.status !== 'entregado' && order.status !== 'cancelado';
   const receiptToShow = order.payment.receiptUrl ?? null;
 
@@ -150,8 +156,7 @@ export default function OrderDetailPage() {
                 /* Key compuesta productId+variantId: en órdenes viejas varias
                    líneas comparten variantId «v1» y una key simple duplicaba. */
                 /* Marca SIEMPRE arriba, sola (snapshot de la orden o catálogo
-                   en órdenes viejas); el nombre no repite la marca. La variante
-                   no se muestra al cliente: solo la cantidad. */
+                   en órdenes viejas); el nombre no repite la marca. */
                 const brand = line.brand || brands[line.productId] || '';
                 const displayName = brand ? cleanProductName(line.name, brand) : line.name;
                 return (
@@ -270,25 +275,47 @@ export default function OrderDetailPage() {
           </section>
 
           {canCancel && (
-            <Button
-              variant="danger-ghost"
-              fullWidth
-              loading={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await cancelOrder(order.id, 'cancelado por el cliente');
-                  toast.info('Pedido cancelado. Cuando quieras, aquí estamos.');
-                } catch (e) {
-                  toast.error(userMessage(e));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Cancelar pedido
-            </Button>
+            <>
+              <Button
+                variant="danger-ghost"
+                fullWidth
+                onClick={() => setConfirmCancelOpen(true)}
+              >
+                Cancelar pedido
+              </Button>
+              {/* Confirmación previa: un toque accidental ya no cancela solo. */}
+              <Modal open={confirmCancelOpen} onClose={() => setConfirmCancelOpen(false)} title="Cancelar pedido">
+                <p className="text-body-base text-paper">
+                  Este pedido todavía no tiene comprobante, así que puedes cancelarlo tú mismo. ¿Seguro?
+                </p>
+                <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+                  <Button variant="secondary" fullWidth onClick={() => setConfirmCancelOpen(false)}>
+                    Volver
+                  </Button>
+                  <Button
+                    variant="danger-ghost"
+                    fullWidth
+                    loading={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await cancelOrder(order.id, 'cancelado por el cliente');
+                        setConfirmCancelOpen(false);
+                        toast.info('Pedido cancelado. Cuando quieras, aquí estamos.');
+                      } catch (e) {
+                        toast.error(userMessage(e));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Sí, cancelar
+                  </Button>
+                </div>
+              </Modal>
+            </>
           )}
+
         </aside>
       </div>
 

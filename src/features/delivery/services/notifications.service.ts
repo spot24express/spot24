@@ -74,8 +74,9 @@ async function bindForegroundMessages(): Promise<void> {
     const messaging = getMessaging(fb.app);
     foregroundBound = true;
     onMessage(messaging, (payload) => {
-      const title = payload.notification?.title ?? 'SPOT 24';
-      const body = payload.notification?.body ?? '';
+      // Ronda 5.17: el payload es solo-data (title/body viajan en data).
+      const title = payload.data?.['title'] ?? payload.notification?.title ?? 'SPOT 24';
+      const body = payload.data?.['body'] ?? payload.notification?.body ?? '';
       toast.info(body ? `${title} · ${body}` : title);
     });
   } catch (e) {

@@ -19,6 +19,7 @@ import { Button } from '@/shared/components/ui/Button';
 import { Stepper } from '@/shared/components/ui/Stepper';
 import { SpeedDivider, SpeedLines } from '@/shared/components/brand/Logo';
 import { EmptyState } from '@/shared/components/ui/States';
+import { Modal } from '@/shared/components/ui/Modal';
 import { useCart } from '@/features/cart/hooks/useCart';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useZones } from '@/features/delivery/hooks/useZones';
@@ -60,6 +61,8 @@ interface ReceiptReady {
   name: string;
   sizeKb: number;
   base64: string;
+  /** dataURL para el visor: el cliente VE su foto, no solo el nombre (5.15). */
+  previewUrl: string;
 }
 
 /** Operación actual: solo Maracay, Aragua. Estado y ciudad se fijan aquí. */
@@ -96,6 +99,10 @@ export default function CheckoutPage() {
   const [receipt, setReceipt] = useState<ReceiptReady | null>(null);
   const [receiptBusy, setReceiptBusy] = useState(false);
   const receiptInputRef = useRef<HTMLInputElement>(null);
+  // POLÍTICA DEL DUEÑO (5.26): cancelar solo en el paso Pago y solo SIN
+  // comprobante. Tras pagar (comprobante adjunto) y tras confirmar el pedido
+  // NO existe cancelación para el cliente, ni aviso de WhatsApp.
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   // Reserva de stock 2 h al entrar al checkout (5.2).
   // Ronda 5i-b: guard con useRef — StrictMode (dev) monta→desmonta→monta y
@@ -249,7 +256,15 @@ export default function CheckoutPage() {
     setReceiptBusy(true);
     try {
       const base64 = await fileToBase64(file);
-      setReceipt({ name: file.name, sizeKb: Math.max(1, Math.round(file.size / 1024)), base64 });
+      // dataURL del visor: la compresión interna pasa a JPEG salvo las
+      // imágenes ya livianas (≤350 KB), que viajan tal cual en su formato.
+      const mime = file.size <= 350 * 1024 ? file.type : 'image/jpeg';
+      setReceipt({
+        name: file.name,
+        sizeKb: Math.max(1, Math.round(file.size / 1024)),
+        base64,
+        previewUrl: `data:${mime};base64,${base64}`,
+      });
       setErrors((e) => ({ ...e, receipt: null }));
     } catch (err) {
       if (err instanceof Error && err.message === 'too-big') {
@@ -308,7 +323,7 @@ export default function CheckoutPage() {
     // FLUJO ESTRICTO (5i-k): sin comprobante no se avanza. El pedido se
     // envía ya pagado: nace en verificación y el cajero lo aprueba con la
     // foto delante, sin llamadas de «solicítalo por teléfono».
-    if (!receipt) e['receipt'] = 'Adjunta la foto del comprobante de pago: el pedido se envía ya pagado.';
+    if (!receipt) e['receipt'] = 'Adjunta la foto del comprobante de pago.';
     setErrors(e);
     return Object.values(e).every((x) => !x);
   };
@@ -319,7 +334,7 @@ export default function CheckoutPage() {
     if (!user) return;
     // Guard de doble llave: sin comprobante no se llama al servidor (5i-k).
     if (!receipt) {
-      toast.error('Adjunta el comprobante de pago: el pedido se envía ya pagado.');
+      toast.error('Adjunta la foto del comprobante de pago.');
       setStep(2);
       return;
     }
@@ -677,11 +692,6 @@ export default function CheckoutPage() {
                 ) : (
                   <p className="mt-3 text-muted">Calculando montos exactos…</p>
                 )}
-                {reservation && (
-                  <p className="mt-3 spot-label text-signal">
-                    Stock reservado por 2 horas · vence {new Date(reservation.expiresAt).toLocaleTimeString('es-VE')}
-                  </p>
-                )}
               </section>
 
               {/* Métodos de pago */}
@@ -731,8 +741,7 @@ export default function CheckoutPage() {
               <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Comprobante de pago">
                 <h2 className="font-display text-lg font-bold italic uppercase text-paper">Comprobante de pago</h2>
                 <p className="mt-2 text-sm text-muted">
-                  Adjunta la foto o captura del comprobante de tu Pago Móvil. El pedido se envía con el pago
-                  incluido y entra directo a verificación: así no te llamamos para pedirla.
+                  Adjunta la foto o captura del comprobante de tu Pago Móvil.
                 </p>
                 <input
                   ref={receiptInputRef}
@@ -748,36 +757,40 @@ export default function CheckoutPage() {
                   }}
                 />
                 {receipt ? (
-                  <div className="mt-4 flex flex-wrap items-center gap-3 rounded-brand border-2 border-signal bg-signal/10 p-4">
-                    <svg className="h-5 w-5 shrink-0 text-signal" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="2" />
-                      <path d="M8 12.5l2.5 2.5L16 9.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
+                  <div className="mt-4 flex flex-wrap items-center gap-4 rounded-brand border-2 border-signal bg-signal/10 p-4">
+                    {/* El cliente VE su comprobante (5.15): imagen en línea, no solo el nombre. */}
+                    <img
+                      src={receipt.previewUrl}
+                      alt="Comprobante de pago adjuntado"
+                      className="h-32 w-32 shrink-0 rounded-brand border-2 border-line object-cover"
+                    />
                     <div className="min-w-0 flex-1">
-                      <p className="truncate font-semibold text-paper">{receipt.name}</p>
-                      <p className="text-xs text-muted">{receipt.sizeKb} KB · comprimida y lista para enviar</p>
+                      <p className="spot-label text-signal">Comprobante listo</p>
+                      <p className="mt-1 text-xs text-muted">{receipt.sizeKb} KB</p>
+                      <div className="mt-3 flex gap-2">
+                        <Button variant="secondary" size="sm" type="button" onClick={() => receiptInputRef.current?.click()}>
+                          Cambiar
+                        </Button>
+                        <Button
+                          variant="danger-ghost"
+                          size="sm"
+                          type="button"
+                          onClick={() => {
+                            setReceipt(null);
+                            setErrors((e) => ({ ...e, receipt: 'Adjunta la foto del comprobante de pago.' }));
+                          }}
+                        >
+                          Quitar
+                        </Button>
+                      </div>
                     </div>
-                    <Button variant="secondary" size="sm" type="button" onClick={() => receiptInputRef.current?.click()}>
-                      Cambiar
-                    </Button>
-                    <Button
-                      variant="danger-ghost"
-                      size="sm"
-                      type="button"
-                      onClick={() => {
-                        setReceipt(null);
-                        setErrors((e) => ({ ...e, receipt: 'Adjunta la foto del comprobante de pago: el pedido se envía ya pagado.' }));
-                      }}
-                    >
-                      Quitar
-                    </Button>
                   </div>
                 ) : (
                   <div className="mt-4">
                     <Button variant="secondary" type="button" loading={receiptBusy} onClick={() => receiptInputRef.current?.click()}>
                       Adjuntar comprobante (foto)
                     </Button>
-                    <p className="mt-2 text-xs text-muted">JPG, PNG o WebP · hasta {MAX_INPUT_MB} MB (la comprimimos por ti).</p>
+                    <p className="mt-2 text-xs text-muted">JPG, PNG o WebP · hasta {MAX_INPUT_MB} MB.</p>
                   </div>
                 )}
                 {errors['receipt'] && (
@@ -797,6 +810,15 @@ export default function CheckoutPage() {
                   Revisar y confirmar
                 </Button>
               </div>
+              {/* POLÍTICA DEL DUEÑO (5.26): la cancelación vive AQUÍ y SOLO
+                  mientras NO haya comprobante adjunto (aún no pagó). Con el
+                  comprobante listo el botón desaparece sin aviso: después de
+                  pagar no existe cancelación para el cliente. */}
+              {!receipt && (
+                <Button variant="danger-ghost" type="button" fullWidth onClick={() => setCancelOpen(true)}>
+                  Cancelar pedido
+                </Button>
+              )}
               {quoteState !== 'ok' && (
                 <p className="text-center text-sm text-muted">
                   Esperando los montos exactos para seguir.
@@ -819,7 +841,7 @@ export default function CheckoutPage() {
                     value={fulfillment === 'pickup' ? 'Retiro en tienda' : (zone?.name ?? address.zoneId)}
                   />
                   <Row label="Método de pago" value={PAYMENT_METHOD_LABELS[payment.method]} />
-                  <Row label="Comprobante" value={receipt ? receipt.name : 'Sin adjuntar'} />
+                  <Row label="Comprobante" value={receipt ? 'Foto adjuntada ✓' : 'Sin adjuntar'} />
                   {quote && (
                     <Row
                       label="Total a pagar"
@@ -828,9 +850,6 @@ export default function CheckoutPage() {
                     />
                   )}
                 </dl>
-                <p className="mt-3 text-xs text-muted">
-                  Al confirmar, el comprobante viaja con el pedido y este entra directo a verificación de pago.
-                </p>
               </section>
               <div className="flex gap-3">
                 <Button variant="secondary" type="button" onClick={() => setStep(2)} disabled={busy}>Volver</Button>
@@ -838,10 +857,30 @@ export default function CheckoutPage() {
                   Confirmar pedido
                 </Button>
               </div>
+              {/* POLÍTICA DEL DUEÑO (5.26): sin botón de cancelar en Revisión:
+                  aquí siempre se llega ya con el comprobante (pagó). */}
             </div>
           )}
         </form>
       )}
+
+      {/* POLÍTICA DEL DUEÑO (5.26): cancelar SOLO en el paso Pago y sin
+          comprobante. Aquí no hay pedido creado todavía: al salir, el carrito
+          queda igual y la reserva de stock expira sola a las 2 h (sin acción
+          del cliente). */}
+      <Modal open={cancelOpen} onClose={() => setCancelOpen(false)} title="Cancelar pedido">
+        <p className="text-body-base text-paper">
+          Todavía no hay pedido ni cobro: tu carrito queda igual. ¿Seguro que quieres salir?
+        </p>
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+          <Button variant="secondary" fullWidth onClick={() => setCancelOpen(false)}>
+            Seguir pagando
+          </Button>
+          <Button variant="danger-ghost" fullWidth onClick={() => navigate('/carrito')}>
+            Sí, cancelar
+          </Button>
+        </div>
+      </Modal>
 
       <SpeedDivider className="mt-12" />
     </div>

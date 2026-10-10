@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useDebounce } from '@/shared/hooks/useDebounce';
-import { useProductList, normalizeSearchTerm } from '../hooks/useCatalog';
+import { useCategories, useProductList, normalizeSearchTerm } from '../hooks/useCatalog';
 import { VOICE } from '@/shared/constants/brand';
 import { Chip } from '@/shared/components/ui/Badge';
-import { CATEGORIES } from '@/shared/constants/categories';
 
 /**
  * Búsqueda con debounce (300 ms) y sugerencias en línea (5.1).
@@ -125,7 +124,12 @@ export function SearchBar({ compact = false }: { compact?: boolean }) {
   );
 }
 
-/** Barra de filtros: categoría, precio, disponibilidad (5.1). */
+/**
+ * Barra de filtros: categoría, precio, disponibilidad (5.1).
+ * Las categorías salen SIEMPRE de Firestore (las mismas que las bahías de la
+ * tienda, gestionadas por el admin). Sin respaldo demo: si el admin aún no
+ * creó categorías, solo se ve el chip «Todas».
+ */
 export function FilterBar({
   activeCategory,
   inStockOnly,
@@ -137,13 +141,15 @@ export function FilterBar({
   maxPrice: number | null;
   onChange: (patch: { categoryId?: string | null; inStockOnly?: boolean; maxPrice?: number | null }) => void;
 }) {
+  const { data: categories } = useCategories();
+
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por categoría">
         <Chip active={!activeCategory} onClick={() => onChange({ categoryId: null })}>
           Todas
         </Chip>
-        {CATEGORIES.map((c) => (
+        {(categories ?? []).map((c) => (
           <Chip
             key={c.id}
             active={activeCategory === c.id}

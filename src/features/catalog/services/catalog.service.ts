@@ -12,7 +12,7 @@ import { loadFirebase } from '@/shared/lib/firebase';
 import { logger } from '@/shared/lib/logger';
 import type { CatalogQuery, Product } from '../types';
 import type { Page } from '@/shared/types';
-import { CATEGORIES, type CategoryDef } from '@/shared/constants/categories';
+import type { CategoryDef } from '@/shared/constants/categories';
 
 const PRODUCTS = 'products';
 const PAGE_SIZE_MAX = 48;
@@ -83,20 +83,25 @@ function mapCategory(id: string, c: DocumentData, i: number): CategoryDef {
   };
 }
 
-/** Categorías desde Firestore (gestionadas por el admin); respaldo local si aún no hay datos. */
+/**
+ * Categorías desde Firestore (gestionadas por el admin).
+ * SIN respaldo demo: si la colección está vacía o aún no hay conexión, se
+ * devuelve [] y la tienda muestra solo el chip «Todas» hasta que el admin
+ * cree sus categorías reales.
+ */
 export async function listCategories(): Promise<CategoryDef[]> {
   try {
     const fb = await loadFirebase();
-    if (!fb) return [...CATEGORIES];
+    if (!fb) return [];
     const snap = await getDocs(
       query(collection(fb.db, 'categories'), orderBy('createdAt', 'asc'), fbLimit(60)),
     );
-    if (snap.empty) return [...CATEGORIES];
+    if (snap.empty) return [];
     return snap.docs
       .map((d, i) => mapCategory(d.id, d.data(), i))
       .filter((c) => c.name && c.active !== false);
   } catch {
-    return [...CATEGORIES];
+    return [];
   }
 }
 

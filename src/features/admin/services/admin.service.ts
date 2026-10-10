@@ -260,6 +260,21 @@ export async function adminSetOrderStatus(orderId: string, to: OrderStatus, note
   });
 }
 
+/** 5.28 · «Tomar pedido»: SOLO delivery — asigna el pedido a quien lo agarra
+ *  primero y lo pasa a EN CAMINO en una transacción atómica (una acción). */
+export async function claimDeliveryOrder(orderId: string): Promise<void> {
+  await callFunction<{ ok: boolean }>('fn-claimDeliveryOrder', { orderId });
+}
+
+/** 5.28 · «Reasignar»: SOLO gerencia/admin — suelta el claim del pedido en
+ *  camino, lo devuelve a PREPARADO y re-avisa a los deliverys. */
+export async function releaseDeliveryOrder(orderId: string, note = ''): Promise<void> {
+  await callFunction<{ ok: boolean }>('fn-releaseDeliveryOrder', {
+    orderId,
+    note: note.slice(0, 200),
+  });
+}
+
 /* ── Categorías (colección categories: escritura admin directa) ── */
 
 export interface CategoryDraftInput {

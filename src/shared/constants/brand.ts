@@ -9,8 +9,8 @@ export const BRAND = {
   slogan: 'Tu parada segura. 24/7.',
   voice: ['Para.', 'Resuelve.', 'Sigue.'] as const,
   closing: 'Abierto cuando importa.',
-  supportPhone: '+58 412-000-0000', // ← reemplazar por el número real de operación
-  supportEmail: 'hola@spot24.com.ve', // ← reemplazar por el correo real
+  supportPhone: 'Diseñado por: Erick Simosa', // ← reemplazar por el número real de operación
+  supportEmail: 'ericksimosa@gmail.com', // ← reemplazar por el correo real
 } as const;
 
 /** Mensajes de marca para estados de UI (voz afirmativa y corta). */
@@ -25,39 +25,35 @@ export const VOICE = {
 } as const;
 
 /**
- * Bancos venezolanos con Pago Móvil — lista activa SUDEBAN (verificada 2025-2026).
- * · Se incluyó BOD durante su transición hacia BNC (los clientes migran 0116 → 0191).
- * · Descartados: bancos cerrados o fusionados (Espirito Santo, Citibank retail,
- *   Helm Bank) y fantasmas («Banco Platino» no existe).
- * · En orden alfabético para el <select>.
+ * Bancos venezolanos — lista oficial SUDEBAN (código + banco)
+ * · En orden de codigo para el <select>.
  */
 export const VE_BANKS: readonly string[] = [
-  '100% Banco',
-  'Bancamiga',
-  'Bancaribe',
-  'Banco Activo',
-  'Banco Agrícola de Venezuela',
-  'Banco Bicentenario',
-  'Banco Caroní',
-  'Banco de la Fuerza Armada Nacional Bolivariana (Banfanb)',
-  'Banco de la Gente Emprendedora (Bangente)',
-  'Banco de Venezuela (BDV)',
-  'Banco del Tesoro',
-  'Banco Exterior',
-  'Banco Internacional de Desarrollo (BID)',
-  'Banco Nacional de Crédito (BNC)',
-  'Banco Plaza',
-  'Banco Sofitasa',
-  'Banco Venezolano de Crédito (BVC)',
-  'Bancrecer',
-  'Banplus',
-  'BBVA Provincial',
-  'BFC Banco Fondo Común',
-  'BOD (Banco Occidental de Descuento)',
-  'DelSur Banco Universal',
-  'Mercantil Banco',
-  'N58 Banco Digital',
-  'R4 Banco Microfinanciero',
+  '(0102) Banco de Venezuela',
+  '(0104) Venezolano de Crédito',
+  '(0105) Banco Mercantil',
+  '(0108) Banco Provincial',
+  '(0114) Bancaribe',
+  '(0115) Banco Exterior',
+  '(0128) Banco Caroní',
+  '(0134) Banesco',
+  '(0137) Banco Sofitasa',
+  '(0138) Banco Plaza',
+  '(0146) Bangente',
+  '(0151) BFC Banco Fondo Común',
+  '(0156) 100% Banco',
+  '(0157) Del Sur Banco Universal',
+  '(0163) Banco del Tesoro',
+  '(0168) Bancrecer',
+  '(0169) R4 Banco Microfinanciero',
+  '(0171) Banco Activo',
+  '(0172) Bancamiga',
+  '(0174) Banplus',
+  '(0175) Banco Digital de los Trabajadores',
+  '(0177) Banfanb',
+  '(0178) N58 Banco Digital',
+  '(0191) BNC',
+  '(0601) Instituto Municipal de Crédito Popular',
 ] as const;
 
 /**

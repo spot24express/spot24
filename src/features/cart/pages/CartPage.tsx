@@ -28,6 +28,34 @@ import { useCartStore, type SnapshotFix } from '../store/cart.store';
  *   su marca y nombre actuales. Precio y cantidad NUNCA se tocan.
  * · Cada línea se identifica por productId+variantId: las variantes «v1» de
  *   productos distintos ya no se pisan entre sí.
+ *
+ * Ronda 5.15 — TARJETA SIN DESBORDAMIENTO EN MÓVIL (reporte del dueño):
+ * con nombres largos la página se desbordaba horizontalmente. Causa raíz:
+ * el nombre con `truncate` es white-space:nowrap y, como los ítems del grid
+ * no tenían min-w-0, la pista del grid crecía al ancho completo del texto
+ * (medido: 789 px en un viewport de 360 px). Correcciones:
+ * · min-w-0 en los DOS ítems del grid (ul y aside) → la pista puede encoger.
+ * · Nombre con line-clamp-2 (2 líneas + elipsis) en vez de 1: se ve más
+ *   nombre y el texto sí envuelve (min-content = palabra más larga).
+ * · Marca/SKU con truncate (una sola línea).
+ * · Fila cantidad+precio con flex-wrap y precio ml-auto: si no caben
+ *   juntas, el precio pasa a su propia línea alineado a la derecha.
+ * · Foto 80 px en móvil (h-20) y 96 px desde sm: tarjeta más equilibrada.
+ * · Validado en navegador headless: 360 px y 320 px sin scroll horizontal.
+ *
+ * Ronda 5.24 — FILA DE CANTIDAD BAJO LA IMAGEN EN MÓVIL (petición del dueño):
+ * en teléfono, el escalador −1+ ahora queda DEBAJO de la foto alineado a la
+ * izquierda y el precio en ESA MISMA línea alineado a la derecha (patrón
+ * MercadoLibre/Farmatodo: la mano no cruza la tarjeta para editar cantidad).
+ * En PC (sm+) la tarjeta no cambia: foto izquierda con marca/nombre arriba y
+ * la fila cantidad+precio al pie de la columna derecha.
+ * Implementación: CSS Grid con posiciones responsivas — sin duplicar el
+ * escalador en el DOM (un solo set de botones, mejor para lectores de
+ * pantalla y para el Tab del teclado).
+ * · Móvil  : grid-cols-[5rem_1fr] → foto (1,1), texto (1,2) y la fila
+ *            cantidad+precio ocupa las DOS columnas (col-span-2) debajo.
+ * · Desde sm: la foto hace row-span-2 y la fila vuelve a la columna derecha
+ *            (col-start-2), con pt-3 igual al diseño anterior.
  */
 export default function CartPage() {
   useDocumentTitle('Mi carrito');
@@ -88,8 +116,9 @@ export default function CartPage() {
       </p>
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_360px]">
-        {/* LÍNEAS */}
-        <ul className="space-y-4" aria-label="Artículos del carrito">
+        {/* LÍNEAS — min-w-0: ítem del grid; sin él la pista crece al ancho del
+            nombre completo (nowrap) y desborda la pantalla en móvil. */}
+        <ul className="min-w-0 space-y-4" aria-label="Artículos del carrito">
           {items.map((item) => {
             // Marca arriba, nombre sin repetirla: misma presentación que la
             // tarjeta del catálogo. Ítems viejos: la reparación trae la marca.
@@ -97,20 +126,20 @@ export default function CartPage() {
             return (
               <li
                 key={cartLineKey(item.productId, item.variantId)}
-                className="flex gap-4 rounded-brand-lg border-2 border-line bg-surface-1 p-4"
+                className="grid grid-cols-[5rem_minmax(0,1fr)] items-start gap-x-3 gap-y-3 rounded-brand-lg border-2 border-line bg-surface-1 p-3 sm:grid-cols-[6rem_minmax(0,1fr)] sm:gap-x-4 sm:gap-y-0 sm:p-4"
               >
                 <img
                   src={item.image}
                   alt={displayName}
-                  className="h-24 w-24 shrink-0 rounded-brand border border-line object-cover"
+                  className="h-20 w-20 rounded-brand border border-line object-cover sm:row-span-2 sm:h-24 sm:w-24"
                   loading="lazy"
                 />
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-start justify-between gap-2 sm:gap-3">
                     <div className="min-w-0">
                       {/* Marca SIEMPRE arriba, sola (respaldo: sku del ítem). */}
-                      <p className="spot-label">{item.brand || item.sku}</p>
-                      <h2 className="truncate font-display text-base font-bold italic uppercase text-paper">
+                      <p className="spot-label truncate">{item.brand || item.sku}</p>
+                      <h2 className="line-clamp-2 font-display text-base font-bold italic uppercase text-paper">
                         {displayName}
                       </h2>
                       {/* La variante (ej. «Estándar») ya no se muestra al cliente:
@@ -120,36 +149,43 @@ export default function CartPage() {
                       type="button"
                       onClick={() => removeItem(item.productId, item.variantId)}
                       aria-label={`Quitar ${displayName}`}
-                      className="rounded-brand p-2 text-muted hover:bg-surface-2 hover:text-signal"
+                      className="shrink-0 rounded-brand p-2 text-muted hover:bg-surface-2 hover:text-signal"
                     >
                       <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
                         <path d="M4 5h12M8 5V3h4v2M6.5 5l.8 11h5.4l.8-11" strokeLinecap="round" strokeLinejoin="round" />
                       </svg>
                     </button>
                   </div>
+                </div>
 
-                  <div className="mt-auto flex items-end justify-between gap-3 pt-3">
-                    <div className="flex items-center rounded-brand border-2 border-line">
-                      <button
-                        type="button"
-                        aria-label="Disminuir"
-                        className="min-h-[40px] w-10 font-display font-bold text-paper hover:bg-surface-2 disabled:opacity-30"
-                        disabled={item.qty <= 1}
-                        onClick={() => setQty(item.productId, item.variantId, item.qty - 1)}
-                      >
-                        −
-                      </button>
-                      <span className="w-8 text-center font-display font-bold italic text-paper">{item.qty}</span>
-                      <button
-                        type="button"
-                        aria-label="Aumentar"
-                        className="min-h-[40px] w-10 font-display font-bold text-paper hover:bg-surface-2 disabled:opacity-30"
-                        disabled={item.qty >= Math.min(item.stockAtAdd, 20)}
-                        onClick={() => setQty(item.productId, item.variantId, clampSetQty(item.qty + 1, item.stockAtAdd))}
-                      >
-                        +
-                      </button>
-                    </div>
+                {/* Ronda 5.24: cantidad + precio en su PROPIA fila. En móvil
+                    cruza las dos columnas (queda bajo la foto: escalador a la
+                    izquierda, precio a la derecha). Desde sm vuelve a la
+                    columna derecha (col-start-2) con pt-3, como el diseño
+                    anterior que en PC se ve perfecto. */}
+                <div className="col-span-2 flex items-end justify-between gap-x-3 sm:col-span-1 sm:col-start-2 sm:pt-3">
+                  <div className="flex items-center rounded-brand border-2 border-line">
+                    <button
+                      type="button"
+                      aria-label="Disminuir"
+                      className="min-h-[40px] w-10 font-display font-bold text-paper hover:bg-surface-2 disabled:opacity-30"
+                      disabled={item.qty <= 1}
+                      onClick={() => setQty(item.productId, item.variantId, item.qty - 1)}
+                    >
+                      −
+                    </button>
+                    <span className="w-8 text-center font-display font-bold italic text-paper">{item.qty}</span>
+                    <button
+                      type="button"
+                      aria-label="Aumentar"
+                      className="min-h-[40px] w-10 font-display font-bold text-paper hover:bg-surface-2 disabled:opacity-30"
+                      disabled={item.qty >= Math.min(item.stockAtAdd, 20)}
+                      onClick={() => setQty(item.productId, item.variantId, clampSetQty(item.qty + 1, item.stockAtAdd))}
+                    >
+                      +
+                    </button>
+                  </div>
+                  <div className="ml-auto">
                     <PriceTag usd={item.unitPriceUsd * item.qty} size="sm" />
                   </div>
                 </div>
@@ -159,7 +195,7 @@ export default function CartPage() {
         </ul>
 
         {/* RESUMEN */}
-        <aside className="h-fit rounded-brand-lg border-2 border-line bg-surface-1 p-6 lg:sticky lg:top-24">
+        <aside className="h-fit min-w-0 rounded-brand-lg border-2 border-line bg-surface-1 p-6 lg:sticky lg:top-24">
           <h2 className="font-display text-lg font-bold italic uppercase text-paper">Resumen</h2>
           <dl className="mt-4 space-y-2 text-body-base">
             <div className="flex justify-between">

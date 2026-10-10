@@ -1051,6 +1051,14 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
       if (!canTransition(status as never, 'cancelado')) {
         throw new HttpsError('failed-precondition', 'Estado no cancelable.');
       }
+      // POLÍTICA DEL DUEÑO (5.15/5.26): el cliente SOLO cancela un pedido
+      // legacy 'pendiente' SIN comprobante. Todo pedido nuevo nace CON
+      // comprobante (5i-k): tras pagar, la cancelación es del personal desde
+      // el panel. La UI ya oculta el botón; esto cierra la vía directa al
+      // endpoint (defensa en profundidad — el backend NUNCA confía en la UI).
+      if (!isAdmin && (status !== 'pendiente' || data['payment']?.['hasReceipt'] === true)) {
+        throw new HttpsError('failed-precondition', 'Tu pago ya está registrado: la cancelación la coordina el personal desde el panel.');
+      }
 
       // Reposición de stock: reserva 'activa' → libera el hold; cualquier
       // otro caso = la orden YA descontó stock al crearse (Ronda 5i) → repone.

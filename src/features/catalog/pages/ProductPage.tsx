@@ -7,12 +7,11 @@ import { StockBadge } from '@/shared/components/ui/PriceTag';
 import { SpeedDivider } from '@/shared/components/brand/Logo';
 import { Skeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState } from '@/shared/components/ui/States';
-import { useProduct, useRelated, useVariants } from '../hooks/useCatalog';
+import { useCategories, useProduct, useRelated, useVariants } from '../hooks/useCatalog';
 import { subscribeProduct } from '../services/catalog.service';
 import { ProductCard } from '../components/ProductCard';
 import { useCart } from '@/features/cart/hooks/useCart';
 import { trackEvent } from '@/shared/lib/analytics';
-import { categoryById } from '@/shared/constants/categories';
 import { validateAdd } from '@/features/cart/lib/cartLogic';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { formatBs, usdToBs } from '@/shared/lib/format';
@@ -64,7 +63,9 @@ export default function ProductPage() {
   const { data: relatedData } = useRelated(product ?? undefined);
   const related = relatedData ?? [];
 
-  const category = categoryById(product?.categoryId ?? '');
+  // Categoría para el breadcrumb: desde Firestore (la misma lista de la tienda).
+  const { data: categories } = useCategories();
+  const category = categories?.find((c) => c.id === product?.categoryId);
   const cartLineQty = useCartStoreLine(product?.id ?? '', variantId);
 
   if (isLoading) {

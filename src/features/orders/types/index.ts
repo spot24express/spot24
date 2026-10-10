@@ -47,6 +47,11 @@ export interface OrderDelivery {
   mode?: 'delivery' | 'pickup';
   /** Coordenadas GPS capturadas en el checkout (solo delivery). */
   location?: { lat: number; lng: number } | null;
+  /** 5.28 · Reclamo de despacho: delivery que lo tomó (first-grab-wins).
+   *  Solo existe desde que el pedido fue tomado hasta su reasignación. */
+  claimedByUid?: string;
+  claimedByName?: string;
+  claimedAt?: number;
 }
 
 export interface Order {

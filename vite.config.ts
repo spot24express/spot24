@@ -38,8 +38,10 @@ export default defineConfig({
       injectRegister: 'script-defer',
       manifest: false, // usamos public/manifest.webmanifest con theme_color #000000
       includeAssets: [
+        'favicon.ico',
         'favicon-16.png',
         'favicon-32.png',
+        'favicon-48.png',
         'icons/*.png',
         'img/**/*',
       ],

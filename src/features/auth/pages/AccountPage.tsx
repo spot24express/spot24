@@ -4,7 +4,11 @@ import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Button } from '@/shared/components/ui/Button';
 import { SpeedDivider, SpeedLines } from '@/shared/components/brand/Logo';
 import { useAuth } from '../hooks/useAuth';
-import { enableOrderNotifications, hasRegisteredToken } from '@/features/delivery/services/notifications.service';
+import {
+  enableOrderNotifications,
+  hasRegisteredToken,
+  isPushSupported,
+} from '@/features/delivery/services/notifications.service';
 import { normalizePhoneVE } from '@/shared/lib/validation';
 
 /**
@@ -23,8 +27,16 @@ import { normalizePhoneVE } from '@/shared/lib/validation';
  * El servicio de verificación queda DORMIDO pero completo en
  * auth.service.ts (startPhoneVerification): si el proyecto migra a un plan
  * con SMS, basta con devolver el botón y el modal a esta página.
+ *
+ * Ronda 5.27 — Sin botón muerto: si el navegador no soporta push (iPhone
+ * sin PWA instalada — Safari 16.4 solo permite push a PWAS instaladas — o
+ * navegador viejo sin PushManager), el botón se OCULTA y se muestra una
+ * nota breve con el camino real (instalar la PWA y volver). Sin VAPID
+ * configurada también cae aquí: nada que el cliente pueda activar a la
+ * fuerza. Decisión de producto: NO existe «Desactivar» (el push solo
+ * informa el estado del pedido; bloquear desde el navegador basta y el
+ * token muerto se limpia solo en el siguiente envío).
  */
-
 /** Etiqueta del panel según rol (fallback para roles futuros). */
 const PANEL_TITLES: Record<string, string> = {
   admin: 'Panel de administración',
@@ -38,10 +50,25 @@ export default function AccountPage() {
   const { user, signOut, isStaff } = useAuth();
   const navigate = useNavigate();
   const [pushState, setPushState] = useState<'unknown' | 'on' | 'off'>('unknown');
+  // null = comprobando soporte (el botón se pinta igual: comportamiento de siempre).
+  const [supported, setSupported] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (!user) return;
-    void hasRegisteredToken(user.uid).then((on) => setPushState(on ? 'on' : 'off'));
+    let cancelled = false;
+    void (async () => {
+      if (!(await isPushSupported())) {
+        if (!cancelled) setSupported(false);
+        return;
+      }
+      if (cancelled) return;
+      setSupported(true);
+      const on = await hasRegisteredToken(user.uid);
+      if (!cancelled) setPushState(on ? 'on' : 'off');
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [user]);
 
   if (!user) return null;
@@ -101,18 +128,25 @@ export default function AccountPage() {
           <p className="mt-3 text-body-base text-muted">
             Te avisamos por push en cada cambio de tu pedido: pagado, preparado, en camino.
           </p>
-          <Button
-            className="mt-4"
-            variant={pushState === 'on' ? 'secondary' : 'primary'}
-            onClick={async () => {
-              if (!user) return;
-              if (pushState === 'on') return;
-              const ok = await enableOrderNotifications(user.uid);
-              setPushState(ok ? 'on' : 'off');
-            }}
-          >
-            {pushState === 'on' ? 'Notificaciones activas' : 'Activar notificaciones'}
-          </Button>
+          {supported === false ? (
+            <p className="mt-4 text-sm text-muted">
+              Este navegador no permite notificaciones push. En iPhone: abre SPOT 24 en Safari, toca
+              Compartir y «Añadir a pantalla de inicio»; luego activa las notificaciones desde aquí.
+            </p>
+          ) : (
+            <Button
+              className="mt-4"
+              variant={pushState === 'on' ? 'secondary' : 'primary'}
+              onClick={async () => {
+                if (!user) return;
+                if (pushState === 'on') return;
+                const ok = await enableOrderNotifications(user.uid);
+                setPushState(ok ? 'on' : 'off');
+              }}
+            >
+              {pushState === 'on' ? 'Notificaciones activas' : 'Activar notificaciones'}
+            </Button>
+          )}
           <SpeedDivider className="my-5" />
           <Button
             variant="danger-ghost"
