@@ -161,13 +161,18 @@ export default function OrderDetailPage() {
                 const displayName = brand ? cleanProductName(line.name, brand) : line.name;
                 return (
                   <li key={`${line.productId}:${line.variantId}`} className="flex items-center gap-4">
-                    <img src={line.image} alt={displayName} className="h-16 w-16 rounded-brand border border-line object-cover" loading="lazy" />
+                    <img src={line.image} alt={displayName} className="h-16 w-16 shrink-0 rounded-brand border border-line object-cover" loading="lazy" />
                     <div className="min-w-0 flex-1">
-                      {brand && <p className="spot-label">{brand}</p>}
-                      <p className="truncate font-semibold text-paper">{displayName}</p>
+                      {brand && <p className="spot-label truncate">{brand}</p>}
+                      {/* FIX 5.32: nombre hasta 2 LÍNEAS como en el carrito
+                          (line-clamp-2). Con truncate a 1 línea el dueño perdía
+                          el nombre largo; y sin recorte, una palabra larguísima
+                          sin espacios empuja y desborda la tarjeta: break-words
+                          corta la palabra y la caja aguanta cualquier nombre. */}
+                      <p className="line-clamp-2 break-words font-semibold text-paper">{displayName}</p>
                       <p className="text-sm text-muted">Cantidad: {line.qty}</p>
                     </div>
-                    <span className="font-display font-bold italic text-paper">
+                    <span className="shrink-0 whitespace-nowrap font-display font-bold italic text-paper">
                       {toBs(line.lineTotalUsd)}
                     </span>
                   </li>

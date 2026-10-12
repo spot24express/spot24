@@ -14,14 +14,17 @@
  * («Disponible en el panel») — SOLO el delivery puede tomarlo; la reasignación
  * es de gerencia/admin. El aviso lleva código + zona (nada de dirección,
  * teléfono ni PII del cliente: el detalle completo vive en el panel).
+ *
+ * Ronda 5.42 · PAYLOAD SOLO-DATA (fix de notificaciones DOBLES): el mensaje
+ * ya NO lleva bloque `notification` ni `webpush.notification`. Con ellos, el
+ * SDK de FCM en el service worker pintaba el globo POR SU CUENTA además del
+ * que pinta nuestro handler onBackgroundMessage → cada push llegaba DOS
+ * veces. Ahora title/body viajan en `data` y la ÚNICA vía de display es el
+ * SW (icono, badge, tag de apilado y destino al tocar, todos definidos ahí).
  */
 import admin from 'firebase-admin';
 
 const db = () => admin.firestore();
-
-/** Origen del sitio: los iconos de push deben ser URL absoluta (Chrome no
- *  resuelve rutas relativas en el payload webpush de FCM). */
-const SITE_URL = 'https://spot24express.netlify.app';
 
 const MESSAGES: Record<string, { title: string; body: string }> = {
   pendiente: { title: 'SPOT 24 · Pedido registrado', body: 'Sube tu comprobante para seguir. Para. Resuelve. Sigue.' },
@@ -77,7 +80,7 @@ async function tokenRefsForRoles(roles: readonly string[]): Promise<TokenRef[]> 
   return refs;
 }
 
-/** Multicast común (iconos de marca + TTL 24 h) y limpieza de tokens muertos.
+/** Multicast común (TTL 24 h) y limpieza de tokens muertos.
  *  Best-effort: cualquier fallo queda atrapado y jamás interrumpe la
  *  operación principal que lo disparó. */
 async function sendAndCleanup(
@@ -92,17 +95,13 @@ async function sendAndCleanup(
     const messaging = getMessaging();
     const batch = await messaging.sendEachForMulticast({
       tokens: refs.map((r) => r.token),
-      notification: { title, body },
-      data,
+      // 5.42 · SOLO-DATA: title/body viajan en `data`. Sin bloque
+      // `notification` el SDK no auto-muestra nada: el SW (onBackgroundMessage)
+      // es la única vía de display → sin dobles. Icon y badge los pone el SW
+      // (escudo transparente + silueta monocroma para el badge de Android).
+      data: { ...data, title, body },
       webpush: {
         headers: { TTL: '86400' },
-        // Sin esto Chrome muestra SU icono por defecto (logo de Chrome en
-        // círculo azul): icon = escudo transparente, badge = silueta blanca
-        // del escudo (Android exige monocromo blanco+alpha para el badge).
-        notification: {
-          icon: `${SITE_URL}/icons/icon-192.png`,
-          badge: `${SITE_URL}/icons/badge-96.png`,
-        },
       },
     });
 

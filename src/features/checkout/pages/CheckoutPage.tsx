@@ -764,10 +764,13 @@ export default function CheckoutPage() {
                       alt="Comprobante de pago adjuntado"
                       className="h-32 w-32 shrink-0 rounded-brand border-2 border-line object-cover"
                     />
-                    <div className="min-w-0 flex-1">
+                    {/* basis-52: en teléfono estrecho la columna baja a su propia
+                        línea (el flex-wrap del padre la empuja) y los botones
+                        nunca se salen del borde rojo. En ≥sm queda lado a lado. */}
+                    <div className="min-w-0 flex-1 basis-52">
                       <p className="spot-label text-signal">Comprobante listo</p>
                       <p className="mt-1 text-xs text-muted">{receipt.sizeKb} KB</p>
-                      <div className="mt-3 flex gap-2">
+                      <div className="mt-3 flex flex-wrap gap-2">
                         <Button variant="secondary" size="sm" type="button" onClick={() => receiptInputRef.current?.click()}>
                           Cambiar
                         </Button>

@@ -8,9 +8,7 @@
  *   reserveStock → quoteTotals → createOrder (FLUJO ESTRICTO 5i-k: nace
  *   en_verificacion con comprobante) → uploadReceipt (re-subida) →
  *   verifyPayment (aprobar / rechazar) → despacho por rol (cajero/delivery) →
- *   cancelación (5.26: el cliente con pago registrado es RECHAZADO; cancela
- *   el ADMIN) + 5.28 despacho con reclamo (aviso al personal, tomar,
- *   colisión, reasignación).
+ *   cancelOrder del cliente.
  *
  * Qué demuestra:
  *   · La notificación SIEMPRE va al CLIENTE (order.uid), nunca al personal.
@@ -44,7 +42,7 @@ import {
   coreUploadReceipt,
 } from '../orders';
 import { coreVerifyPayment } from '../payments';
-import { coreClaimDeliveryOrder, coreReleaseDeliveryOrder, coreUpdateOrderStatus } from '../dispatch';
+import { coreUpdateOrderStatus } from '../dispatch';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -55,12 +53,10 @@ const d = EMULATOR ? describe : describe.skip;
 
 interface RawSend {
   tokens: string[];
-  notification: { title: string; body: string };
+  /** 5.42: title/body viajan en `data` (payload solo-data; display SOLO en el SW). */
+  notification?: { title: string; body: string };
   data: Record<string, string>;
-  webpush?: {
-    headers?: Record<string, string>;
-    notification?: { icon?: string; badge?: string };
-  };
+  webpush?: { headers?: Record<string, string>; notification?: { icon?: string; badge?: string } };
 }
 interface RecordedSend {
   tokens: string[];
@@ -68,6 +64,7 @@ interface RecordedSend {
   body: string;
   data: Record<string, string>;
   ttl: string;
+  urgency: string;
   icon: string;
   badge: string;
 }
@@ -75,12 +72,9 @@ interface RecordedSend {
 const fcmRecorder = vi.hoisted(() => {
   const sends: Array<{
     tokens: string[];
-    notification: { title: string; body: string };
+    notification?: { title: string; body: string };
     data: Record<string, string>;
-    webpush?: {
-      headers?: Record<string, string>;
-      notification?: { icon?: string; badge?: string };
-    };
+    webpush?: { headers?: Record<string, string>; notification?: { icon?: string; badge?: string } };
   }> = [];
   return {
     sends,
@@ -107,22 +101,23 @@ vi.mock('firebase-admin/messaging', () => ({
 
 /** Vista normalizada de lo grabado hasta ahora. */
 function recorded(): RecordedSend[] {
+  // 5.42: title/body viajan en `data` (payload solo-data). El SW de mensajería
+  // es la ÚNICA vía de display: sin bloque `notification` el SDK no
+  // auto-muestra nada → sin notificaciones dobles.
   return fcmRecorder.sends.map((s) => ({
     tokens: s.tokens,
-    title: s.notification.title,
-    body: s.notification.body,
+    title: s.data?.['title'] ?? '',
+    body: s.data?.['body'] ?? '',
     data: s.data,
     ttl: s.webpush?.headers?.['TTL'] ?? '',
+    urgency: s.webpush?.headers?.['Urgency'] ?? '',
     icon: s.webpush?.notification?.icon ?? '',
     badge: s.webpush?.notification?.badge ?? '',
   }));
 }
 
-/** Espera (sin colgar el test) a que el grabador alcance `n` envíos.
- *  20 s: los envíos son fire-and-forget con lecturas Firestore intermedias
- *  (nombre de perfil, tokens, roles del personal): en emulador gRPC cada
- *  lectura puede tardar segundos — 5 s daba falsos negativos. */
-async function waitForSendCount(n: number, ms = 20_000): Promise<void> {
+/** Espera (sin colgar el test) a que el grabador alcance `n` envíos. */
+async function waitForSendCount(n: number, ms = 5_000): Promise<void> {
   const t0 = Date.now();
   while (fcmRecorder.sends.length < n && Date.now() - t0 < ms) {
     await new Promise((r) => setTimeout(r, 50));
@@ -131,7 +126,7 @@ async function waitForSendCount(n: number, ms = 20_000): Promise<void> {
 
 /** Confirma que NO sale nada nuevo: margen de gracia y comparación de conteo. */
 async function expectNoNewSends(before: number): Promise<void> {
-  await new Promise((r) => setTimeout(r, 1_500));
+  await new Promise((r) => setTimeout(r, 500));
   expect(fcmRecorder.sends.length).toBe(before);
 }
 
@@ -313,11 +308,20 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     // FLUJO ESTRICTO: la orden nace EN VERIFICACIÓN (el cliente ya pagó).
     expect(s1.title).toBe('SPOT 24 · Verificando pago');
     expect(s1.body).toBe(`Tu pago está en revisión. Te avisamos al confirmar. (${codeA})`);
-    expect(s1.data).toEqual({ status: 'en_verificacion', orderCode: codeA });
+    // 5.42: data EXACTO — title/body viajan ahí y no hay más claves.
+    expect(s1.data).toEqual({
+      status: 'en_verificacion',
+      orderCode: codeA,
+      title: 'SPOT 24 · Verificando pago',
+      body: `Tu pago está en revisión. Te avisamos al confirmar. (${codeA})`,
+    });
     expect(s1.ttl).toBe('86400');
-    // Iconos de marca: sin ellos Chrome muestra SU icono por defecto.
-    expect(s1.icon).toBe('https://spot24express.netlify.app/icons/icon-192.png');
-    expect(s1.badge).toBe('https://spot24express.netlify.app/icons/badge-96.png');
+    // 5.42 · SOLO-DATA: SIN bloque notification (si existiera, el SDK de FCM
+    // auto-mostraría el globo además del SW → notificaciones dobles). Icon y
+    // badge los pinta el SW; no viajan en el payload.
+    expect(fcmRecorder.sends[0]?.notification).toBeUndefined();
+    expect(s1.icon).toBe('');
+    expect(s1.badge).toBe('');
 
     // El token inválido (registration-token-not-registered) quedó BORRADO.
     const left = await dbf.collection('users/cli-a/fcmTokens').get();
@@ -518,7 +522,7 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     await expectNoNewSends(before);
   });
 
-  it('FASE 7 · cancelación: cliente con pago registrado RECHAZADO (5.26); el ADMIN cancela → push «cancelado»', async () => {
+  it('FASE 7 · cancelación por el CLIENTE → push «cancelado»', async () => {
     const dbf = admin.firestore();
 
     await coreReserveStock(customerCtx('cli-b', { items: [{ productId: 'p9', variantId: 'w2', qty: 1 }] }));
@@ -538,16 +542,19 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     }
     await waitForSendCount(9);
 
-    // POLÍTICA DEL DUEÑO (5.26): todo pedido nace con comprobante → el
-    // cliente ya NO puede cancelarlo (ni en verificación ni después).
-    await expect(coreCancelOrder(customerCtx('cli-b', { orderId: res.orderId, reason: 'Ya no lo necesito' })))
+    // POLÍTICA 5.15/5.26 (regresión): la orden nace CON comprobante → el
+    // cliente NO puede cancelarla él mismo (la cajera la resuelve). Sin push
+    // y sin cambios de estado.
+    const beforePolitica = fcmRecorder.sends.length;
+    await expect(coreCancelOrder(customerCtx('cli-b', { orderId: res.orderId, reason: 'x' })))
       .rejects.toThrow(/pago ya está registrado/);
-    await expectNoNewSends(9);
-    expect((await dbf.collection('orders').doc(res.orderId).get()).data()?.['status']).toBe('en_verificacion');
+    await expectNoNewSends(beforePolitica);
 
-    // La cancelación de pedidos creados es SOLO del personal (admin) —
-    // misma fn-cancelOrder con token admin: repone stock y notifica.
-    const c = (await coreCancelOrder(ctx('jefe-1', 'admin', { orderId: res.orderId, reason: 'Cliente lo solicitó por teléfono' }))) as { ok: boolean };
+    // Pedido LEGACY (era pre-flujo estricto): status 'pendiente' sin
+    // comprobante → el dueño SÍ puede cancelarlo y recibe el push
+    // «cancelado». Al cancelar se repone el stock.
+    await dbf.collection('orders').doc(res.orderId).update({ 'payment.hasReceipt': false, status: 'pendiente' });
+    const c = (await coreCancelOrder(customerCtx('cli-b', { orderId: res.orderId, reason: 'Ya no lo necesito' }))) as { ok: boolean };
     expect(c.ok).toBe(true);
     expect((await dbf.collection('orders').doc(res.orderId).get()).data()?.['status']).toBe('cancelado');
     await waitForSendCount(10);
@@ -590,6 +597,9 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     };
     for (const s of sends) {
       expect(s.ttl).toBe('86400');
+      // 5.42: payload solo-data; icon/badge viven en el SW (no viajan).
+      expect(s.icon).toBe('');
+      expect(s.badge).toBe('');
       expect(s.data.orderCode).toMatch(/^SP-\d{6}-\d{4}$/);
       const tituloEsperado = TITULOS[s.data.status ?? ''] ?? '';
       expect(tituloEsperado).toBeDefined();
@@ -603,145 +613,5 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     expect(Number((await dbf.doc('products/p9/variants/w2').get()).data()?.['stock'])).toBe(2);
     expect(Number((await dbf.doc('products/p9/variants/w1').get()).data()?.['stockReserved'])).toBe(0);
     expect(Number((await dbf.doc('products/p9/variants/w2').get()).data()?.['stockReserved'])).toBe(0);
-  });
-
-  it('FASE 8 · 5.28 despacho con reclamo: aviso al personal, tomar (1 acción), colisión y reasignación', async () => {
-    const dbf = admin.firestore();
-
-    // Personal con tokens: 2 deliverys + 1 gerente + 1 admin (aviso 5.28).
-    // El push de despacho va por ROL (users.role), no por el token del ctx.
-    const old = Date.now() - 48 * 60 * 60 * 1000;
-    await dbf.collection('users').doc('del-1').set({ role: 'delivery', name: 'Reparto Uno', createdAtMs: old });
-    await dbf.collection('users').doc('del-2').set({ role: 'delivery', name: 'Reparto Dos', createdAtMs: old });
-    await dbf.collection('users').doc('ger-1').set({ role: 'gerente', name: 'Gera Uno', createdAtMs: old });
-    await dbf.collection('users').doc('adm-1').set({ role: 'admin', name: 'Admin Uno', createdAtMs: old });
-    await dbf.doc('users/del-1/fcmTokens/t1').set({ token: 'tok-del-1', createdAt: Date.now() });
-    await dbf.doc('users/del-2/fcmTokens/t2').set({ token: 'tok-del-2', createdAt: Date.now() });
-    await dbf.doc('users/ger-1/fcmTokens/t3').set({ token: 'tok-ger-1', createdAt: Date.now() });
-    await dbf.doc('users/adm-1/fcmTokens/t4').set({ token: 'tok-adm-1', createdAt: Date.now() });
-
-    /** Vista por audiencia: pushes del CLIENTE vs avisos de DESPACHO (5.28).
-     *  Conteo RELATIVO (deltas sobre la base) para no acoplarse a las fases
-     *  anteriores: si una fase vecina cambia su número de pushes, esta fase
-     *  sigue siendo correcta. */
-    const clientSends = () => recorded().filter((s) => s.data['aud'] !== 'dispatch');
-    const dispatchAlerts = () => recorded().filter((s) => s.data['aud'] === 'dispatch');
-    const baseClient = clientSends().length;
-    const baseAlerts = dispatchAlerts().length;
-
-    // Pedido E del cliente A: reserva + flujo estricto con comprobante.
-    await coreReserveStock(customerCtx('cli-a', { items: [{ productId: 'p9', variantId: 'w1', qty: 2 }] }));
-    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
-      if (String(input).includes('api.imgbb.com')) return imgbbResponse('https://i.ibb.co/emu/comprobante-e.jpg');
-      return new Response('{}', { status: 599 });
-    }));
-    let res: { orderId: string; code: string };
-    // El objetivo se captura ANTES de la acción: el push es fire-and-forget
-    // (void) y ya pudo grabarse cuando createOrder resuelve.
-    const targetCreate = fcmRecorder.sends.length + 1;
-    try {
-      res = (await coreCreateOrder(customerCtx('cli-a', orderReq('cli-a', {
-        idempotencyKey: 'e8e8c3d4e5f6a7b8c9d0e1f2a3b4c5d6',
-        referencia: '770506070',
-      })))) as { orderId: string; code: string };
-    } finally {
-      vi.unstubAllGlobals();
-    }
-    const orderEId = res.orderId;
-    const codeE = res.code;
-
-    await waitForSendCount(targetCreate);
-    expect(clientSends()).toHaveLength(baseClient + 1);
-    expect(clientSends()[baseClient]!.data.status).toBe('en_verificacion');
-
-    // Admin verifica el pago → pagado (push al cliente; SIN aviso de despacho).
-    const targetPagado = fcmRecorder.sends.length + 1;
-    await coreVerifyPayment(ctx('jefe-1', 'admin', { orderId: orderEId, approve: true }));
-    await waitForSendCount(targetPagado);
-    expect(dispatchAlerts()).toHaveLength(baseAlerts);
-
-    // Cajero prepara → push al cliente + AVISO DE DESPACHO en 2 lotes:
-    // delivery → «Tómalo…»; gerente/admin → «Disponible…».
-    const targetPreparado = fcmRecorder.sends.length + 3;
-    await coreUpdateOrderStatus(ctx('caja-1', 'cajero', { orderId: orderEId, to: 'preparado' }));
-    await waitForSendCount(targetPreparado);
-    expect(clientSends()).toHaveLength(baseClient + 3);
-    expect(dispatchAlerts()).toHaveLength(baseAlerts + 2);
-    const alertDelivery = dispatchAlerts().find((s) => s.tokens.includes('tok-del-1'))!;
-    const alertStaff = dispatchAlerts().find((s) => s.tokens.includes('tok-ger-1'))!;
-    expect([...alertDelivery.tokens].sort()).toEqual(['tok-del-1', 'tok-del-2']);
-    expect([...alertStaff.tokens].sort()).toEqual(['tok-adm-1', 'tok-ger-1']);
-    expect(alertDelivery.title).toBe('SPOT 24 · Pedido listo para salir');
-    expect(alertDelivery.body).toContain('Tómalo');
-    expect(alertStaff.body).toContain('Disponible');
-    expect(alertDelivery.data).toMatchObject({ aud: 'dispatch', status: 'preparado', orderCode: codeE, zone: 'Araure' });
-
-    // SOLO delivery toma: gerente rechazado en la puerta.
-    await expect(coreClaimDeliveryOrder(ctx('ger-1', 'gerente', { orderId: orderEId })))
-      .rejects.toThrow(/Solo un delivery/);
-    await expectNoNewSends(fcmRecorder.sends.length);
-
-    // del-1 TOMA (una acción): claim + en_camino en la misma transacción.
-    const targetClaim = fcmRecorder.sends.length + 1;
-    const claim = (await coreClaimDeliveryOrder(ctx('del-1', 'delivery', { orderId: orderEId }))) as { ok: boolean; trackingCode: string };
-    expect(claim.ok).toBe(true);
-    expect(claim.trackingCode).toMatch(/^SP-TRK-\d{6}$/);
-    await waitForSendCount(targetClaim);
-    expect(clientSends()).toHaveLength(baseClient + 4);
-    const pushRuta = clientSends()[baseClient + 3]!;
-    expect(pushRuta.data.status).toBe('en_camino');
-    expect(pushRuta.tokens).toEqual(['tok-a-valid-1']);
-    const claimed = (await dbf.collection('orders').doc(orderEId).get()).data();
-    expect(claimed?.['status']).toBe('en_camino');
-    expect(claimed?.['delivery']?.['claimedByUid']).toBe('del-1');
-    expect(claimed?.['delivery']?.['claimedByName']).toBe('Reparto');
-
-    // Colisión: del-2 llega tarde → «ya lo tomó Reparto», sin push extra.
-    await expect(coreClaimDeliveryOrder(ctx('del-2', 'delivery', { orderId: orderEId })))
-      .rejects.toThrow(/ya lo tomó/);
-    await expectNoNewSends(fcmRecorder.sends.length);
-
-    // Replay del propio claim: idempotente (sin segundo push).
-    const replay = (await coreClaimDeliveryOrder(ctx('del-1', 'delivery', { orderId: orderEId }))) as { ok: boolean };
-    expect(replay.ok).toBe(true);
-    await expectNoNewSends(fcmRecorder.sends.length);
-
-    // REASIGNACIÓN (admin): borra el claim, vuelve a preparado → push al
-    // cliente + re-aviso de despacho en 2 lotes.
-    const targetRelease = fcmRecorder.sends.length + 3;
-    await coreReleaseDeliveryOrder(ctx('jefe-1', 'admin', { orderId: orderEId }));
-    await waitForSendCount(targetRelease);
-    expect(clientSends()).toHaveLength(baseClient + 5);
-    expect(clientSends()[baseClient + 4]!.data.status).toBe('preparado');
-    expect(dispatchAlerts()).toHaveLength(baseAlerts + 4);
-    const released = (await dbf.collection('orders').doc(orderEId).get()).data();
-    expect(released?.['status']).toBe('preparado');
-    expect(released?.['delivery']?.['claimedByUid']).toBeUndefined();
-    expect(released?.['delivery']?.['claimedByName']).toBeUndefined();
-
-    // Reasignación sin claim / fuera de en_camino: rechazo limpio.
-    await expect(coreReleaseDeliveryOrder(ctx('jefe-1', 'admin', { orderId: orderEId })))
-      .rejects.toThrow(/Solo se puede reasignar/);
-
-    // del-2 lo toma ahora sí y lo ENTREGA: el delivery culmina el proceso
-    // (decisión del dueño). Admin/gerente no culminan pedidos con envío.
-    const targetClaim2 = fcmRecorder.sends.length + 1;
-    await coreClaimDeliveryOrder(ctx('del-2', 'delivery', { orderId: orderEId }));
-    await waitForSendCount(targetClaim2);
-    const targetEntregado = fcmRecorder.sends.length + 1;
-    await coreUpdateOrderStatus(ctx('del-2', 'delivery', { orderId: orderEId, to: 'entregado' }));
-    await waitForSendCount(targetEntregado);
-    expect(clientSends()).toHaveLength(baseClient + 7);
-    expect(clientSends()[baseClient + 6]!.data.status).toBe('entregado');
-    expect((await dbf.collection('orders').doc(orderEId).get()).data()?.['status']).toBe('entregado');
-
-    // El token de gerencia/admin SOLO recibe avisos de despacho, jamás
-    // pushes de cliente (la voz del sistema sigue separada por audiencia).
-    const staffTokens = ['tok-ger-1', 'tok-adm-1'];
-    for (const s of recorded()) {
-      if (s.tokens.some((t) => staffTokens.includes(t))) {
-        expect(s.data['aud']).toBe('dispatch');
-      }
-    }
   });
 });

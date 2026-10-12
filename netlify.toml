@@ -61,6 +61,12 @@
 [functions."fn-adjustStock"]
   timeout = 26
 
+# 5.36 · Baja de usuario: hasta 6 llamadas seguidas a Firebase (getUser,
+# lectura de tokens, batch, deleteUser, auditoría). Con la red del operador
+# degradada, el tope por defecto (10 s) podía matarla a mitad del flujo.
+[functions."fn-deleteUser"]
+  timeout = 26
+
 # ── Servidor de desarrollo local (netlify dev) ──
 # netlify dev levanta las funciones de netlify/functions y, además, la app de
 # Vite: `command` es lo que ejecuta y `targetPort` el puerto donde espera

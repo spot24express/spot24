@@ -3,6 +3,10 @@
  * · fn-setUserRole: asigna custom claims customer/cajero/delivery/admin (solo
  *   admin; no permite degradarse a sí mismo para evitar bloqueos).
  * · fn-revokeUserSessions: cierra todas las sesiones del usuario vía época.
+ * · fn-deleteUser: elimina una cuenta por completo (solo admin): ficha,
+ *   carrito, tokens de notificaciones y acceso de autenticación. Los pedidos
+ *   históricos SE CONSERVAN (contabilidad y antifraude). Impide eliminar a sí
+ *   mismo y a otros admins (quitar rol primero) para evitar bloqueos.
  * · fn-getAdminMetrics: métricas agregadas calculadas en el backend.
  * Cores agnósticos del runtime + wrappers onCall (modo Cloud Functions).
  */
@@ -74,6 +78,58 @@ export async function coreRevokeUserSessions(ctx: CoreCtx): Promise<unknown> {
   );
 
   await writeAudit({ action: 'revocar_sesiones', adminUid, targetId: targetUid });
+  return { ok: true };
+}
+
+/**
+ * 5.36 · Elimina una cuenta por completo (solo admin).
+ * Orden deliberado: (1) leer Auth para validar existencia y rol, (2) limpiar
+ * Firestore en UN lote atómico (ficha + carrito + tokens FCM), (3) borrar la
+ * cuenta de Authentication, (4) auditar. Si (3) falla tras el lote, el admin
+ * reintenta: borrar documentos inexistentes dentro de un batch es inocuo, así
+ * que el flujo completo es idempotente y jamás queda a medias de forma
+ * irreversible. Los pedidos históricos NO se tocan: llevan nombre y teléfono
+ * embebidos y son el registro contable/antifraude del negocio.
+ */
+export async function coreDeleteUser(ctx: CoreCtx): Promise<unknown> {
+  const adminUid = requireAdmin(ctx);
+  const targetUid = sanitizeStr(ctx.data?.['uid'], 128);
+  if (!targetUid) throw new HttpsError('invalid-argument', 'uid requerido.');
+  if (targetUid === adminUid) {
+    throw new HttpsError('failed-precondition', 'No puedes eliminar tu propia cuenta.');
+  }
+
+  // 1) Existencia + rol real desde Auth (los claims son la fuente de verdad;
+  //    el doc users puede estar desactualizado si la persona no reentró).
+  let targetRole = 'customer';
+  try {
+    const target = await admin.auth(getAdminApp()).getUser(targetUid);
+    targetRole = String(target.customClaims?.['role'] ?? 'customer');
+  } catch (e) {
+    if ((e as { code?: unknown }).code === 'auth/user-not-found') {
+      throw new HttpsError('not-found', 'La cuenta no existe en autenticación (quizás ya fue eliminada). Recarga la lista.');
+    }
+    throw e; // red u otro fallo transitorio: reintentar es seguro.
+  }
+  if (targetRole === 'admin') {
+    throw new HttpsError('failed-precondition', 'No se elimina a otra persona admin: primero cámbiale el rol (p. ej. a Cliente) y luego elimina.');
+  }
+
+  // 2) Limpieza Firestore en un solo lote atómico: ficha del panel, carrito
+  //    guardado y tokens de notificaciones push (subcolección fcmTokens).
+  const userRef = db().collection('users').doc(targetUid);
+  const batch = db().batch();
+  batch.delete(userRef);
+  batch.delete(db().collection('carts').doc(targetUid));
+  const tokens = await userRef.collection('fcmTokens').limit(100).get();
+  tokens.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+
+  // 3) Baja en Authentication: su correo queda libre y ya no puede iniciar sesión.
+  await admin.auth(getAdminApp()).deleteUser(targetUid);
+
+  // 4) Auditoría (solo UIDs, sin PII).
+  await writeAudit({ action: 'eliminar_usuario', adminUid, targetId: targetUid });
   return { ok: true };
 }
 
@@ -150,6 +206,11 @@ export const fnSetUserRole = onCall(
 export const fnRevokeUserSessions = onCall(
   { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 10 },
   (req: CallableRequest) => coreRevokeUserSessions(req as unknown as CoreCtx),
+);
+
+export const fnDeleteUser = onCall(
+  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 10 },
+  (req: CallableRequest) => coreDeleteUser(req as unknown as CoreCtx),
 );
 
 export const fnGetAdminMetrics = onCall(

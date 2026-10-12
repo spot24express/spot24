@@ -3,7 +3,7 @@
  * El token se registra en users/{uid}/fcmTokens/{hash}; las Cloud Functions
  * envían a esos tokens en cada transición. Solo en HTTPS + navegador con soporte.
  *
- * Arquitectura del SW (ronda 5i-h):
+ * Arquitectura del SW (ronda 5i-h; display 5.45):
  *  · PROD → /firebase-messaging-sw.js registrado con scope /firebase-messaging/
  *    (requiere la cabecera Service-Worker-Allowed: / en netlify.toml). Scope
  *    PROPIO para NO pisar al SW de la PWA (/): dos registros con el mismo scope
@@ -16,11 +16,14 @@
  *  · El estado de «Mi cuenta» NUNCA usa navigator.serviceWorker.ready (se cuelga
  *    si el scope no cubre la página): todos los caminos usan el MISMO registro
  *    explícito → mismo token → mismo hash → el doc de fcmTokens siempre coincide.
+ *  · 5.45 · DISPLAY EXCLUSIVO DEL SW (decisión del dueño: globo SIEMPRE, aun
+ *    con la app abierta y enfocada): la página ya NO escucha onMessage ni
+ *    muestra toast — el SW pinta el globo ante cada push. Aquí solo se gestiona
+ *    el ciclo de vida del token (registrar / verificar / borrar).
  */
 import { doc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { logger } from '@/shared/lib/logger';
-import { toast } from '@/shared/lib/toast';
 
 export async function isPushSupported(): Promise<boolean> {
   return (
@@ -44,9 +47,6 @@ const MESSAGING_SW_OPTIONS: RegistrationOptions = import.meta.env.DEV
 /** Registro cacheado: el mismo para registrar token, verificarlo y borrarlo. */
 let swRegPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 
-/** Bandera del puente en primer plano (un solo listener por sesión SPA). */
-let foregroundBound = false;
-
 /** Registra (una vez) el SW de mensajería como módulo ESM. */
 async function ensureMessagingSw(): Promise<ServiceWorkerRegistration | null> {
   if (!('serviceWorker' in navigator)) return null;
@@ -62,31 +62,9 @@ async function ensureMessagingSw(): Promise<ServiceWorkerRegistration | null> {
   return swRegPromise;
 }
 
-/** Enlaza los mensajes en PRIMER PLANO (pestaña enfocada): sin esto, FCM los
- *  descarta en silencio (la notificación del SO solo sale con la pestaña fuera
- *  de foco). Idempotente: un solo listener por sesión de la SPA. */
-async function bindForegroundMessages(): Promise<void> {
-  if (foregroundBound) return;
-  const fb = await loadFirebase();
-  if (!fb) return;
-  try {
-    const { getMessaging, onMessage } = await import('firebase/messaging');
-    const messaging = getMessaging(fb.app);
-    foregroundBound = true;
-    onMessage(messaging, (payload) => {
-      // Ronda 5.17: el payload es solo-data (title/body viajan en data).
-      const title = payload.data?.['title'] ?? payload.notification?.title ?? 'SPOT 24';
-      const body = payload.data?.['body'] ?? payload.notification?.body ?? '';
-      toast.info(body ? `${title} · ${body}` : title);
-    });
-  } catch (e) {
-    logger.warn('FCM: no se pudo enlazar mensajes en primer plano', e);
-  }
-}
-
-/** Registro del SW de mensajería; de paso activa el puente en primer plano. */
+/** Registro del SW de mensajería. La página solo gestiona el token: el
+ *  display de los avisos vive por completo dentro del SW (5.45). */
 async function getMessagingRegistration(): Promise<ServiceWorkerRegistration | null> {
-  void bindForegroundMessages();
   return ensureMessagingSw();
 }
 

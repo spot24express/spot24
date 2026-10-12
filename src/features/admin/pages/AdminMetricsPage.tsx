@@ -1,12 +1,14 @@
 import { useEffect, useState, type FormEvent } from 'react';
+import { doc, onSnapshot } from 'firebase/firestore';
 import { ListSkeleton } from '@/shared/components/ui/Skeleton';
 import { ErrorState } from '@/shared/components/ui/States';
 import { BigFigure } from '@/shared/components/ui/PriceTag';
 import { SpeedLines } from '@/shared/components/brand/Logo';
 import { Button } from '@/shared/components/ui/Button';
 import {
-  adminGetMetrics, adminGetBcvRate, type AdminMetrics, type BcvRateInfo,
+  adminGetMetrics, type AdminMetrics, type BcvRateInfo,
 } from '../services/admin.service';
+import { loadFirebase } from '@/shared/lib/firebase';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { STATUS_LABELS, ORDER_STATUSES, type OrderStatus } from '@/shared/constants/orders';
 import { formatUsd, formatBs, usdToBs } from '@/shared/lib/format';
@@ -34,6 +36,13 @@ import { formatUsd, formatBs, usdToBs } from '@/shared/lib/format';
  *    BCV_RUN_KEY (se pide una vez, queda en sessionStorage de ESTE navegador)
  *    y muestra el resultado inline: tasa nueva, pendiente 12:00 AM, o el error
  *    exacto (clave inválida / env var sin configurar / función no desplegada).
+ *
+ * Ronda 5.53 — «Recargar» ELIMINADO a pedido del dueño: la tarjeta escucha
+ * rates/bcv EN VIVO con onSnapshot propio y se refresca sola cada vez que el
+ * cron escribe (cada hora) o cuando «Leer BCV ahora» termina. Es listener
+ * PROPIO y no el hook público useBcvRate porque la tarjeta necesita los
+ * campos extra que el hook no expone: fechaValor, lastAttemptAt (pulso del
+ * vigía) y la tasa pendiente next*. Con escucha en vivo, «Recargar» sobraba.
  */
 
 /** > 2 h sin lecturas = cron detenido (normal: 1 lectura por hora). */
@@ -65,7 +74,6 @@ export default function AdminMetricsPage() {
   const [keyFormOpen, setKeyFormOpen] = useState(false);
   const [runBusy, setRunBusy] = useState(false);
   const [runMsg, setRunMsg] = useState<RunMsg | null>(null);
-  const [reloadBusy, setReloadBusy] = useState(false);
 
   // Ronda 3 — CORRECCIÓN del aviso de error que salía al entrar: antes
   // load() hacía setError(true) AL MONTAR, así que el ErrorState se pintaba
@@ -83,17 +91,52 @@ export default function AdminMetricsPage() {
       .finally(() => setLoading(false));
   };
 
-  /** Relee el doc rates/bcv (solo vista — NO consulta el BCV). */
-  const loadRate = () => {
-    setReloadBusy(true);
-    void adminGetBcvRate()
-      .then(setRate)
-      .catch(() => {
-        setRate(null);
-        setRunMsg({ kind: 'err', text: 'No se pudo leer rates/bcv en Firestore (revisa tu conexión).' });
-      })
-      .finally(() => setReloadBusy(false));
-  };
+  // ── Escucha EN VIVO del doc rates/bcv (ronda 5.53) ──
+  // onSnapshot PROPIO (no el hook público): la tarjeta necesita fechaValor,
+  // lastAttemptAt (pulso del vigía) y next*, que useBcvRate no expone.
+  // Cualquier escritura del cron (horaria) o de fn-runBcvRate repinta sola.
+  useEffect(() => {
+    let alive = true;
+    let unsub: (() => void) | null = null;
+    void loadFirebase().then((fb) => {
+      if (!alive) return;
+      if (!fb) {
+        setRate(null); // demo/sin Firebase: mensaje «Aún no publicada»
+        return;
+      }
+      unsub = onSnapshot(
+        doc(fb.db, 'rates', 'bcv'),
+        (snap) => {
+          if (!alive) return;
+          if (!snap.exists()) {
+            setRate(null);
+            return;
+          }
+          const d = snap.data();
+          setRate({
+            usdToVes: Number(d['usdToVes'] ?? 0),
+            fechaValor: String(d['fechaValor'] ?? ''),
+            updatedAt: Number(d['updatedAt'] ?? 0),
+            lastAttemptAt: Number(d['lastAttemptAt'] ?? 0),
+            source: String(d['source'] ?? 'fallback'),
+            lastError: String(d['lastError'] ?? ''),
+            nextUsdToVes: Number(d['nextUsdToVes'] ?? 0),
+            nextFechaValor: String(d['nextFechaValor'] ?? ''),
+            nextCapturedAt: Number(d['nextCapturedAt'] ?? 0),
+          });
+        },
+        () => {
+          if (!alive) return;
+          setRate(null);
+          setRunMsg({ kind: 'err', text: 'No se pudo escuchar rates/bcv en Firestore (revisa tu conexión).' });
+        },
+      );
+    });
+    return () => {
+      alive = false;
+      if (unsub) unsub();
+    };
+  }, []);
 
   // Clave guardada en sessionStorage (si la hay) al montar.
   useEffect(() => {
@@ -105,10 +148,6 @@ export default function AdminMetricsPage() {
   }, []);
 
   useEffect(load, []);
-  useEffect(() => {
-    loadRate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => (t + 1) % 1_000_000), 60_000);
     return () => clearInterval(id);
@@ -154,7 +193,8 @@ export default function AdminMetricsPage() {
           return;
         }
         setRunMsg({ kind: 'ok', text: summarizeRun(result) });
-        loadRate(); // refresca la tarjeta con lo que acaba de escribir el backend
+        // La tarjeta se refresca SOLA: el onSnapshot propaga lo que el backend
+        // acaba de escribir en rates/bcv (ronda 5.53).
       } catch (e) {
         const abort = (e as Error)?.name === 'AbortError';
         setRunMsg({
@@ -225,11 +265,8 @@ export default function AdminMetricsPage() {
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h3 id="bcv-metrics" className="spot-title text-xl">Tasa BCV</h3>
           <div className="flex flex-wrap gap-2">
-            <Button variant="primary" size="sm" loading={runBusy} disabled={reloadBusy} onClick={handleRunClick}>
+            <Button variant="primary" size="sm" loading={runBusy} onClick={handleRunClick}>
               Leer BCV ahora
-            </Button>
-            <Button variant="secondary" size="sm" loading={reloadBusy} disabled={runBusy} onClick={loadRate}>
-              Recargar
             </Button>
           </div>
         </div>

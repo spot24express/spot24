@@ -137,14 +137,19 @@ export default function AdminPaymentsPage() {
               {queue.map((o) => (
                 <li key={o.id} className="rounded-brand-lg border-2 border-line bg-surface-1 p-5">
                   <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div>
+                    {/* FIX 5.32: min-w-0 en la info y break-words en el
+                        párrafo de artículos. Sin eso, un nombre de producto
+                        larguísimo empuja el ancho del bloque y se sale de la
+                        tarjeta (el ítem flex no encoge por debajo de su
+                        contenido por defecto). */}
+                    <div className="min-w-0">
                       <p className="font-display text-lg font-extrabold italic text-signal">{o.code}</p>
-                      <p className="text-sm text-muted">
+                      <p className="break-words text-sm text-muted">
                         {PAYMENT_METHOD_LABELS[o.payment.method]} · ref{' '}
                         {o.payment.reference || o.payment.referenceMasked || 'sin referencia'} ·{' '}
                         {formatBs(o.totals.totalVes)}
                       </p>
-                      <p className="mt-0.5 text-sm text-muted">
+                      <p className="mt-0.5 break-words text-sm text-muted">
                         {o.lines.length} {o.lines.length === 1 ? 'producto' : 'productos'} ·{' '}
                         {o.lines.map((l) => `${l.qty}× ${l.name}`).join(', ')}
                       </p>
@@ -185,12 +190,12 @@ export default function AdminPaymentsPage() {
                 {waiting.map((o) => (
                   <li key={o.id} className="rounded-brand-lg border-2 border-dashed border-line bg-surface-1 p-4 opacity-80">
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
+                      <div className="min-w-0">
                         <p className="font-display text-base font-extrabold italic text-muted">{o.code}</p>
                         <p className="text-sm text-muted">
                           {PAYMENT_METHOD_LABELS[o.payment.method]} · {formatBs(o.totals.totalVes)}
                         </p>
-                        <p className="mt-0.5 text-sm text-muted">
+                        <p className="mt-0.5 break-words text-sm text-muted">
                           {o.lines.map((l) => `${l.qty}× ${l.name}`).join(', ')}
                         </p>
                       </div>
@@ -383,11 +388,17 @@ function VerifyBody({
         className="w-full rounded-brand border-2 border-line bg-surface-1 px-4 py-3 text-paper focus:border-signal focus:outline-none"
       />
 
-      <div className="flex gap-3">
-        <Button variant="secondary" className="flex-1" loading={busy} onClick={() => onVerify(false)}>
+      {/* FIX 5.54: la fila lado a lado no cabía en teléfono (Confirmar pago
+          mide ~152px de mínimo y ~176px con el spinner; a 320px el modal
+          ofrece 268px) y se salía del modal, además de partir el texto en
+          dos líneas. En móvil cada botón va en su propia línea — Confirmar
+          queda ARRIBA (flex-col-reverse: es la acción principal, la del
+          pulgar) — y desde sm vuelven a la fila con mitades iguales. */}
+      <div className="flex flex-col-reverse gap-3 sm:flex-row">
+        <Button variant="secondary" className="w-full sm:flex-1" loading={busy} onClick={() => onVerify(false)}>
           Rechazar
         </Button>
-        <Button className="flex-1" loading={busy} onClick={() => onVerify(true)}>
+        <Button className="w-full sm:flex-1" loading={busy} onClick={() => onVerify(true)}>
           Confirmar pago
         </Button>
       </div>

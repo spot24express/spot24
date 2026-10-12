@@ -6,13 +6,18 @@ import { Button } from '@/shared/components/ui/Button';
 import { Modal } from '@/shared/components/ui/Modal';
 import { Textarea } from '@/shared/components/ui/Input';
 import { StatusBadge } from '@/shared/components/ui/Badge';
-import { adminListOrders, adminSetOrderStatus, claimDeliveryOrder, releaseDeliveryOrder } from '../services/admin.service';
+import {
+  adminListOrders,
+  adminSetOrderStatus,
+  claimDeliveryOrder,
+  releaseDeliveryOrder,
+} from '../services/admin.service';
 import { cancelOrder } from '@/features/orders/services/orders.service';
 import type { Order, OrderStatus } from '@/features/orders/types';
 import { STATUS_LABELS, STATUS_TRANSITIONS } from '@/shared/constants/orders';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { userMessage } from '@/shared/lib/errors';
-import { formatBs, usdToBs } from '@/shared/lib/format';
+import { formatBs, formatDateTime, usdToBs } from '@/shared/lib/format';
 
 /**
  * Panel de despacho (5.5): cola de pedidos activos, cambio de estado con
@@ -53,8 +58,29 @@ import { formatBs, usdToBs } from '@/shared/lib/format';
  *   Preparado y re-avisa a los deliverys (modal de confirmación).
  * · Culminar (→ Entregado) es del delivery en pedidos con envío; en RETIRO EN
  *   TIENDA la operación queda como siempre (admin/cajero la culminan).
+ *
+ * Ronda 5.41 — HISTORIAL DE ENTREGAS (a pedido del dueño): admin, gerente y
+ * delivery ya pueden ver qué pedidos se entregaron, a qué zona, quién los
+ * llevó y cuándo. Pestaña «Entregadas» (el cajero no la ve: su trabajo
+ * termina en Preparado):
+ * · Consulta directa de Firestore con la MISMA forma de consulta que ya
+ *   funciona en producción (status + createdAt) → sin índices nuevos ni
+ *   backend nuevo (las reglas ya dejan leer orders al personal). Tope 60
+ *   pedidos, el mismo tope de todas las colas del panel.
+ * · Cada tarjeta: zona (o Retiro en tienda), «Entregó: {nombre}» — el claim
+ *   del 5.28 se conserva al entregar —, fecha/hora de la entrega (deliveredAt
+ *   lo fija fn-updateOrderStatus; en órdenes viejas cae a updatedAt),
+ *   cliente, dirección, contenido real y total en Bs con la tasa de la orden.
+ * · Chips de zona con conteo (sobre la lista cargada) y FILTRO al tocarlos:
+ *   gerencia responde «¿qué se entregó y a qué zona?» de un vistazo.
+ * · Para delivery: alternancia «Mías / Todas» (Mías = pedidos que él tomó y
+ *   entregó). Los pedidos anteriores al reclamo 5.28 no llevan claim, así
+ *   que solo aparecen bajo «Todas».
  */
 const QUEUE: OrderStatus[] = ['pagado', 'preparado', 'en_camino'];
+
+/** Roles que ven la pestaña «Entregadas» (5.41, a pedido del dueño). */
+const HISTORY_ROLES: ReadonlyArray<string> = ['admin', 'gerente', 'delivery'];
 
 /** Botones visibles por rol además de las transiciones válidas. */
 const ROLE_MOVES: Partial<Record<string, ReadonlyArray<readonly [OrderStatus, OrderStatus]>>> = {
@@ -70,6 +96,12 @@ function lineBs(o: Order, usd: number): string {
   return r > 0 ? formatBs(usdToBs(usd, r)) : 'Bs. —';
 }
 
+/** Pestañas del despacho. */
+type TabFilter = OrderStatus | 'todas' | 'entregadas';
+
+/** Clave interna del chip «Retiro en tienda» en el filtro de zonas. */
+const PICKUP_KEY = '__retiro__';
+
 export default function AdminDispatchPage() {
   const { user } = useAuth();
   const role = user?.role ?? 'customer';
@@ -77,12 +109,20 @@ export default function AdminDispatchPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<OrderStatus | 'todas'>('todas');
+  const [filter, setFilter] = useState<TabFilter>('todas');
   // Ronda 5.15: cancelación del personal — pedido seleccionado + motivo opcional.
   const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
   const [cancelReason, setCancelReason] = useState('');
   // Ronda 5.28: reasignación (gerencia/admin) — pedido en camino a soltar.
   const [reassignTarget, setReassignTarget] = useState<Order | null>(null);
+  // Ronda 5.41: historial de entregas.
+  const [delivered, setDelivered] = useState<Order[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState(false);
+  const [mineOnly, setMineOnly] = useState(true); // solo aplica a delivery
+  const [zoneFilter, setZoneFilter] = useState<string | null>(null);
+
+  const canSeeHistory = HISTORY_ROLES.includes(role);
 
   const load = () => {
     setLoading(true);
@@ -96,6 +136,26 @@ export default function AdminDispatchPage() {
   };
 
   useEffect(load, []);
+
+  /* 5.41 · Historial: MISMA forma de consulta que el resto del panel
+   * (status + createdAt → el índice compuesto ya existe en producción).
+   * Se pide cada vez que entras a la pestaña: siempre fresco. */
+  const loadDelivered = () => {
+    setHistoryLoading(true);
+    void adminListOrders(['entregado'])
+      .then((o) => {
+        setDelivered(o);
+        setHistoryError(false);
+      })
+      .catch(() => setHistoryError(true))
+      .finally(() => setHistoryLoading(false));
+  };
+
+  const switchTab = (t: TabFilter) => {
+    setFilter(t);
+    setZoneFilter(null);
+    if (t === 'entregadas') loadDelivered();
+  };
 
   const advance = async (o: Order, to: OrderStatus) => {
     setBusyId(o.id);
@@ -162,7 +222,29 @@ export default function AdminDispatchPage() {
     }
   };
 
+  /* ── 5.41 · Derivados del historial ── */
+  const mineOk = (o: Order) =>
+    role !== 'delivery' || !mineOnly || o.delivery.claimedByUid === user?.uid;
+  const zoneKey = (o: Order): string =>
+    o.delivery.mode === 'pickup' ? PICKUP_KEY : o.delivery.zoneName || 'Sin zona';
+  const zoneCounts = new Map<string, number>();
+  delivered.filter(mineOk).forEach((o) => {
+    const k = zoneKey(o);
+    zoneCounts.set(k, (zoneCounts.get(k) ?? 0) + 1);
+  });
+  const deliveredVisible = delivered
+    .filter(mineOk)
+    .filter((o) => !zoneFilter || zoneKey(o) === zoneFilter);
+
   const visible = filter === 'todas' ? orders : orders.filter((o) => o.status === filter);
+
+  const tabs: TabFilter[] = ['todas', ...QUEUE];
+  if (canSeeHistory) tabs.push('entregadas');
+
+  const chipCls = (active: boolean) =>
+    `min-h-[40px] rounded-brand border-2 px-4 py-1.5 text-sm font-semibold ${
+      active ? 'border-signal bg-signal/10 text-signal' : 'border-line text-paper hover:border-line-strong'
+    }`;
 
   return (
     <div>
@@ -170,22 +252,150 @@ export default function AdminDispatchPage() {
       <p className="spot-subtitle mt-1 mb-4">Operación 24/7. Cada cambio de estado notifica al cliente.</p>
 
       <div className="mb-6 flex flex-wrap gap-2">
-        {(['todas', ...QUEUE] as const).map((s) => (
+        {tabs.map((s) => (
           <button
             key={s}
             type="button"
             aria-pressed={filter === s}
-            onClick={() => setFilter(s as OrderStatus | 'todas')}
-            className={`min-h-[40px] rounded-brand border-2 px-4 py-1.5 text-sm font-semibold ${
-              filter === s ? 'border-signal bg-signal/10 text-signal' : 'border-line text-paper hover:border-line-strong'
-            }`}
+            onClick={() => switchTab(s)}
+            className={chipCls(filter === s)}
           >
-            {s === 'todas' ? 'Todas' : STATUS_LABELS[s as OrderStatus]}
+            {s === 'todas' ? 'Todas' : s === 'entregadas' ? 'Entregadas' : STATUS_LABELS[s]}
           </button>
         ))}
       </div>
 
-      {error ? (
+      {filter === 'entregadas' ? (
+        /* ── 5.41 · HISTORIAL DE ENTREGAS ── */
+        <>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            {role === 'delivery' && (
+              <>
+                <button
+                  type="button"
+                  aria-pressed={mineOnly}
+                  onClick={() => setMineOnly(true)}
+                  className={chipCls(mineOnly)}
+                >
+                  Mías
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={!mineOnly}
+                  onClick={() => setMineOnly(false)}
+                  className={chipCls(!mineOnly)}
+                >
+                  Todas
+                </button>
+              </>
+            )}
+            {[...zoneCounts.entries()].map(([z, n]) => (
+              <button
+                key={z}
+                type="button"
+                aria-pressed={zoneFilter === z}
+                onClick={() => setZoneFilter(zoneFilter === z ? null : z)}
+                className={chipCls(zoneFilter === z)}
+              >
+                {z === PICKUP_KEY ? 'Retiro en tienda' : z} · {n}
+              </button>
+            ))}
+          </div>
+
+          {historyError ? (
+            <ErrorState onRetry={loadDelivered} />
+          ) : historyLoading ? (
+            <ListSkeleton rows={3} />
+          ) : deliveredVisible.length === 0 ? (
+            <EmptyState
+              title="Sin entregas en este filtro"
+              message={
+                role === 'delivery' && mineOnly
+                  ? 'No aparece ninguna entrega tuya en los últimos pedidos. Prueba «Todas» para ver el historial completo.'
+                  : 'No hay pedidos entregados que coincidan con este filtro.'
+              }
+            />
+          ) : (
+            <ul className="space-y-4">
+              {deliveredVisible.map((o) => (
+                <li key={o.id} className="rounded-brand-lg border-2 border-line bg-surface-1 p-5">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <p className="font-display text-lg font-extrabold italic text-signal">{o.code}</p>
+                      <StatusBadge status={o.status} />
+                      {o.delivery.mode === 'pickup' ? (
+                        <span className="rounded-brand border-2 border-signal px-2 py-0.5 font-display text-xs font-bold italic uppercase text-signal">
+                          Retiro en tienda
+                        </span>
+                      ) : (
+                        <span className="rounded-brand border-2 border-signal px-2 py-0.5 font-display text-xs font-bold italic uppercase text-signal">
+                          Zona: {o.delivery.zoneName}
+                        </span>
+                      )}
+                      {/* El claim del 5.28 se conserva al entregar: dice quién
+                          llevó el pedido. Órdenes anteriores al 5.28: sin chip. */}
+                      {o.delivery.claimedByName && (
+                        <span className="rounded-brand border-2 border-line bg-ink px-2 py-0.5 font-display text-xs font-bold italic uppercase text-paper">
+                          Entregó: {o.delivery.claimedByName}
+                        </span>
+                      )}
+                    </div>
+                    {/* Teléfono COMPLETO (ronda 5.9); en órdenes viejas cae al
+                        enmascarado. */}
+                    <p className="mt-1 text-sm text-muted">
+                      {o.contact.name} · {o.contact.phone || o.contact.phoneMasked}
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-paper">
+                      Entregado el {formatDateTime(o.deliveredAt ?? o.updatedAt)}
+                    </p>
+                    {o.delivery.mode === 'pickup' ? (
+                      <p className="mt-1 text-sm font-semibold text-paper">
+                        El cliente pasó a buscar por tienda.
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-sm text-paper">{o.delivery.addressPreview}</p>
+                    )}
+
+                    {/* Contenido real entregado (snapshot congelado al crear). */}
+                    <ul className="mt-3 space-y-2 border-t-2 border-line pt-3">
+                      {o.lines.map((l) => (
+                        <li key={`${l.productId}-${l.variantId}`} className="flex items-center gap-3">
+                          <img
+                            src={l.image}
+                            alt=""
+                            className="h-10 w-10 shrink-0 rounded-brand border border-line object-cover"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-semibold text-paper">
+                              {l.qty} × {l.name}
+                            </p>
+                            {l.brand && (
+                              <p className="truncate text-xs text-muted">{l.brand}</p>
+                            )}
+                          </div>
+                          <p className="shrink-0 text-sm font-semibold text-paper">{lineBs(o, l.lineTotalUsd)}</p>
+                        </li>
+                      ))}
+                    </ul>
+
+                    {/* Total oficial de la orden en Bs (totalVes lo fija el
+                        backend al crear; fallback: tasa de la orden). */}
+                    <p className="mt-3 text-sm font-bold text-paper">
+                      Total: {o.totals.totalVes > 0 ? formatBs(o.totals.totalVes) : lineBs(o, o.totals.totalUsd)}
+                    </p>
+
+                    {o.notes && (
+                      <p className="mt-2 rounded-brand border border-line bg-ink px-3 py-2 text-sm text-paper">
+                        <span className="font-bold text-signal">Nota:</span> {o.notes}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      ) : error ? (
         <ErrorState onRetry={load} />
       ) : loading ? (
         <ListSkeleton rows={3} />

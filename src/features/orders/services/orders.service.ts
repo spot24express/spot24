@@ -1,11 +1,11 @@
 /**
  * Módulo orders · Capa de servicios.
- * Lectura de pedidos propios (owner) con listener acotado (5.5).
+ * Lectura de pedidos PROPIOS (owner) con filtro uid obligatorio (5.32).
  * Cancelación vía función de servidor. El comprobante del cliente va por
  * fn-uploadReceipt → imgbb (funciona sin bucket de Storage, plan Spark).
  */
 import {
-  collection, doc, getDocs, limit as fbLimit, onSnapshot, orderBy, query, startAfter,
+  collection, doc, getDocs, limit as fbLimit, onSnapshot, orderBy, query, startAfter, where,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { callFunction } from '@/shared/lib/backend';
@@ -46,11 +46,25 @@ function mapOrder(id: string, d: Record<string, unknown>): Order {
 
 /* ───────────────────────────── API pública ───────────────────────────── */
 
-export async function listMyOrders(cursor: string | null): Promise<Page<Order>> {
+/**
+ * Página de pedidos PROPIOS (más nuevos primero), paginada por cursor.
+ *
+ * FIX 5.32: el filtro where('uid') es OBLIGATORIO. Las reglas de Firestore
+ * (deny by default) solo permiten leer un pedido al dueño
+ * (resource.data.uid == request.auth.uid) o al personal; sin ese filtro en
+ * la query, Firestore rechaza la consulta entera con permission-denied y
+ * «Mis pedidos» caía a la pantalla de error para todo cliente. Además, con
+ * el filtro el cliente solo descarga LO SUYO (antes la consulta apuntaba a
+ * toda la colección). Igualdad + orderBy en un campo distinto se resuelve
+ * con los índices automáticos: NO requiere índice compuesto.
+ */
+export async function listMyOrders(uid: string, cursor: string | null): Promise<Page<Order>> {
+  if (!uid) return { items: [], cursor: null, hasMore: false };
   const fb = await loadFirebase();
   if (!fb) return { items: [], cursor: null, hasMore: false };
   let q = query(
     collection(fb.db, ORDERS),
+    where('uid', '==', uid),
     orderBy('createdAt', 'desc'),
     fbLimit(PAGE_SIZE),
   );
@@ -58,6 +72,7 @@ export async function listMyOrders(cursor: string | null): Promise<Page<Order>> 
     const ts = Number(cursor) || 0;
     q = query(
       collection(fb.db, ORDERS),
+      where('uid', '==', uid),
       orderBy('createdAt', 'desc'),
       startAfter(ts),
       fbLimit(PAGE_SIZE),

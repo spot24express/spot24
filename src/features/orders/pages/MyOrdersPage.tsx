@@ -24,9 +24,14 @@ export default function MyOrdersPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // FIX 5.32: la consulta ahora pide SOLO los pedidos de este usuario
+    // (where uid): es lo que exigen las reglas de Firestore. Mientras la
+    // sesión no esté lista no se consulta nada (el guard de la ruta ya
+    // redirige al login si no hay sesión).
+    if (!user?.uid) return;
     let alive = true;
     setLoading(true);
-    void listMyOrders(null)
+    void listMyOrders(user.uid, null)
       .then((p) => {
         if (!alive) return;
         setAll(p.items);
@@ -40,8 +45,8 @@ export default function MyOrdersPage() {
   }, [user?.uid]);
 
   const loadMore = async () => {
-    if (!page?.hasMore || !page.cursor) return;
-    const next = await listMyOrders(page.cursor);
+    if (!user?.uid || !page?.hasMore || !page.cursor) return;
+    const next = await listMyOrders(user.uid, page.cursor);
     setAll((prev) => [...prev, ...next.items]);
     setPage(next);
   };

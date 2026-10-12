@@ -74,6 +74,9 @@ export interface Order {
   reservationExpiresAt: number | null;
   createdAt: number;
   updatedAt: number;
+  /** 5.41 · Fecha/hora de entrega (fn-updateOrderStatus la fija al marcar
+   *  Entregado). Órdenes viejas o aún no entregadas: undefined. */
+  deliveredAt?: number;
 }
 
 export interface OrderEvent {
