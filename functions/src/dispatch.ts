@@ -115,12 +115,17 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   });
 
   // 5.28 · Aviso de despacho: pedido con envío PREPARADO → push a los
-  // deliverys (tómalo) y a gerencia/admin (informativo). Los retiros en
-  // tienda no generan aviso: nadie tiene que ir a entregarlos.
+  // deliverys (tómalo) y a gerencia/admin/cajero (informativo 5.71). Los
+  // retiros en tienda no generan aviso: nadie tiene que ir a entregarlos.
+  // 5.71 · EN CADENA: primero el aviso de despacho (el delivery debe
+  // enterarse YA) y detrás el globo de estado del cliente — sin ráfagas de
+  // lecturas concurrentes → orden de llegada predecible.
   if (to === 'preparado' && String(order['delivery']?.['mode'] ?? 'delivery') !== 'pickup') {
-    void ORDER_NOTIFICATIONS.sendDispatchAlert(String(order['code']), String(order['delivery']?.['zoneName'] ?? ''));
+    void ORDER_NOTIFICATIONS.sendDispatchAlert(String(order['code']), String(order['delivery']?.['zoneName'] ?? ''))
+      .then(() => ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to));
+  } else {
+    void ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to);
   }
-  void ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to);
   await writeAudit({ action: `estado_${to}`, adminUid: ctx.auth.uid, targetId: orderId, note });
   return { ok: true, trackingCode: patch['delivery.trackingCode'] ?? order['delivery']?.['trackingCode'] ?? null };
 }
@@ -283,9 +288,10 @@ export async function coreReleaseDeliveryOrder(ctx: CoreCtx): Promise<unknown> {
     return { ownerUid, code, zone: String(order['delivery']?.['zoneName'] ?? '') };
   });
 
-  // Fuera de la transacción: cliente notificado + re-aviso a deliverys + auditoría.
-  void ORDER_NOTIFICATIONS.send(released.ownerUid, released.code, 'preparado');
-  void ORDER_NOTIFICATIONS.sendDispatchAlert(released.code, released.zone);
+  // Fuera de la transacción: en cadena 5.71 (despacho primero, cliente
+  // detrás) + auditoría.
+  void ORDER_NOTIFICATIONS.sendDispatchAlert(released.code, released.zone)
+    .then(() => ORDER_NOTIFICATIONS.send(released.ownerUid, released.code, 'preparado'));
   await writeAudit({ action: 'delivery_soltado', adminUid: ctx.auth.uid, targetId: orderId, note });
   return { ok: true };
 }

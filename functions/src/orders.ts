@@ -15,6 +15,13 @@
  * tienda en Maracay, Aragua — sin costo de envío).
  * IVA: porcentaje configurable por el admin en settings/general.ivaPercent
  * (0–100; 0 = sin IVA). Se aplica sobre subtotal + envío.
+ *
+ * Ronda 5.71 · EL CAJERO ENTRA AL MAPA: cada pedido que entra a verificación
+ * dispara el aviso «Pago por verificar» al cajero (con gerencia/admin de
+ * respaldo), EN CADENA tras el globo del cliente — en createOrder (la orden
+ * nace en en_verificación) y en uploadReceipt SOLO cuando la subida mete a
+ * la orden en verificación (legacy «pendiente» + comprobante); las
+ * re-subidas no repiten el aviso.
  */
 import admin from 'firebase-admin';
 import type { DecodedIdToken } from 'firebase-admin/auth';
@@ -866,7 +873,12 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       }
     }));
 
-    void ORDER_NOTIFICATIONS.send(uid, code, 'en_verificacion');
+    // 5.71 · EN CADENA: primero el globo del cliente (el dueño del pedido
+    // debe enterarse YA) y detrás el aviso de PAGOS al cajero (con
+    // gerencia/admin de respaldo) — sin ráfagas de lecturas concurrentes →
+    // orden de llegada predecible y emulador estable.
+    void ORDER_NOTIFICATIONS.send(uid, code, 'en_verificacion')
+      .then(() => ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code));
 
     const after = await db().collection('orders').doc(orderId).get();
     return buildCreateResponse(orderId, after.data() ?? {});
@@ -1162,6 +1174,7 @@ export async function coreUploadReceipt(ctx: CoreCtx): Promise<unknown> {
   if (String(snap.data()?.['uid'] ?? '') !== uid) {
     throw new HttpsError('permission-denied', 'Solo el dueño puede subir el comprobante.');
   }
+  const orderCode = String(snap.data()?.['code'] ?? '');
   const status = String(snap.data()?.['status'] ?? '');
   if (status === 'entregado' || status === 'cancelado') {
     throw new HttpsError('failed-precondition', 'Esta orden ya no acepta comprobantes.');
@@ -1175,6 +1188,11 @@ export async function coreUploadReceipt(ctx: CoreCtx): Promise<unknown> {
   // el cajero jamás recibe pedidos sin pago en su cola de aprobación.
   // Lectura DENTRO de la transacción: el estado pudo cambiar entre el
   // chequeo inicial y aquí (p. ej. cancelada mientras imgbb respondía).
+  // Ronda 5.71 — pasoAVerificacion queda en true SOLO cuando ESTA subida
+  // mete la orden en verificación (legacy «pendiente» + comprobante). Las
+  // re-subidas (orden ya en verificación u otro estado) NO repiten el
+  // aviso al cajero.
+  let pasoAVerificacion = false;
   await db().runTransaction(async (tx) => {
     const fresh = await tx.get(ref);
     const cur = String(fresh.data()?.['status'] ?? '');
@@ -1182,6 +1200,7 @@ export async function coreUploadReceipt(ctx: CoreCtx): Promise<unknown> {
       throw new HttpsError('failed-precondition', 'Esta orden ya no acepta comprobantes.');
     }
     const nextStatus = cur === 'pendiente' ? 'en_verificacion' : cur;
+    pasoAVerificacion = nextStatus !== cur;
     tx.update(ref, {
       'payment.hasReceipt': true,
       'payment.receiptUrl': url,
@@ -1198,6 +1217,13 @@ export async function coreUploadReceipt(ctx: CoreCtx): Promise<unknown> {
       },
     );
   });
+
+  // 5.71 · El cajero (con gerencia/admin de respaldo) recibe «Pago por
+  // verificar» SOLO si la orden entró ahora a su cola. Best-effort: jamás
+  // interrumpe la operación del cliente.
+  if (pasoAVerificacion) {
+    void ORDER_NOTIFICATIONS.sendPaymentReviewAlert(orderCode);
+  }
 
   return { ok: true, url };
 }
