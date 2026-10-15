@@ -280,6 +280,10 @@ async function main() {
     : [...linked.values()].flatMap((d) => (Array.isArray(d.data()?.['items']) ? d.data()['items'] : []));
 
   const stockPlan = [];
+  // 5.74 · Reposición del PADRE (stockTotal del producto): en flujo fallback
+  // sin cancelar, la variante recupera qty → el total del producto también
+  // (mantiene la vitrina cuadrada y el pulso del catálogo sincronizado).
+  const productDeltas = new Map();
   if (!opts.keepStock) {
     const seen = new Set();
     for (const l of linesSrc) {
@@ -310,7 +314,9 @@ async function main() {
         newStock = cancelled ? stock : stock + qty;
         note = cancelled ? 'ya repuesta por el backend al cancelar' : 'se repone';
       }
-      stockPlan.push({ ref: vref, path: `products/${key}`, name: String(l?.['name'] ?? ''), stock, reserved, newStock, newReserved, note });
+      const parentDelta = !isReservationFlow && !cancelled ? qty : 0;
+      if (parentDelta > 0) productDeltas.set(pid, (productDeltas.get(pid) ?? 0) + parentDelta);
+      stockPlan.push({ ref: vref, path: `products/${key}`, name: String(l?.['name'] ?? ''), stock, reserved, newStock, newReserved, note, parentDelta });
     }
   }
 
@@ -344,6 +350,9 @@ async function main() {
         : `stock ${p.stock} → ${p.newStock}`;
       line(`  ${label}`);
       line(`    ${change}${p.note ? `  · ${p.note}` : ''}`);
+      if (p.parentDelta > 0) {
+        line(`    stockTotal del producto ${p.path.split('/')[1]}: +${p.parentDelta} (5.74 · vitrina cuadrada)`);
+      }
     }
   }
   if (opts.resetCounter) line('\nEXTRA: counters/orders_seq.count → 0');
@@ -388,6 +397,16 @@ async function main() {
       ? { stockReserved: p.newReserved }
       : { stock: p.newStock };
     push((b) => b.update(p.ref, data));
+  }
+
+  // 5.74 · stockTotal del producto (padre): repone lo que la venta de prueba
+  // descontó (solo flujo fallback sin cancelar). updatedAt: el pulso del
+  // catálogo refresca las pantallas abiertas al instante.
+  for (const [pid, delta] of productDeltas) {
+    push((b) => b.update(db.doc(`products/${pid}`), {
+      stockTotal: admin.firestore.FieldValue.increment(delta),
+      updatedAt: Date.now(),
+    }));
   }
 
   if (opts.resetCounter) {

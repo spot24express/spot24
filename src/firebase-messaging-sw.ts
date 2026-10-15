@@ -45,6 +45,11 @@
  *  y clickUrl /admin/pagos (espejo exacto del backend). El cajero también se
  *  suma al informativo de despacho (mismo aviso que gerencia/admin).
  *
+ * 5.74 · INVENTARIO QUE AVISA: nuevo aviso de STOCK (aud=stock) para el
+ *  cliente que tiene la variante en su carrito («Se agotó» / «Ya
+ *  disponible») → tag propia spot24-stock-{producto}-{variante} y clickUrl
+ *  /carrito (espejo exacto del backend).
+ *
  * El payload sigue siendo SOLO-DATA + bloque de respaldo (5.67): title/body
  * viajan en `data`. Parseo defensivo por capas: (1) sobre FCM estándar
  * { data: {...} }, (2) datos planos en la raíz (variante de transporte),
@@ -83,20 +88,30 @@ interface PushEnvelope {
 }
 
 /** 5.28: los avisos de despacho (aud=dispatch) APILAN por pedido (no se tapan
- *  entre sí: el personal ve cada pedido disponible); los del cliente se
- *  reemplazan entre sí como siempre (spot24-order). 5.71: los avisos de pagos
- *  (aud=pagos) también apilan por pedido (spot24-pagos-{código}). */
+ *  entre sí: el personal ve cada pedido disponible). 5.71: los avisos de pagos
+ *  (aud=pagos) también apilan por pedido (spot24-pagos-{código}).
+ *  5.73-f: los globos de estado del cliente APILAN por pedido+estado
+ *  (spot24-order-{código}-{estado}): antes compartían la tag única
+ *  «spot24-order» y cada globo REEMPLAZABA al anterior («Verificando pago»
+ *  desaparecía al llegar «Pago confirmado», este al llegar «Pedido
+ *  preparado»…) — en la cortina solo quedaba el ÚLTIMO estado y el dueño lo
+ *  leía como «globos que no llegan». Ahora cada hito del pedido deja su
+ *  propio globo visible en la cortina, con su aviso sonoro (la nativa lleva
+ *  renotify:true y una tag nueva nunca reemplaza: siempre es globo nuevo). */
 function buildTag(d: Record<string, string>): string {
   if (d['aud'] === 'dispatch') return `spot24-disp-${d['orderCode'] ?? ''}`;
   if (d['aud'] === 'pagos') return `spot24-pagos-${d['orderCode'] ?? ''}`;
-  return 'spot24-order';
+  if (d['aud'] === 'stock') return `spot24-stock-${d['productId'] ?? ''}-${d['variantId'] ?? ''}`;
+  return `spot24-order-${d['orderCode'] ?? ''}-${d['status'] ?? ''}`;
 }
 
 /** 5.28: al tocar un aviso de despacho abre la cola de despacho.
- *  5.71: al tocar un aviso de pagos abre la cola de aprobación del cajero. */
+ *  5.71: al tocar un aviso de pagos abre la cola de aprobación del cajero.
+ *  5.74: al tocar un aviso de stock abre el carrito del cliente. */
 function buildClickUrl(d: Record<string, string>): string {
   if (d['aud'] === 'dispatch') return '/admin/despacho';
   if (d['aud'] === 'pagos') return '/admin/pagos';
+  if (d['aud'] === 'stock') return '/carrito';
   return '/pedidos';
 }
 

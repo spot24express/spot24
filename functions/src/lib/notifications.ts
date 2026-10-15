@@ -1,6 +1,6 @@
 /**
  * SPOT 24 · Notificaciones FCM por cambio de estado (5.5) + aviso de
- * despacho al personal (5.28).
+ * despacho al personal (5.28) + aviso de pagos al cajero (5.71).
  * Voz de marca: afirmativa y corta. Sin datos personales en el payload `data`
  * de los pushes al CLIENTE.
  *
@@ -15,55 +15,60 @@
  * es de gerencia/admin. El aviso lleva código + zona (nada de dirección,
  * teléfono ni PII del cliente: el detalle completo vive en el panel).
  *
- * Ronda 5.42 · historial: el título/cuerpo viajan en `data` y el display vive
- * en el SW (aquella vez se QUITÓ el bloque notification por dobles — la causa
- * real era el SDK de FCM DENTRO del SW, que la ronda 5.45 eliminó por completo).
+ * Ronda 5.42 · PAYLOAD SOLO-DATA en `data`: title/body viajan en `data` para
+ * que el SW (onBackgroundMessage) pinte el globo con control total.
  *
- * Ronda 5.66 · URGENCIA ALTA: headers { TTL: '86400', Urgency: 'high' } — FCM
- * marca los mensajes SOLO-DATA con urgencia «normal» por defecto y Chrome
- * posterga la entrega en teléfonos en reposo (Doze / optimización de batería).
- * «high» despierta el dispositivo YA (misma semántica RFC 8030 que chat/ride).
+ * Ronda 5.67 · DOBLE VÍA DE ENTREGA (garantía del dueño: «siempre en cualquier
+ * escenario debe sonar y llegar la NOTIFICACIÓN»): cada mensaje lleva
+ * TAMBIÉN `webpush.notification` — el globo NATIVO que Chrome pinta aunque el
+ * SW no despierte (teléfono en reposo / Chrome estrangulado). La MISMA `tag`
+ * viaja en el bloque nativo y la usa el SW: las dos vías se REEMPLAZAN entre
+ * sí (mismo origen + misma tag) → nunca se apilan dos globos, y el sonido lo
+ * lleva la nativa (renotify:true) → EXACTAMENTE un aviso sonoro por push.
+ * El clickUrl del destino viaja en `data` (el globo nativo lo hereda en
+ * notification.data y el SW lo usa en notificationclick).
  *
- * Ronda 5.67 · DOBLE VÍA DE ENTREGA (garantía del dueño: «que llegue y suene
- * SIEMPRE, a quien le corresponda, con datos o wifi»): el payload vuelve a
- * llevar `webpush.notification` — el globo NATIVO que Chrome pinta aunque el
- * service worker NO despierte. Reparto de responsabilidades:
- *   · Vía 1 (SW): el handler `push` de /firebase-messaging-sw.js pinta el
- *     globo nuestro con icono/badge/tag/destino completos (control total).
- *   · Vía 2 (nativa): si el SW está estrangulado (batería, app dormida), el
- *     propio Chrome muestra el globo desde `webpush.notification` SIN el SW.
- *     Al tocarlo dispara `notificationclick` en el SW con
- *     `notification.data.clickUrl` → la ruta de destino es idéntica en ambas
- *     vías.
- *   · ANTI-DOBLES: ambas vías usan LA MISMA `tag` (spot24-order /
- *     spot24-disp-{código}). Con mismo origen + misma tag, un globo REEMPLAZA
- *     al otro: es imposible apilar dos. (Los dobles de 5.42 venían del SDK de
- *     FCM dentro del SW — eliminado en 5.45; no de este bloque.)
- *   · SIEMPRE SUENA: renotify:true en la vía nativa → cada push vuelve a
- *     alertar aunque reemplace al globo anterior del mismo tag; silent:false +
- *     vibrate [200,80,200] → sonido + vibración en el perfil estándar Android.
- *   · ICONOS ABSOLUTOS: la vía nativa puede pintar sin SW despierto, así que
- *     el icono/badge van con URL absoluta (cero ambigüedad de resolución).
+ * Ronda 5.71 · EL CAJERO ENTRA AL MAPA (decisión del dueño: «suma al cajero»):
+ *  · sendPaymentReviewAlert(orderCode): «Pago por verificar» al CAJERO (con
+ *    gerencia/admin como respaldo) cada vez que un pedido entra a la cola de
+ *    verificación — al crearse con comprobante (createOrder) o al subir el
+ *    cliente el comprobante de un pedido legacy «pendiente» (uploadReceipt).
+ *  · sendDispatchAlert: el cajero se suma al informativo de despacho (mismo
+ *    aviso que gerencia/admin); el CTA «Tómalo…» sigue siendo EXCLUSIVO del
+ *    delivery.
+ *  · CADENA de envíos (fix de estabilidad del emulador): primero el aviso de
+ *    despacho (delivery debe enterarse YA) y detrás el informativo del
+ *    personal; en orders.ts igual: globo del cliente primero y detrás el
+ *    aviso de pagos — sin ráfagas de lecturas concurrentes.
  *
- * Ronda 5.71 · EL CAJERO ENTRA AL MAPA («no dejes a nadie por fuera»):
- *   · sendPaymentReviewAlert: cada pedido que entra a la cola de verificación
- *     avisa al personal de PAGOS (cajero + gerente/admin — todos pueden
- *     verificar según payments.ts) con el globo «Pago por verificar» →
- *     /admin/pagos. Si el cajero no está, gerencia lo ve igual.
- *   · sendDispatchAlert: el CAJERO se suma al informativo de despacho (el
- *     código YA le permite tomar pedidos: dispatch.ts lo admite). Delivery
- *     conserva el llamado a la acción exclusivo.
- *   · Tag propia por aviso (spot24-pagos-{código}) y clickUrl propio
- *     (/admin/pagos), espejados en el SW y en test-notificaciones.mjs.
+ * Ronda 5.73-j · URGENCIA ALTA EN LA VÍA NATIVA (diagnóstico de campo del
+ * dueño: «con la pantalla encendida le llega; con la pantalla apagada solo
+ * llega cuando la despierto»): el push viajaba SIN el encabezado de urgencia
+ * → Chrome lo entrega con urgencia «normal» y Android lo difiere en Doze
+ * (pantalla apagada) hasta que el dueño del teléfono despierta el equipo.
+ * Ahora TODOS los envíos llevan `Urgency: high` (RFC 8030): el push service
+ * despierta el dispositivo y el globo llega —y suena— AUNQUE la pantalla
+ * esté apagada, que es EL escenario real de un cliente esperando su pedido y
+ * del delivery con el teléfono en el bolsillo. Espejo en el script de
+ * pruebas del dueño (functions/scripts/test-notificaciones.mjs).
+ *
+ * Ronda 5.74 · INVENTARIO QUE AVISA (pregunta del dueño: «si quedaban 2
+ * artículos y un cliente los compró, ¿el otro cliente no podrá comprar?»):
+ *  · La VENTA y la CANCELACIÓN ahora cuadran el stockTotal del producto
+ *    (padre) en la MISMA transacción — antes solo bajaba/subía el stock de
+ *    la variante y el total del padre quedaba viejo: el catálogo mostraba
+ *    stock fantasma hasta que el admin tocara el producto.
+ *  · STOCK_NOTIFICATIONS.notifyVariantStock: cuando una variante se AGOTA
+ *    (venta o ajuste del panel) o VUELVE (ajuste que la repone), se avisa
+ *    SOLO a los clientes que la tienen en su carrito — push accionable y
+ *    personal, jamás difusión masiva. Con la app abierta el cambio ya se ve
+ *    en vivo (pulso del catálogo); este globo cubre la app CERRADA.
+ *  · Tag propia spot24-stock-{producto}-{variante} y destino /carrito
+ *    (espejo exacto en el SW 5.74).
  */
 import admin from 'firebase-admin';
 
 const db = () => admin.firestore();
-
-/** Origen público del sitio (iconos/badge absolutos para la vía nativa 5.67). */
-const SITE_ORIGIN = 'https://spot24express.netlify.app';
-const NOTIF_ICON = `${SITE_ORIGIN}/icons/icon-192.png`;
-const NOTIF_BADGE = `${SITE_ORIGIN}/icons/badge-96.png`;
 
 const MESSAGES: Record<string, { title: string; body: string }> = {
   pendiente: { title: 'SPOT 24 · Pedido registrado', body: 'Sube tu comprobante para seguir. Para. Resuelve. Sigue.' },
@@ -78,33 +83,52 @@ const MESSAGES: Record<string, { title: string; body: string }> = {
 /** 5.28 · Aviso de despacho (pedido con envío marcado PREPARADO). */
 const DISPATCH_TITLE = 'SPOT 24 · Pedido listo para salir';
 
-/** 5.71 · Aviso de pagos (pedido nuevo en la cola de verificación). */
+/** 5.71 · Aviso de pagos: un pedido entró a la cola de verificación del cajero. */
 const PAYMENT_TITLE = 'SPOT 24 · Pago por verificar';
 
-/** 5.67 · Tag de apilado — IDÉNTICA a la del SW (misma tag ⇒ nunca se apilan
- *  la vía nativa y la vía SW; se reemplazan entre sí). 5.71: los avisos de
- *  despacho apilan POR PEDIDO (spot24-disp-{código}) y los de pagos también
- *  (spot24-pagos-{código}); los del cliente se reemplazan entre sí
- *  (spot24-order). */
-function buildTag(d: Record<string, string>): string {
-  if (d['aud'] === 'dispatch') return `spot24-disp-${d['orderCode'] ?? ''}`;
-  if (d['aud'] === 'pagos') return `spot24-pagos-${d['orderCode'] ?? ''}`;
-  return 'spot24-order';
-}
+/** 5.74 · Avisos de inventario al dueño del carrito afectado. */
+const STOCK_OUT_TITLE = 'SPOT 24 · Se agotó';
+const STOCK_BACK_TITLE = 'SPOT 24 · Ya disponible';
 
-/** 5.67 · Destino al tocar — IDÉNTICO al del SW, dentro de notification.data
- *  para que también funcione en el globo pintado sin SW. 5.71: los avisos de
- *  pagos abren la cola de aprobación del cajero. */
-function buildClickUrl(d: Record<string, string>): string {
-  if (d['aud'] === 'dispatch') return '/admin/despacho';
-  if (d['aud'] === 'pagos') return '/admin/pagos';
-  return '/pedidos';
-}
+/** Iconos de marca para la vía nativa 5.67 (los mismos que pinta el SW). */
+const NOTIF_ICON = '/icons/icon-192.png';
+const NOTIF_BADGE = '/icons/badge-96.png';
 
 /** Token FCM + referencia de su doc (para borrar los muertos al fallar). */
 interface TokenRef {
   token: string;
   ref: admin.firestore.DocumentReference;
+}
+
+/** 5.71 · Tag de apilado por familia — ESPEJO EXACTO del SW
+ *  (src/firebase-messaging-sw.ts · buildTag): despacho apila por pedido,
+ *  pagos apila por pedido y los globos de estado del cliente apilan por
+ *  pedido+estado. Con la misma tag, la vía nativa 5.67 y el SW se
+ *  reemplazan entre sí en vez de duplicarse.
+ *  5.73-f · CAMBIO DE COMPORTAMIENTO (decisión del dueño tras el ensayo de
+ *  campo): la tag única «spot24-order» hacía que cada globo del cliente
+ *  REEMPLAZARA al anterior («Verificando pago» desaparecía al llegar
+ *  «Pago confirmado», este al llegar «Pedido preparado»…) y en la cortina
+ *  solo quedaba el ÚLTIMO estado — el dueño lo leyó como «globos que no
+ *  llegan». Ahora cada estado lleva tag propia
+ *  (spot24-order-{código}-{estado}): TODOS los globos llegan, suenan y
+ *  PERMANECEN en la cortina, uno por hito del pedido. */
+function buildTag(d: Record<string, string>): string {
+  if (d['aud'] === 'dispatch') return `spot24-disp-${d['orderCode'] ?? ''}`;
+  if (d['aud'] === 'pagos') return `spot24-pagos-${d['orderCode'] ?? ''}`;
+  if (d['aud'] === 'stock') return `spot24-stock-${d['productId'] ?? ''}-${d['variantId'] ?? ''}`;
+  return `spot24-order-${d['orderCode'] ?? ''}-${d['status'] ?? ''}`;
+}
+
+/** 5.71 · Destino al tocar — ESPEJO EXACTO del SW (buildClickUrl): despacho
+ *  abre la cola de despacho, pagos abre la cola de aprobación del cajero y
+ *  el cliente cae en sus pedidos. Viaja en `data` para que AMBAS vías
+ *  (SW y globo nativo 5.67) abran el mismo sitio. */
+function buildClickUrl(d: Record<string, string>): string {
+  if (d['aud'] === 'dispatch') return '/admin/despacho';
+  if (d['aud'] === 'pagos') return '/admin/pagos';
+  if (d['aud'] === 'stock') return '/carrito';
+  return '/pedidos';
 }
 
 /** Primer nombre del perfil (una palabra, máx 24 chars). '' si no existe. */
@@ -136,15 +160,21 @@ async function tokenRefsForRoles(roles: readonly string[]): Promise<TokenRef[]> 
         });
       }),
     );
-  } catch {
-    return []; // fallo de consulta: el aviso se omite, la operación sigue
+  } catch (e) {
+    // 5.73 · Log visible en Netlify: antes este fallo era 100 % silencioso.
+    console.warn('[notificaciones] fallo consultando tokens del personal (aviso omitido)', e);
+    return [];
   }
   return refs;
 }
 
-/** Multicast común (5.67: doble vía + urgencia alta + TTL 24 h) y limpieza de
- *  tokens muertos. Best-effort: cualquier fallo queda atrapado y jamás
- *  interrumpe la operación principal que lo disparó. */
+/** Multicast común (iconos de marca + TTL 24 h) y limpieza de tokens muertos.
+ *  Best-effort: cualquier fallo queda atrapado y jamás interrumpe la
+ *  operación principal que lo disparó.
+ *  5.67 · DOBLE VÍA: además del `data` (vía SW), el bloque
+ *  `webpush.notification` pinta el globo NATIVO si el SW no despierta.
+ *  Misma tag en ambas vías → se reemplazan, jamás se duplican; renotify:true
+ *  pone el aviso sonoro en la nativa (el SW NO re-alerta al reemplazarla). */
 async function sendAndCleanup(
   refs: TokenRef[],
   title: string,
@@ -155,28 +185,27 @@ async function sendAndCleanup(
   try {
     const { getMessaging } = await import('firebase-admin/messaging');
     const messaging = getMessaging();
-    const tag = buildTag(data);
+    // 5.71 · El destino al tocar viaja SIEMPRE en data (el globo nativo lo
+    // hereda en notification.data → notificationclick lo usa).
+    const fullData: Record<string, string> = { ...data, clickUrl: buildClickUrl(data) };
     const batch = await messaging.sendEachForMulticast({
       tokens: refs.map((r) => r.token),
-      // title/body viajan en `data`: el SW los usa para pintar (vía 1) y el
-      // ruteo de negocio (aud/status/orderCode/zone) va para la app.
-      data: { ...data, title, body },
+      // 5.42/5.67 · title/body viajan en `data` (vía SW, control total) Y en
+      // el bloque nativo de respaldo (vía Chrome cuando el SW no despierta).
+      // Icon y badge idénticos en ambas vías; tag idéntica → se reemplazan.
+      data: { ...fullData, title, body },
       webpush: {
-        // 5.66 · Urgencia high: Chrome despierta el teléfono YA (Doze-proof).
+        // 5.73-j · TTL 24 h + URGENCIA HIGH (RFC 8030): sin Urgency, Android
+        // difiere el globo en Doze (pantalla apagada) hasta despertar el
+        // equipo. high despierta el dispositivo: llega y suena SIEMPRE.
         headers: { TTL: '86400', Urgency: 'high' },
-        // 5.67 · Vía 2 (respaldo): globo NATIVO que Chrome pinta aunque el SW
-        // no despierte. Misma tag que la vía 1 ⇒ nunca se apilan dos globos.
         notification: {
           title,
           body,
           icon: NOTIF_ICON,
           badge: NOTIF_BADGE,
-          tag,
-          vibrate: [200, 80, 200],
-          renotify: true, // cada push vuelve a sonar aunque reemplace al anterior
-          silent: false, // sonido explícito (perfil estándar Android)
-          requireInteraction: data['aud'] === 'dispatch', // despacho queda fijo hasta tocarlo
-          data: { ...data, clickUrl: buildClickUrl(data) }, // destino al tocar (vía nativa)
+          tag: buildTag(data),
+          renotify: true,
         },
       },
     });
@@ -190,8 +219,9 @@ async function sendAndCleanup(
       }
     });
     await Promise.all(removals);
-  } catch {
-    // Notificación best-effort.
+  } catch (e) {
+    // 5.73 · Log visible en Netlify: sin esto un fallo de FCM es invisible.
+    console.warn('[notificaciones] envío FCM fallido (best-effort)', e);
   }
 }
 
@@ -221,52 +251,132 @@ export const ORDER_NOTIFICATIONS = {
         status,
         orderCode: orderCode.slice(0, 40),
       });
-    } catch {
-      // Notificación best-effort: jamás interrumpe la operación principal.
+    } catch (e) {
+      // 5.73 · Log visible en Netlify (best-effort: jamás interrumpe la operación).
+      console.warn('[notificaciones] push de estado fallido (best-effort)', e);
     }
   },
 
   /** 5.28 · Aviso de despacho: un pedido con envío quedó PREPARADO.
    *  · delivery → «Tómalo desde el panel de despacho.» (llamado a la acción)
-   *  · gerente/admin/cajero → «Disponible en el panel de despacho.»
-   *    (informativo; tomarlo es EXCLUSIVO del delivery, reasignar del resto.
-   *    5.71: el cajero entra al informativo porque el despacho SÍ le permite
-   *    tomar pedidos — dispatch.ts lo admite en su matriz de roles)
-   *  El cuerpo lleva código + zona para decidir sin abrir la app. */
+   *  · gerente/admin/cajero (5.71) → «Disponible en el panel de despacho.»
+   *    (informativo; tomarlo es EXCLUSIVO del delivery, reasignar de
+   *    gerencia/admin)
+   *  El cuerpo lleva código + zona para decidir sin abrir la app.
+   *  5.71 · EN CADENA: primero el CTA del delivery (debe enterarse YA) y
+   *  detrás el informativo del personal — sin ráfagas de lecturas
+   *  concurrentes → orden de llegada predecible. */
   async sendDispatchAlert(orderCode: string, zoneName: string): Promise<void> {
     const code = orderCode.slice(0, 40);
     const zone = zoneName.trim().slice(0, 40);
     const lead = zone ? `${code} · Zona ${zone}. ` : `${code} · `;
     try {
-      const [delivery, staff] = await Promise.all([
-        tokenRefsForRoles(['delivery']),
-        tokenRefsForRoles(['gerente', 'admin', 'cajero']),
-      ]);
       const data = { aud: 'dispatch', status: 'preparado', orderCode: code, zone };
-      // 5.71 · EN CADENA: primero el CTA del delivery (urgente) y detrás el
-      // informativo del personal. Sin ráfagas de lecturas concurrentes →
-      // llegada predecible y cuota de lecturas en calma (plan gratis).
+      const delivery = await tokenRefsForRoles(['delivery']);
       await sendAndCleanup(delivery, DISPATCH_TITLE, `${lead}Tómalo desde el panel de despacho.`, data);
+      const staff = await tokenRefsForRoles(['gerente', 'admin', 'cajero']);
       await sendAndCleanup(staff, DISPATCH_TITLE, `${lead}Disponible en el panel de despacho.`, data);
-    } catch {
-      // Aviso best-effort: jamás interrumpe la operación principal.
+    } catch (e) {
+      // 5.73 · Log visible en Netlify (best-effort: jamás interrumpe la operación).
+      console.warn('[notificaciones] push de personal fallido (best-effort)', e);
     }
   },
 
-  /** 5.71 · Aviso de PAGOS: un pedido entró a la cola de verificación (nace
-   *  con comprobante o un legacy subió el suyo). Destinatarios: cajero +
-   *  gerente/admin — TODOS pueden verificar (payments.ts) y así nadie queda
-   *  fuera si el cajero no está en ese momento. Un solo texto para los tres:
-   *  la verificación NO es exclusiva de nadie. El cuerpo lleva el código para
-   *  ubicar el pedido sin abrir la app. */
+  /** 5.71 · «Pago por verificar»: un pedido entró a la cola de verificación.
+   *  VA AL CAJERO (con gerencia/admin como respaldo): es el rol que aprueba
+   *  o rechaza el pago en /admin/pagos. El cuerpo lleva el código para
+   *  cotejar la referencia sin abrir la app; el detalle (comprobante, monto,
+   *  datos del pagador) vive en el panel. */
   async sendPaymentReviewAlert(orderCode: string): Promise<void> {
     const code = orderCode.slice(0, 40);
     try {
       const staff = await tokenRefsForRoles(['cajero', 'gerente', 'admin']);
-      const data = { aud: 'pagos', status: 'en_verificacion', orderCode: code };
-      await sendAndCleanup(staff, PAYMENT_TITLE, `${code}. Revísalo en el panel de pagos.`, data);
-    } catch {
-      // Aviso best-effort: jamás interrumpe la operación principal.
+      await sendAndCleanup(staff, PAYMENT_TITLE, `${code}. Revísalo en el panel de pagos.`, {
+        aud: 'pagos',
+        status: 'en_verificacion',
+        orderCode: code,
+      });
+    } catch (e) {
+      // 5.73 · Log visible en Netlify (best-effort: jamás interrumpe la operación).
+      console.warn('[notificaciones] push de personal fallido (best-effort)', e);
+    }
+  },
+};
+
+/**
+ * 5.74 · Carritos que contienen UNA variante concreta (productId+variantId).
+ * Firestore NO puede consultar dentro de arrays de mapas: se escanea la
+ * colección (tope 500 docs — un negocio de barrio queda muy por debajo) y
+ * se filtra en código. Coste: 1 consulta por evento de stock.
+ */
+async function cartUidsWithVariant(
+  productId: string,
+  variantId: string,
+  excludeUid?: string,
+): Promise<string[]> {
+  const snap = await db().collection('carts').limit(500).get();
+  const uids: string[] = [];
+  for (const d of snap.docs) {
+    if (excludeUid && d.id === excludeUid) continue; // el comprador ya sabe
+    const items = d.data()['items'];
+    if (!Array.isArray(items)) continue;
+    const hit = items.some(
+      (it: Record<string, unknown>) =>
+        String(it?.['productId'] ?? '') === productId && String(it?.['variantId'] ?? '') === variantId,
+    );
+    if (hit) uids.push(d.id);
+  }
+  return uids;
+}
+
+/**
+ * 5.74 · Avisos de inventario al dueño del carrito (agotado / volvió).
+ * Push ACCIONABLE y PERSONAL: solo llega a quien tiene la variante en el
+ * carrito — nunca difusión masiva (los cambios del catálogo se ven en vivo
+ * con la app abierta vía el pulso onSnapshot; este globo cubre la cerrada).
+ * EN CADENA uid por uid (mismo criterio de estabilidad 5.71). Best-effort:
+ * cualquier fallo queda atrapado y jamás interrumpe la venta/cancelación
+ * que lo disparó.
+ */
+export const STOCK_NOTIFICATIONS = {
+  async notifyVariantStock(
+    productId: string,
+    variantId: string,
+    opts: { back: boolean; name?: string; excludeUid?: string },
+  ): Promise<void> {
+    const pid = String(productId ?? '').trim().slice(0, 120);
+    const vid = String(variantId ?? '').trim().slice(0, 140);
+    if (!pid || !vid) return;
+    const name = String(opts?.name ?? '').replace(/[\u0000-\u001F]/g, ' ').trim().slice(0, 80);
+    const display = name || 'Un producto de tu carrito';
+    const title = opts?.back ? STOCK_BACK_TITLE : STOCK_OUT_TITLE;
+    const body = opts?.back
+      ? `«${display}» volvió a stock y lo sigues teniendo en tu carrito.`
+      : `«${display}» se agotó. Revísalo en tu carrito antes de pagar.`;
+    try {
+      const uids = await cartUidsWithVariant(pid, vid, opts?.excludeUid);
+      for (const uid of uids) {
+        try {
+          const tokensSnap = await db().collection(`users/${uid}/fcmTokens`).limit(20).get();
+          if (tokensSnap.empty) continue;
+          const refs: TokenRef[] = tokensSnap.docs
+            .map((d) => ({ token: String(d.data()['token'] ?? ''), ref: d.ref }))
+            .filter((r) => r.token);
+          if (refs.length === 0) continue;
+          await sendAndCleanup(refs, title, body, {
+            aud: 'stock',
+            productId: pid,
+            variantId: vid,
+            back: opts?.back ? '1' : '0',
+          });
+        } catch (e) {
+          // Un carrito que falla no detiene a los demás (best-effort).
+          console.warn('[notificaciones] aviso de stock fallido para un carrito', e);
+        }
+      }
+    } catch (e) {
+      // 5.73 · Log visible en Netlify (best-effort: jamás interrumpe la operación).
+      console.warn('[notificaciones] aviso de stock omitido (best-effort)', e);
     }
   },
 };

@@ -31,7 +31,7 @@ import { encryptField, hashReference } from './lib/crypto';
 import { enforceRateLimit, tryRateLimit } from './lib/ratelimit';
 import { assessRisk, MAX_ORDERS_PER_HOUR } from './lib/fraud';
 import { canTransition } from './domain/order-state';
-import { ORDER_NOTIFICATIONS } from './lib/notifications';
+import { ORDER_NOTIFICATIONS, STOCK_NOTIFICATIONS } from './lib/notifications';
 import { extractItems } from './lib/items';
 
 void encryptField;
@@ -766,6 +766,9 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       updatedAt: now,
     };
 
+    // 5.74 · Variantes que quedan EN CERO con esta venta (para el push
+    // «Se agotó» post-transacción, a los carritos que las tenían).
+    const depleted: Array<{ productId: string; variantId: string; name: string }> = [];
     await phase('escritura-orden', () => db().runTransaction(async (tx) => {
       // Re-chequeo de idempotencia dentro de la transacción (carrera).
       // REGLA DE TRANSACCIONES FIRESTORE: TODAS las lecturas primero.
@@ -788,6 +791,27 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       //   esto cuadran el rechazo del pago (repone stock) y cancelOrder.
       const stockWrites: Array<{ ref: admin.firestore.DocumentReference; newStock: number }> = [];
       const holdWrites: Array<{ ref: admin.firestore.DocumentReference; newReserved: number }> = [];
+      // 5.74 · VITRINA HONESTA: la venta también cuadra el stockTotal del
+      // PRODUCTO (padre). Antes solo bajaba el stock de la variante: el total
+      // del padre quedaba viejo y el catálogo mostraba «hay N» fantasma hasta
+      // que el admin tocara el producto. Bump de updatedAt incluido: el pulso
+      // del catálogo (onSnapshot) refresca TODAS las pantallas abiertas al
+      // instante — el otro cliente ve el stock real sin recargar.
+      // Además se anotan las variantes que QUEDAN EN CERO para el push
+      // «Se agotó» (post-transacción, a los carritos que las tenían).
+      const soldByProduct = new Map<string, { ref: admin.firestore.DocumentReference; qty: number; exists: boolean }>();
+      const noteSold = (productId: string, qty: number, pExists: boolean): void => {
+        const cur = soldByProduct.get(productId);
+        if (cur) {
+          cur.qty += qty;
+          cur.exists = cur.exists || pExists;
+        } else {
+          soldByProduct.set(productId, { ref: db().doc(`products/${productId}`), qty, exists: pExists });
+        }
+      };
+      // Nombres VIGENTES calculados por computeTotals (fuera de la tx).
+      const nameByVariant = new Map<string, string>();
+      for (const l of totals.linesSnapshot) nameByVariant.set(`${l.productId}/${l.variantId}`, String(l.name ?? ''));
       if (!reservation) {
         for (const l of req.lines) {
           const vref = db().doc(`products/${l.productId}/variants/${l.variantId}`);
@@ -799,6 +823,16 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
             throw new HttpsError('out-of-range', 'Sin stock suficiente.');
           }
           stockWrites.push({ ref: vref, newStock: stock - l.qty });
+          if (stock - l.qty === 0) {
+            depleted.push({
+              productId: l.productId,
+              variantId: l.variantId,
+              name: nameByVariant.get(`${l.productId}/${l.variantId}`) ?? '',
+            });
+          }
+          // Lectura del padre DENTRO de la fase de lecturas (regla de tx).
+          const psnap = await tx.get(db().doc(`products/${l.productId}`));
+          noteSold(l.productId, l.qty, psnap.exists);
         }
       } else {
         // El hold lo fijó reserveStock sobre los ítems de la RESERVA; la
@@ -846,6 +880,19 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
           }
           stockWrites.push({ ref: v.ref, newStock: stock - v.saleQty });
           holdWrites.push({ ref: v.ref, newReserved: Math.max(0, reserved - v.holdQty) });
+          const pid = v.ref.parent.parent?.id ?? '';
+          if (pid) {
+            if (stock - v.saleQty === 0) {
+              depleted.push({
+                productId: pid,
+                variantId: v.ref.id,
+                name: nameByVariant.get(`${pid}/${v.ref.id}`) ?? '',
+              });
+            }
+            // Lectura del padre DENTRO de la fase de lecturas (regla de tx).
+            const psnap = await tx.get(db().doc(`products/${pid}`));
+            noteSold(pid, v.saleQty, psnap.exists);
+          }
         }
       }
       // ── A partir de aquí SOLO escrituras: ninguna lectura después ──
@@ -871,14 +918,39 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       for (const p of stockWrites) {
         tx.update(p.ref, { stock: p.newStock });
       }
+      // 5.74 · Vitrina honesta: stockTotal del padre BAJA en la misma tx
+      // (solo si el producto existe: jamás resucitar padres huérfanos).
+      for (const p of soldByProduct.values()) {
+        if (!p.exists) continue;
+        tx.update(p.ref, {
+          stockTotal: admin.firestore.FieldValue.increment(-p.qty),
+          updatedAt: now,
+        });
+      }
     }));
 
     // 5.71 · EN CADENA: primero el globo del cliente (el dueño del pedido
     // debe enterarse YA) y detrás el aviso de PAGOS al cajero (con
     // gerencia/admin de respaldo) — sin ráfagas de lecturas concurrentes →
     // orden de llegada predecible y emulador estable.
-    void ORDER_NOTIFICATIONS.send(uid, code, 'en_verificacion')
-      .then(() => ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code));
+    // 5.73 · AWAIT OBLIGATORIO EN NETLIFY: la lambda se CONGELA al devolver
+    // la respuesta; un push fire-and-forget («void») queda suspendido a medio
+    // camino y NUNCA sale en producción (el emulador no congela → aquí pasó
+    // desapercibido; la compra real de gleris lo destapó: 0 globos para
+    // todos). Los envíos son best-effort internamente (nunca lanzan), así
+    // que el await no puede romper la operación del cliente: solo garantiza
+    // que el push complete ANTES de responder. Costo: +1-3 s por operación.
+    await ORDER_NOTIFICATIONS.send(uid, code, 'en_verificacion');
+    await ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code);
+    // 5.74 · «Se agotó» SOLO a los carritos que tenían la variante vendida
+    // hasta el cero (fuera el comprador: él ya sabe). En cadena y best-effort.
+    for (const d of depleted) {
+      await STOCK_NOTIFICATIONS.notifyVariantStock(d.productId, d.variantId, {
+        back: false,
+        name: d.name,
+        excludeUid: uid,
+      });
+    }
 
     const after = await db().collection('orders').doc(orderId).get();
     return buildCreateResponse(orderId, after.data() ?? {});
@@ -1078,7 +1150,7 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
       // de cualquier escritura (tx.get tras tx.update revienta la transacción).
       const reservationId = data['reservationId'] as string | null;
       const unreserve: Array<{ ref: admin.firestore.DocumentReference; newReserved: number }> = [];
-      const restock: Array<{ ref: admin.firestore.DocumentReference; newStock: number }> = [];
+      const restock: Array<{ ref: admin.firestore.DocumentReference; newStock: number; qty: number }> = [];
       let releaseReservation = false;
       if (reservationId && status === 'pendiente') {
         const rsnap = await tx.get(db().collection('reservations').doc(reservationId));
@@ -1106,7 +1178,7 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
             const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
             const vsnap = await tx.get(vref);
             if (vsnap.exists) {
-              restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty });
+              restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty, qty: line.qty });
             }
           }
         }
@@ -1115,8 +1187,29 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
           const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
           const vsnap = await tx.get(vref);
           if (vsnap.exists) {
-            restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty });
+            restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty, qty: line.qty });
           }
+        }
+      }
+
+      // 5.74 · VITRINA HONESTA: leer los productos ANTES de escribir (regla
+      // de transacciones) para SUBIR su stockTotal junto con el stock de la
+      // variante — la cancelación/rechazo devuelve mercancía a la vitrina y
+      // el pulso del catálogo refresca las pantallas abiertas al instante.
+      const parentBumps = new Map<
+        string,
+        { ref: admin.firestore.DocumentReference; qty: number; exists: boolean }
+      >();
+      for (const p of restock) {
+        const pid = p.ref.parent.parent?.id ?? '';
+        if (!pid) continue;
+        const cur = parentBumps.get(pid);
+        if (cur) {
+          cur.qty += p.qty;
+        } else {
+          const pRef = db().doc(`products/${pid}`);
+          const psnap = await tx.get(pRef);
+          parentBumps.set(pid, { ref: pRef, qty: p.qty, exists: psnap.exists });
         }
       }
 
@@ -1135,9 +1228,20 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
       for (const p of restock) {
         tx.update(p.ref, { stock: p.newStock });
       }
+      // 5.74 · stockTotal del padre SUBE con la reposición (vitrina honesta):
+      // solo si el producto existe (jamás resucitar padres huérfanos).
+      for (const b of parentBumps.values()) {
+        if (!b.exists) continue;
+        tx.update(b.ref, {
+          stockTotal: admin.firestore.FieldValue.increment(b.qty),
+          updatedAt: Date.now(),
+        });
+      }
     });
 
-    void ORDER_NOTIFICATIONS.send(ownerUid, orderCode, 'cancelado');
+    // 5.73 · await: el push debe completarse ANTES de responder (Netlify
+    // congela la lambda al devolver la respuesta; «void» = push jamás enviado).
+    await ORDER_NOTIFICATIONS.send(ownerUid, orderCode, 'cancelado');
     return { ok: true };
   }
 }
@@ -1222,7 +1326,9 @@ export async function coreUploadReceipt(ctx: CoreCtx): Promise<unknown> {
   // verificar» SOLO si la orden entró ahora a su cola. Best-effort: jamás
   // interrumpe la operación del cliente.
   if (pasoAVerificacion) {
-    void ORDER_NOTIFICATIONS.sendPaymentReviewAlert(orderCode);
+    // 5.73 · await: ver comentario en coreCreateOrder (Netlify congela la
+    // lambda al responder; «void» = push jamás enviado en producción).
+    await ORDER_NOTIFICATIONS.sendPaymentReviewAlert(orderCode);
   }
 
   return { ok: true, url };

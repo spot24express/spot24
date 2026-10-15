@@ -120,11 +120,15 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   // 5.71 · EN CADENA: primero el aviso de despacho (el delivery debe
   // enterarse YA) y detrás el globo de estado del cliente — sin ráfagas de
   // lecturas concurrentes → orden de llegada predecible.
+  // 5.73 · AWAIT OBLIGATORIO EN NETLIFY: la lambda se CONGELA al devolver la
+  // respuesta; un push fire-and-forget («void») queda suspendido a medio
+  // camino y NUNCA sale en producción (el emulador no congela → aquí pasó
+  // desapercibido). Los envíos son best-effort internamente (nunca lanzan).
   if (to === 'preparado' && String(order['delivery']?.['mode'] ?? 'delivery') !== 'pickup') {
-    void ORDER_NOTIFICATIONS.sendDispatchAlert(String(order['code']), String(order['delivery']?.['zoneName'] ?? ''))
-      .then(() => ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to));
+    await ORDER_NOTIFICATIONS.sendDispatchAlert(String(order['code']), String(order['delivery']?.['zoneName'] ?? ''));
+    await ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to);
   } else {
-    void ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to);
+    await ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to);
   }
   await writeAudit({ action: `estado_${to}`, adminUid: ctx.auth.uid, targetId: orderId, note });
   return { ok: true, trackingCode: patch['delivery.trackingCode'] ?? order['delivery']?.['trackingCode'] ?? null };
@@ -224,8 +228,9 @@ export async function coreClaimDeliveryOrder(ctx: CoreCtx): Promise<unknown> {
   });
 
   // Fuera de la transacción: push al cliente + auditoría (best-effort).
+  // 5.73 · await: Netlify congela la lambda al responder; «void» = push jamás enviado.
   if (result.claimed && result.ownerUid && result.code && result.deliveryName) {
-    void ORDER_NOTIFICATIONS.send(result.ownerUid, result.code, 'en_camino');
+    await ORDER_NOTIFICATIONS.send(result.ownerUid, result.code, 'en_camino');
     await writeAudit({
       action: 'delivery_tomado',
       adminUid: ctx.auth.uid,
@@ -289,9 +294,9 @@ export async function coreReleaseDeliveryOrder(ctx: CoreCtx): Promise<unknown> {
   });
 
   // Fuera de la transacción: en cadena 5.71 (despacho primero, cliente
-  // detrás) + auditoría.
-  void ORDER_NOTIFICATIONS.sendDispatchAlert(released.code, released.zone)
-    .then(() => ORDER_NOTIFICATIONS.send(released.ownerUid, released.code, 'preparado'));
+  // detrás) + auditoría. 5.73 · await obligatorio (Netlify congela al responder).
+  await ORDER_NOTIFICATIONS.sendDispatchAlert(released.code, released.zone);
+  await ORDER_NOTIFICATIONS.send(released.ownerUid, released.code, 'preparado');
   await writeAudit({ action: 'delivery_soltado', adminUid: ctx.auth.uid, targetId: orderId, note });
   return { ok: true };
 }

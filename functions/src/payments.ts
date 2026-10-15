@@ -85,6 +85,18 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
     throw new HttpsError('failed-precondition', 'La orden no está en verificación de pago.');
   }
 
+  // Ronda 5i-j — SIN COMPROBANTE NO SE APRUEBA. Verificar implica que el
+  // cliente YA pagó (comprobante subido vía fn-uploadReceipt, que además
+  // deja la orden en en_verificacion). Así el cajero no aprueba por error
+  // un pedido sin pago: el rechazo/cancelación sigue disponible para
+  // pedidos estancados sin comprobante.
+  if (approve && order['payment']?.['hasReceipt'] !== true) {
+    throw new HttpsError(
+      'failed-precondition',
+      'El cliente aún no subió el comprobante de pago: no se puede aprobar sin pago registrado.',
+    );
+  }
+
   if (approve) {
     // Antifraude: referencia duplicada NO aprueba automáticamente (6.8).
     const refHash = order['payment']?.['refHash'] ?? null;
@@ -114,7 +126,11 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
       by: staff.role,
       note: note || 'Pago verificado.',
     });
-    void ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), 'pagado');
+    // 5.73 · await en vez de «void»: Netlify congela la lambda al devolver la
+    // respuesta y un push fire-and-forget NUNCA sale en producción (el
+    // emulador no congela → aquí pasó desapercibido). Internamente los envíos
+    // son best-effort (nunca lanzan): el await no puede romper la verificación.
+    await ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), 'pagado');
   } else {
     await db().runTransaction(async (tx) => {
       // REGLA DE TRANSACCIONES FIRESTORE: TODAS las lecturas primero.
@@ -122,12 +138,32 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
       // (el tx.get tras tx.update revienta la transacción con
       // «reads to be executed before all writes»).
       const lines = (order['lines'] ?? []) as Array<{ productId: string; variantId: string; qty: number }>;
-      const restock: Array<{ ref: admin.firestore.DocumentReference; newStock: number }> = [];
+      const restock: Array<{ ref: admin.firestore.DocumentReference; newStock: number; qty: number }> = [];
       for (const line of lines) {
         const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
         const vsnap = await tx.get(vref);
         if (vsnap.exists) {
-          restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty });
+          restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty, qty: line.qty });
+        }
+      }
+      // 5.74 · VITRINA HONESTA: leer los productos ANTES de escribir (regla
+      // de tx) para SUBIR su stockTotal junto con el stock de la variante —
+      // el rechazo devuelve mercancía a la vitrina y el pulso del catálogo
+      // refresca las pantallas abiertas al instante.
+      const parentBumps = new Map<
+        string,
+        { ref: admin.firestore.DocumentReference; qty: number; exists: boolean }
+      >();
+      for (const p of restock) {
+        const pid = p.ref.parent.parent?.id ?? '';
+        if (!pid) continue;
+        const cur = parentBumps.get(pid);
+        if (cur) {
+          cur.qty += p.qty;
+        } else {
+          const pRef = db().doc(`products/${pid}`);
+          const psnap = await tx.get(pRef);
+          parentBumps.set(pid, { ref: pRef, qty: p.qty, exists: psnap.exists });
         }
       }
       // ── A partir de aquí SOLO escrituras: ninguna lectura después ──
@@ -147,8 +183,18 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
       for (const p of restock) {
         tx.update(p.ref, { stock: p.newStock });
       }
+      // 5.74 · stockTotal del padre SUBE con la reposición (vitrina honesta):
+      // solo si el producto existe (jamás resucitar padres huérfanos).
+      for (const b of parentBumps.values()) {
+        if (!b.exists) continue;
+        tx.update(b.ref, {
+          stockTotal: admin.firestore.FieldValue.increment(b.qty),
+          updatedAt: Date.now(),
+        });
+      }
     });
-    void ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), 'cancelado');
+    // 5.73 · await: ver comentario en la aprobación (Netlify congela al responder).
+    await ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), 'cancelado');
   }
 
   await writeAudit({

@@ -7,6 +7,7 @@ import admin from 'firebase-admin';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { getAdminApp, type CoreCtx } from './lib/ctx';
 import { writeAudit } from './payments';
+import { STOCK_NOTIFICATIONS } from './lib/notifications';
 
 const db = () => admin.firestore(getAdminApp());
 
@@ -33,6 +34,10 @@ export async function coreAdjustStock(ctx: CoreCtx): Promise<unknown> {
   const vref = db().doc(`products/${productId}/variants/${variantId}`);
   const pref = db().doc(`products/${productId}`);
   let newTotal = 0;
+  // 5.74 · Contexto para el push de inventario (capturado dentro de la tx).
+  let prevStock = -1;
+  let nextStock = -1;
+  let displayName = '';
 
   await db().runTransaction(async (tx) => {
     // REGLA DE TRANSACCIONES FIRESTORE: TODAS las lecturas primero.
@@ -43,6 +48,17 @@ export async function coreAdjustStock(ctx: CoreCtx): Promise<unknown> {
     if (!vsnap.exists) throw new HttpsError('not-found', 'Variante no encontrada.');
     const stock = Number(vsnap.data()?.['stock'] ?? 0);
     const next = Math.max(0, stock + delta);
+    // 5.74 · capturas para el push post-transacción (nombre del producto;
+    // si la variante tiene nombre propio y no repite el del producto, va entre
+    // paréntesis — «Aceite 20W-50 (Sintético)»).
+    prevStock = stock;
+    nextStock = next;
+    const vName = String(vsnap.data()?.['name'] ?? '').trim();
+    const pName = String(psnap.data()?.['name'] ?? '').trim();
+    displayName = pName || vName;
+    if (pName && vName && vName.toLowerCase() !== pName.toLowerCase()) {
+      displayName = `${pName} (${vName})`;
+    }
 
     // Recalcula stockTotal del padre (lectura ANTES de escribir).
     const variantsSnap = await tx.get(db().collection(`products/${productId}/variants`));
@@ -59,6 +75,18 @@ export async function coreAdjustStock(ctx: CoreCtx): Promise<unknown> {
   });
 
   await writeAudit({ action: 'ajustar_stock', adminUid: ctx.auth.uid, targetId: `${productId}/${variantId}`, note: `${reason} (Δ${delta} → total ${newTotal})` });
+
+  // 5.74 · INVENTARIO QUE AVISA — push SOLO cuando la variante CRUZA el cero:
+  // · stock > 0 → 0  → «Se agotó» a los carritos que la tenían.
+  // · stock 0 → > 0  → «Ya disponible» a esos mismos carritos (reposición).
+  // Ajustes internos que no cruzan el cero NO notifican (cero ruido).
+  // Best-effort: jamás interrumpe la respuesta del panel.
+  if (nextStock === 0 && prevStock > 0) {
+    await STOCK_NOTIFICATIONS.notifyVariantStock(productId, variantId, { back: false, name: displayName });
+  } else if (prevStock === 0 && nextStock > 0) {
+    await STOCK_NOTIFICATIONS.notifyVariantStock(productId, variantId, { back: true, name: displayName });
+  }
+
   return { ok: true, stock: Math.max(0, newTotal) };
 }
 

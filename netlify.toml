@@ -67,6 +67,26 @@
 [functions."fn-deleteUser"]
   timeout = 26
 
+# 5.73 · Seguro del mandato de notificaciones: con el fix «await», estas 4
+# funciones ESPERAN a que los push completen (lectura de tokens + FCM,
+# +1-3 s) ANTES de responder. Con el tope por defecto (10 s) y la red del
+# operador degradada (llamadas a Firestore de 17-28 s documentadas arriba),
+# la lambda podía morir a mitad del flujo DESPUÉS de enviar el push: el
+# cliente vería un error con la operación ya ejecutada. 26 s = mismo margen
+# que el resto de las funciones de negocio (en producción corren en 1-3 s;
+# el timeout solo es red de seguridad).
+[functions."fn-cancelOrder"]
+  timeout = 26
+
+[functions."fn-uploadReceipt"]
+  timeout = 26
+
+[functions."fn-claimDeliveryOrder"]
+  timeout = 26
+
+[functions."fn-releaseDeliveryOrder"]
+  timeout = 26
+
 # ── Servidor de desarrollo local (netlify dev) ──
 # netlify dev levanta las funciones de netlify/functions y, además, la app de
 # Vite: `command` es lo que ejecuta y `targetPort` el puerto donde espera

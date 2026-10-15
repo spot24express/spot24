@@ -308,20 +308,22 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     // FLUJO ESTRICTO: la orden nace EN VERIFICACIÓN (el cliente ya pagó).
     expect(s1.title).toBe('SPOT 24 · Verificando pago');
     expect(s1.body).toBe(`Tu pago está en revisión. Te avisamos al confirmar. (${codeA})`);
-    // 5.42: data EXACTO — title/body viajan ahí y no hay más claves.
+    // 5.67: data EXACTO — title/body viajan ahí + clickUrl del destino al
+    // tocar (lo hereda el globo nativo y lo usa notificationclick).
     expect(s1.data).toEqual({
       status: 'en_verificacion',
       orderCode: codeA,
+      clickUrl: '/pedidos',
       title: 'SPOT 24 · Verificando pago',
       body: `Tu pago está en revisión. Te avisamos al confirmar. (${codeA})`,
     });
     expect(s1.ttl).toBe('86400');
-    // 5.42 · SOLO-DATA: SIN bloque notification (si existiera, el SDK de FCM
-    // auto-mostraría el globo además del SW → notificaciones dobles). Icon y
-    // badge los pinta el SW; no viajan en el payload.
+    // 5.67 · DOBLE VÍA: el globo nativo de respaldo viaja en webpush.notification
+    // (icon/badge/tag/renotify) — NO en la raíz del mensaje. La vía de display
+    // primaria sigue siendo el SW (data.title/body): el SDK no auto-muestra nada.
     expect(fcmRecorder.sends[0]?.notification).toBeUndefined();
-    expect(s1.icon).toBe('');
-    expect(s1.badge).toBe('');
+    expect(s1.icon).toBe('/icons/icon-192.png');
+    expect(s1.badge).toBe('/icons/badge-96.png');
 
     // El token inválido (registration-token-not-registered) quedó BORRADO.
     const left = await dbf.collection('users/cli-a/fcmTokens').get();
@@ -597,9 +599,9 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     };
     for (const s of sends) {
       expect(s.ttl).toBe('86400');
-      // 5.42: payload solo-data; icon/badge viven en el SW (no viajan).
-      expect(s.icon).toBe('');
-      expect(s.badge).toBe('');
+      // 5.67: icon/badge viajan en el bloque nativo de respaldo (webpush.notification).
+      expect(s.icon).toBe('/icons/icon-192.png');
+      expect(s.badge).toBe('/icons/badge-96.png');
       expect(s.data.orderCode).toMatch(/^SP-\d{6}-\d{4}$/);
       const tituloEsperado = TITULOS[s.data.status ?? ''] ?? '';
       expect(tituloEsperado).toBeDefined();
