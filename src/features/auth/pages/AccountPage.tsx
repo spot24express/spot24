@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Button } from '@/shared/components/ui/Button';
+import { Input, Textarea } from '@/shared/components/ui/Input';
 import { SpeedDivider, SpeedLines } from '@/shared/components/brand/Logo';
+import { toast } from '@/shared/lib/toast';
+import { userMessage } from '@/shared/lib/errors';
 import { useAuth } from '../hooks/useAuth';
 import {
   enableOrderNotifications,
@@ -47,11 +50,27 @@ const PANEL_TITLES: Record<string, string> = {
 
 export default function AccountPage() {
   useDocumentTitle('Mi cuenta');
-  const { user, signOut, isStaff } = useAuth();
+  const { user, signOut, isStaff, saveMyData, changeMyPassword } = useAuth();
   const navigate = useNavigate();
   const [pushState, setPushState] = useState<'unknown' | 'on' | 'off'>('unknown');
   // null = comprobando soporte (el botón se pinta igual: comportamiento de siempre).
   const [supported, setSupported] = useState<boolean | null>(null);
+
+  // 5.75 · «Mis datos»: cédula + dirección del perfil, editables aquí.
+  const [data, setData] = useState({ cedula: '', address: '' });
+  const [dataErrors, setDataErrors] = useState<Record<string, string | null>>({});
+  const [savingData, setSavingData] = useState(false);
+  // 5.75 · Cambio de contraseña en sesión.
+  const [pw, setPw] = useState({ current: '', next: '', confirm: '' });
+  const [pwErrors, setPwErrors] = useState<Record<string, string | null>>({});
+  const [savingPw, setSavingPw] = useState(false);
+
+  // Al llegar/refrescar el perfil, el formulario muestra lo guardado.
+  // Tras guardar, el store se parchea con los valores sanitizados: el
+  // formulario queda exactamente con lo que quedó escrito en Firestore.
+  useEffect(() => {
+    if (user) setData({ cedula: user.cedula ?? '', address: user.address ?? '' });
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -72,6 +91,46 @@ export default function AccountPage() {
   }, [user]);
 
   if (!user) return null;
+
+  /** Guarda cédula + dirección (validación idéntica al registro y al servicio). */
+  const onSaveData = async () => {
+    const e: Record<string, string | null> = {};
+    const ced = data.cedula.replace(/\D/g, '');
+    if (ced.length < 4 || ced.length > 8) e['cedula'] = 'Cédula: solo números (4 a 8 dígitos).';
+    if (data.address.trim().length < 8) e['address'] = 'Dirección: urbanización, calle y casa o apartamento.';
+    setDataErrors(e);
+    if (Object.values(e).some(Boolean)) return;
+    setSavingData(true);
+    try {
+      await saveMyData(data.cedula, data.address);
+      toast.success('Datos guardados. Tu próxima compra va prellenada.');
+    } catch (err) {
+      toast.error(userMessage(err));
+    } finally {
+      setSavingData(false);
+    }
+  };
+
+  /** Cambio de contraseña: valida aquí y delega el resto al servicio. */
+  const onChangePw = async () => {
+    const e: Record<string, string | null> = {};
+    if (pw.current.length < 6) e['current'] = 'Escribe tu contraseña actual.';
+    if (pw.next.length < 6) e['next'] = 'La nueva necesita al menos 6 caracteres.';
+    else if (pw.next === pw.current) e['next'] = 'La nueva debe ser distinta de la actual.';
+    if (pw.next !== pw.confirm) e['confirm'] = 'No coincide con la nueva contraseña.';
+    setPwErrors(e);
+    if (Object.values(e).some(Boolean)) return;
+    setSavingPw(true);
+    try {
+      await changeMyPassword(pw.current, pw.next);
+      toast.success('Contraseña actualizada. Úsala la próxima vez que entres.');
+      setPw({ current: '', next: '', confirm: '' });
+    } catch (err) {
+      toast.error(userMessage(err));
+    } finally {
+      setSavingPw(false);
+    }
+  };
 
   return (
     <div className="spot-container py-8">
@@ -118,6 +177,102 @@ export default function AccountPage() {
             Coordinamos la entrega por llamada o WhatsApp al número de tu pedido.
             Si cambias de número, actualízalo al registrar tu próxima compra.
           </p>
+        </section>
+
+        {/* MIS DATOS DE ENTREGA (5.75): cédula + dirección editables. Lo que
+            se guarda aquí prellena el checkout (contacto, dirección y la
+            «Cédula del pagador» del pago móvil). */}
+        <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
+          <h2 className="font-display text-lg font-bold italic uppercase text-paper">
+            Mis datos de entrega
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            Van prellenados en cada compra. Corrígelos aquí si cambiaron.
+          </p>
+          <div className="mt-4 grid gap-4">
+            <Input
+              label="Cédula"
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder="12345678"
+              value={data.cedula}
+              onChange={(e) => setData((d) => ({ ...d, cedula: e.target.value.replace(/\D/g, '').slice(0, 8) }))}
+              error={dataErrors['cedula']}
+              hint="Solo números, 4 a 8 dígitos."
+            />
+            <Textarea
+              label="Dirección completa"
+              rows={2}
+              autoComplete="street-address"
+              placeholder="Urb. Los Taladros, Av. Principal, Casa 24, Piso 1"
+              value={data.address}
+              onChange={(e) => setData((d) => ({ ...d, address: e.target.value }))}
+              error={dataErrors['address']}
+              hint="Urbanización, calle y casa o apartamento."
+            />
+            <Button loading={savingData} onClick={() => void onSaveData()} className="justify-self-start">
+              Guardar mis datos
+            </Button>
+          </div>
+        </section>
+
+        {/* SEGURIDAD (5.75): cambio de contraseña sin correos ni esperas.
+            Firebase exige re-autenticar con la clave actual: el servicio lo
+            resuelve y traduce cada error a un mensaje claro. */}
+        <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
+          <h2 className="font-display text-lg font-bold italic uppercase text-paper">Seguridad</h2>
+          <p className="mt-1 text-sm text-muted">
+            Cambia tu contraseña cuando quieras. Te pedimos la actual por seguridad.
+          </p>
+          {/* Form nativo: silencia el aviso del navegador «Password field is
+              not contained in a form» y habilita Enter para enviar. */}
+          <form
+            className="mt-4 grid gap-4"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void onChangePw();
+            }}
+          >
+            {/* Username oculto: el navegador lo exige en forms de contraseña
+                (aviso «Password forms should have username fields»). */}
+            <input
+              type="text"
+              hidden
+              readOnly
+              aria-hidden="true"
+              autoComplete="username"
+              value={user?.email ?? ''}
+              onChange={() => undefined}
+            />
+            <Input
+              label="Contraseña actual"
+              type="password"
+              autoComplete="current-password"
+              value={pw.current}
+              onChange={(e) => setPw((p) => ({ ...p, current: e.target.value }))}
+              error={pwErrors['current']}
+            />
+            <Input
+              label="Nueva contraseña"
+              type="password"
+              autoComplete="new-password"
+              value={pw.next}
+              onChange={(e) => setPw((p) => ({ ...p, next: e.target.value }))}
+              error={pwErrors['next']}
+              hint="Mínimo 6 caracteres."
+            />
+            <Input
+              label="Repetir nueva contraseña"
+              type="password"
+              autoComplete="new-password"
+              value={pw.confirm}
+              onChange={(e) => setPw((p) => ({ ...p, confirm: e.target.value }))}
+              error={pwErrors['confirm']}
+            />
+            <Button type="submit" loading={savingPw} className="justify-self-start">
+              Cambiar contraseña
+            </Button>
+          </form>
         </section>
 
         {/* SESIÓN Y NOTIFICACIONES */}

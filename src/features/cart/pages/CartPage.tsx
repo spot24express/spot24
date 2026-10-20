@@ -10,6 +10,7 @@ import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { formatBs, usdToBs } from '@/shared/lib/format';
 import { cleanProductName } from '@/shared/lib/display';
+import { alFallarFoto } from '@/shared/lib/imgFallback';
 import { VOICE } from '@/shared/constants/brand';
 import { clampSetQty, cartLineKey } from '../lib/cartLogic';
 import { getProductsByIds } from '@/features/catalog/services/catalog.service';
@@ -133,6 +134,7 @@ export default function CartPage() {
                   alt={displayName}
                   className="h-20 w-20 rounded-brand border border-line object-cover sm:row-span-2 sm:h-24 sm:w-24"
                   loading="lazy"
+                  onError={alFallarFoto}
                 />
                 <div className="min-w-0">
                   <div className="flex items-start justify-between gap-2 sm:gap-3">

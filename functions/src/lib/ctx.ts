@@ -58,6 +58,22 @@ export function getAdminApp(): App {
         'FIREBASE_SERVICE_ACCOUNT no configurada: Netlify → Site configuration → Environment variables → añade el JSON completo de la clave privada de la cuenta de servicio (o su base64) → guarda y redeploy.',
       );
     }
+    // Ronda 5.78d · PC local (netlify dev): sin credencial explícita se
+    // intentaba initializeApp() con ADC, google-auth fallaba MÁS TARDE (es
+    // perezosa) con un error SIN código y la petición moría como 500 opaco
+    // («fn-reserveStock falló» sin motivo). Detectamos el runtime: solo
+    // Cloud Functions tiene ADC reales; en un PC lanzamos failed-precondition
+    // (HTTP 400) con el paso a paso — el mensaje viaja en la respuesta y
+    // queda en la consola del navegador (backend.ts lo registra como motivo).
+    const cfRuntime = Boolean(
+      process.env['K_SERVICE'] || process.env['FUNCTION_TARGET'] || process.env['FUNCTION_NAME'],
+    );
+    if (!cfRuntime) {
+      throw new HttpsError(
+        'failed-precondition',
+        'FIREBASE_SERVICE_ACCOUNT no configurada en tu PC: copia .env.example como .env en la raíz del repo, pega ahí el JSON completo de la clave privada de la cuenta de servicio (los mismos valores que tienes en el panel de Netlify) y reinicia netlify dev.',
+      );
+    }
     // Cloud Functions / gcloud: las ADC sí existen.
     adminApp = admin.initializeApp();
     return adminApp;

@@ -7,10 +7,11 @@
  *   o ruta del repo /img/…). La clave de API jamás llega al cliente.
  */
 import {
-  addDoc, collection, deleteDoc, doc, getDoc, getDocs, limit as fbLimit, orderBy,
+  addDoc, collection, deleteDoc, doc, getDoc, getDocs, getCountFromServer, limit as fbLimit, orderBy,
   onSnapshot, query, serverTimestamp, setDoc, where, updateDoc, writeBatch,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
+import { normalizeCategoryList } from '@/shared/lib/categoryTree';
 import { callFunction } from '@/shared/lib/backend';
 import { AppError } from '@/shared/lib/errors';
 import type { Product, ProductVariant } from '@/features/catalog/types';
@@ -120,8 +121,14 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
     : doc(collection(fb.db, 'products'));
   const batch = writeBatch(fb.db);
   if (draft.id) {
-    // Edición: images solo se toca si trajo URL nueva (vacía conserva la foto actual).
-    batch.set(productRef, { ...payload, ...(hasImage ? { images: [imgUrl] } : {}) }, { merge: true });
+    // Edición (5.82 FIX): aquí NO se escribe `images`. La galería la gestiona
+    // adminSetProductImages desde el panel. Antes este lote reescribía
+    // images:[portada] en CADA guardado: al editar precio o stock SIN tocar
+    // fotos, el modal no detectaba cambio y TODAS las demás fotos se borraban
+    // (quedaba solo la portada) — el dueño las perdía sin saber por qué.
+    // La portada viaja igual en images[0]; el modal aplica la lista completa
+    // solo cuando detecta que cambió.
+    batch.set(productRef, payload, { merge: true });
   } else {
     batch.set(productRef, {
       ...payload,
@@ -161,6 +168,38 @@ export async function adminAdjustStock(
   await callFunction<{ ok: boolean }>('fn-adjustStock',
     { productId, variantId, delta: Math.trunc(delta), reason: reason.slice(0, 200) },
   );
+}
+
+/* ── 5.87 · Importar inventario desde el PDF del POS ── */
+
+export interface ImportInventarioResult {
+  /** Filas reconocidas en el reporte (antes del filtro de ceros). */
+  filas: number;
+  /** Productos NUEVOS creados (código no existía). */
+  creados: number;
+  /** Productos existentes con stock y precio actualizados. */
+  actualizados: number;
+  /** Filas con existencia 0 saltadas (solo con «omitir cero»). */
+  omitidosCero: number;
+  /** Filas descartadas con motivo (ilegibles, sin descripción…). */
+  problemas: string[];
+}
+
+/**
+ * Sube el reporte «Inventario disponible» del POS (base64) a
+ * fn-importInventory: crea los productos que falten (en la categoría
+ * elegida) y actualiza stock + precio de los existentes.
+ */
+export async function adminImportInventory(
+  pdfBase64: string,
+  categoryId: string,
+  omitirCero: boolean,
+): Promise<ImportInventarioResult> {
+  return callFunction<ImportInventarioResult>('fn-importInventory', {
+    pdfBase64,
+    categoryId,
+    omitirCero,
+  });
 }
 
 /**
@@ -284,6 +323,8 @@ export interface CategoryDraftInput {
   /** URL https o ruta /img/… vacía = sin foto. */
   imageUrl: string;
   active: boolean;
+  /** Ronda 5.76 · id del padre ('' = categoría principal). Solo un nivel. */
+  parentId: string;
 }
 
 export async function adminListCategories(): Promise<CategoryDef[]> {
@@ -292,17 +333,26 @@ export async function adminListCategories(): Promise<CategoryDef[]> {
   const snap = await getDocs(
     query(collection(fb.db, 'categories'), orderBy('createdAt', 'asc'), fbLimit(60)),
   );
-  return snap.docs.map((d) => ({
-    id: d.id,
-    code: '',
-    name: String(d.data()['name'] ?? ''),
-    tagline: String(d.data()['tagline'] ?? ''),
-    imageUrl: typeof d.data()['imageUrl'] === 'string' ? d.data()['imageUrl'] : undefined,
-    active: d.data()['active'] !== false,
-  }));
+  // Misma normalización que la tienda (códigos de bahía + árbol de un nivel):
+  // el panel ve exactamente lo que ve el cliente, incluidas las inactivas.
+  return normalizeCategoryList(
+    snap.docs.map((d) => ({
+      id: d.id,
+      code: '',
+      name: String(d.data()['name'] ?? ''),
+      tagline: String(d.data()['tagline'] ?? ''),
+      imageUrl: typeof d.data()['imageUrl'] === 'string' ? d.data()['imageUrl'] : undefined,
+      active: d.data()['active'] !== false,
+      parentId: typeof d.data()['parentId'] === 'string' ? d.data()['parentId'] : '',
+    })),
+  );
 }
 
-export async function adminSaveCategory(draft: CategoryDraftInput): Promise<void> {
+/**
+ * Crea o actualiza una categoría y DEVUELVE su id (5.81): el panel lo necesita
+ * para mover productos hacia una subcategoría recién creada.
+ */
+export async function adminSaveCategory(draft: CategoryDraftInput): Promise<string> {
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
   const payload: Record<string, unknown> = {
@@ -312,19 +362,66 @@ export async function adminSaveCategory(draft: CategoryDraftInput): Promise<void
       ? draft.imageUrl.trim()
       : '',
     active: draft.active,
+    // Ronda 5.76: '' = principal. Defensa extra: nadie es su propio padre.
+    parentId: draft.parentId && draft.parentId !== draft.id ? draft.parentId : '',
     updatedAt: Date.now(),
   };
   if (draft.id) {
     await setDoc(doc(fb.db, 'categories', draft.id), payload, { merge: true });
-  } else {
-    await addDoc(collection(fb.db, 'categories'), { ...payload, createdAt: serverTimestamp() });
+    return draft.id;
   }
+  const ref = await addDoc(collection(fb.db, 'categories'), { ...payload, createdAt: serverTimestamp() });
+  return ref.id;
 }
 
 export async function adminDeleteCategory(categoryId: string): Promise<void> {
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
   await deleteDoc(doc(fb.db, 'categories', categoryId));
+}
+
+/**
+ * 5.81 · Mueve TODOS los productos de una categoría a otra (en lotes de 400,
+ * tope de escritura por lote en Firestore). El panel lo usa al crear una
+ * subcategoría en una bahía que tenía productos directos: esos productos
+ * quedarían ocultos en la tienda (la bahía con subcategorías solo muestra
+ * subcategorías) — con un toque quedan dentro de la nueva subcategoría.
+ * Devuelve cuántos productos movió.
+ */
+export async function adminMoveProductsToCategory(fromCategoryId: string, toCategoryId: string): Promise<number> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  const snap = await getDocs(
+    query(collection(fb.db, 'products'), where('categoryId', '==', fromCategoryId)),
+  );
+  const ids = snap.docs.map((d) => d.id);
+  const now = Date.now();
+  for (let i = 0; i < ids.length; i += 400) {
+    const batch = writeBatch(fb.db);
+    for (const id of ids.slice(i, i + 400)) {
+      batch.update(doc(fb.db, 'products', id), { categoryId: toCategoryId, updatedAt: now });
+    }
+    await batch.commit();
+  }
+  return ids.length;
+}
+
+/**
+ * Conteo de productos activos de una categoría (ronda 5.76).
+ * El panel lo usa ANTES de eliminar: si tiene productos, bloquea el borrado
+ * y evita que esos productos queden colgando de una categoría que no existe.
+ */
+export async function adminCountProductsInCategory(categoryId: string): Promise<number> {
+  const fb = await loadFirebase();
+  if (!fb) return 0;
+  const snap = await getCountFromServer(
+    query(
+      collection(fb.db, 'products'),
+      where('categoryId', '==', categoryId),
+      where('active', '==', true),
+    ),
+  );
+  return snap.data().count;
 }
 
 /* ── Zonas ── */
@@ -415,6 +512,7 @@ export async function adminListUsers(): Promise<AdminUserRow[]> {
 export interface AdminMetrics {
   ordersByStatus: Record<string, number>;
   revenueUsd30d: number;
+  /** 7 números = semana ACTUAL lunes→domingo (cortes a medianoche VE). */
   ordersLast7d: number[];
   topProducts: Array<{ name: string; qty: number }>;
 }

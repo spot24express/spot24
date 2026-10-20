@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useDebounce } from '@/shared/hooks/useDebounce';
 import { useCategories, useProductList, normalizeSearchTerm } from '../hooks/useCatalog';
+import { branchRootId, isTopLevel } from '@/shared/lib/categoryTree';
 import { VOICE } from '@/shared/constants/brand';
 import { Chip } from '@/shared/components/ui/Badge';
 
@@ -129,6 +130,10 @@ export function SearchBar({ compact = false }: { compact?: boolean }) {
  * Las categorías salen SIEMPRE de Firestore (las mismas que las bahías de la
  * tienda, gestionadas por el admin). Sin respaldo demo: si el admin aún no
  * creó categorías, solo se ve el chip «Todas».
+ * Ronda 5.76: solo categorías principales en la fila (las hijas no van aquí).
+ * Ronda 5.77: el afinado por subcategoría vive en las TARJETAS que CatalogPage
+ * pinta debajo (estilo Farmatodo con contador) — la fila repetida de chips
+ * chiquitos se quitó para no duplicar la misma navegación dos veces.
  */
 export function FilterBar({
   activeCategory,
@@ -142,6 +147,10 @@ export function FilterBar({
   onChange: (patch: { categoryId?: string | null; inStockOnly?: boolean; maxPrice?: number | null }) => void;
 }) {
   const { data: categories } = useCategories();
+  const list = categories ?? [];
+  const parents = list.filter(isTopLevel);
+  // Raíz de la rama activa: si hay una subcategoría activa, resalta su padre.
+  const activeRoot = activeCategory ? branchRootId(list, activeCategory) : '';
 
   return (
     <div className="space-y-3">
@@ -149,13 +158,13 @@ export function FilterBar({
         <Chip active={!activeCategory} onClick={() => onChange({ categoryId: null })}>
           Todas
         </Chip>
-        {(categories ?? []).map((c) => (
+        {parents.map((c) => (
           <Chip
             key={c.id}
-            active={activeCategory === c.id}
+            active={activeRoot === c.id}
             onClick={() => onChange({ categoryId: c.id })}
           >
-            {c.code} · {c.name}
+            {c.code ? `${c.code} · ` : ''}{c.name}
           </Chip>
         ))}
       </div>

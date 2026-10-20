@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef, type UIEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { toast } from '@/shared/lib/toast';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
@@ -16,6 +16,7 @@ import { validateAdd } from '@/features/cart/lib/cartLogic';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { formatBs, usdToBs } from '@/shared/lib/format';
 import { cleanProductName } from '@/shared/lib/display';
+import { alFallarFoto } from '@/shared/lib/imgFallback';
 import { VOICE } from '@/shared/constants/brand';
 
 /** Ficha de producto: galería, variantes, precio en Bs. en vivo, stock, relacionados. */
@@ -27,6 +28,10 @@ export default function ProductPage() {
   const [variantId, setVariantId] = useState<string | null>(null);
   const [qty, setQty] = useState(1);
   const [liveStockTotal, setLiveStockTotal] = useState<number | null>(null);
+  // 5.81/5.83 · galería de la ficha: carrusel DESLIZABLE con puntos (como
+  // Farmatodo) + miniaturas sincronizadas (tocar una desliza hasta esa foto).
+  const [imgIdx, setImgIdx] = useState(0);
+  const carouselRef = useRef<HTMLDivElement>(null);
   const { addItem } = useCart();
   const rate = useBcvRate();
 
@@ -44,6 +49,13 @@ export default function ProductPage() {
       setVariantId(variants[0]!.id);
     }
   }, [variants, variantId]);
+
+  // 5.81 · producto distinto → la galería vuelve a la portada (carrusel al
+  // inicio, sin heredar el deslize del producto anterior).
+  useEffect(() => {
+    setImgIdx(0);
+    carouselRef.current?.scrollTo({ left: 0 });
+  }, [productId]);
 
   const variant = useMemo(
     () => variants?.find((v) => v.id === variantId) ?? null,
@@ -97,6 +109,24 @@ export default function ProductPage() {
   }
 
   const stock = liveStockTotal ?? product.stockTotal;
+  // 5.83 · fotos de la ficha (≤6, sin vacías). La primera es la PORTADA (la
+  // que viaja al carrito); el resto se ven en el carrusel de la ficha.
+  const gallery = product.images.filter(Boolean).slice(0, 6);
+
+  // Punto activo del carrusel = diapositiva más centrada (scroll-snap).
+  const handleGalleryScroll = (e: UIEvent<HTMLDivElement>): void => {
+    const el = e.currentTarget;
+    const i = Math.round(el.scrollLeft / Math.max(1, el.clientWidth));
+    const next = Math.min(gallery.length - 1, Math.max(0, i));
+    if (next !== imgIdx) setImgIdx(next);
+  };
+
+  // Miniatura → el carrusel se desliza suave hasta esa foto.
+  const goToImage = (i: number): void => {
+    setImgIdx(i);
+    const el = carouselRef.current;
+    if (el) el.scrollTo({ left: i * el.clientWidth, behavior: 'smooth' });
+  };
   // Nombre SIN la marca repetida (regla compartida con el carrito): aunque el
   // admin guardara «POLARCAR Caroreña Verano», la ficha y el carrito muestran
   // solo el producto; la marca vive arriba en su campo propio.
@@ -117,7 +147,7 @@ export default function ProductPage() {
         variantName: variant.name,
         sku: variant.sku,
         unitPriceUsd: variant.priceUsd,
-        image: product.images[0] ?? '/img/products/lubricantes.svg',
+        image: gallery[0] ?? '/img/products/lubricantes.svg',
         categoryId: product.categoryId,
         stockAtAdd: variant.stock,
       },
@@ -136,34 +166,87 @@ export default function ProductPage() {
         <Link to="/" className="hover:text-signal">Inicio</Link>
         <span className="mx-2">/</span>
         <Link to={`/catalogo?cat=${product.categoryId}`} className="hover:text-signal">
-          {category ? `${category.code} · ${category.name}` : 'Catálogo'}
+          {category ? `${category.code ? `${category.code} · ` : ''}${category.name}` : 'Catálogo'}
         </Link>
         <span className="mx-2">/</span>
         <span className="text-paper">{displayName}</span>
       </nav>
 
       <div className="grid gap-8 lg:grid-cols-2">
-        {/* GALERÍA */}
+        {/* GALERÍA — 5.83 · carrusel DESLIZABLE con puntos (como Farmatodo):
+            el dueño lo corrigió: la TARJETA solo muestra la portada y el
+            carrusel se ve AQUÍ, dentro de la ficha. Varias fotos se pasan con
+            el dedo (scroll con resortes) y los puntos indican cuál se ve; las
+            miniaturas quedan debajo y se sincronizan (tocar una desliza el
+            carrusel hasta esa foto). Con una sola foto, imagen fija. */}
         <div className="space-y-4">
-          <div className="overflow-hidden rounded-brand-lg border-2 border-line bg-surface-1">
-            <img
-              src={product.images[0] ?? '/img/products/lubricantes.svg'}
-              alt={product.name}
-              className="aspect-square w-full object-cover"
-              loading="eager"
-              decoding="async"
-            />
+          <div className="relative overflow-hidden rounded-brand-lg border-2 border-line bg-surface-1">
+            {gallery.length > 1 ? (
+              <div
+                ref={carouselRef}
+                className="flex h-full w-full snap-x snap-mandatory overflow-x-auto overscroll-x-contain [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+                onScroll={handleGalleryScroll}
+              >
+                {gallery.map((src, i) => (
+                  <div key={`${src}-${i}`} className="h-full w-full shrink-0 snap-center">
+                    <img
+                      src={src}
+                      alt={i === 0 ? product.name : `${product.name} — foto ${i + 1} de ${gallery.length}`}
+                      loading={i === 0 ? 'eager' : 'lazy'}
+                      decoding="async"
+                      draggable={false}
+                      className="aspect-square w-full object-cover"
+                      onError={alFallarFoto}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <img
+                src={gallery[0] ?? '/img/products/lubricantes.svg'}
+                alt={product.name}
+                className="aspect-square w-full object-cover"
+                loading="eager"
+                decoding="async"
+                onError={alFallarFoto}
+              />
+            )}
+            {gallery.length > 1 && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute bottom-2 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 rounded-full bg-ink/60 px-1.5 py-1"
+              >
+                {gallery.map((_, i) => (
+                  <span
+                    key={i}
+                    className={`h-1.5 w-1.5 rounded-full ${i === imgIdx ? 'bg-signal' : 'bg-paper/60'}`}
+                  />
+                ))}
+              </div>
+            )}
           </div>
-          {product.images.length > 1 && (
-            <div className="grid grid-cols-4 gap-3">
-              {product.images.slice(1, 5).map((img, i) => (
-                <img
-                  key={i}
-                  src={img}
-                  alt={`${product.name} vista ${i + 2}`}
-                  loading="lazy"
-                  className="aspect-square w-full rounded-brand border-2 border-line object-cover"
-                />
+          {gallery.length > 1 && (
+            <div className="grid grid-cols-4 gap-3 sm:grid-cols-6">
+              {gallery.map((img, i) => (
+                <button
+                  key={`${img}-${i}`}
+                  type="button"
+                  aria-label={`Ver foto ${i + 1} de ${product.name}`}
+                  aria-pressed={i === imgIdx}
+                  onClick={() => goToImage(i)}
+                  className={`aspect-square overflow-hidden rounded-brand border-2 transition-colors ${
+                    i === imgIdx ? 'border-signal' : 'border-line hover:border-line-strong'
+                  }`}
+                >
+                  <img
+                    src={img}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    className="h-full w-full object-cover"
+                    onError={alFallarFoto}
+                  />
+                </button>
               ))}
             </div>
           )}
@@ -246,10 +329,14 @@ export default function ProductPage() {
             </Button>
           </div>
 
-          <div className="mt-8 rounded-brand-lg border-2 border-line bg-surface-1 p-5">
-            <h2 className="font-display text-base font-bold italic uppercase text-paper">Descripción</h2>
-            <p className="mt-2 text-body-base leading-relaxed text-muted">{product.description}</p>
-          </div>
+          {/* 5.75 · Descripción OPCIONAL: si el producto no la tiene, la caja
+              ni siquiera aparece (sin título suelto ni contenedor vacío). */}
+          {product.description?.trim() ? (
+            <div className="mt-8 rounded-brand-lg border-2 border-line bg-surface-1 p-5">
+              <h2 className="font-display text-base font-bold italic uppercase text-paper">Descripción</h2>
+              <p className="mt-2 text-body-base leading-relaxed text-muted">{product.description}</p>
+            </div>
+          ) : null}
         </div>
       </div>
 

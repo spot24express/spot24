@@ -16,6 +16,12 @@ export interface SpotUser {
   email: string | null;
   phone: string | null;
   name: string;
+  /** Cédula declarada, SOLO dígitos ('' si nunca la dio). Ronda 5.75:
+   *  viaja del registro al checkout (contacto y «Cédula del pagador»). */
+  cedula: string;
+  /** Dirección completa declarada ('' si nunca la dio). Ronda 5.75:
+   *  prellena «Dirección completa» del checkout. */
+  address: string;
   role: UserRole;
   emailVerified: boolean;
   /** Época de sesión: si cambia en el backend, todas las sesiones se cierran (5.3). */

@@ -43,6 +43,7 @@ import {
 } from '../orders';
 import { coreVerifyPayment } from '../payments';
 import { coreUpdateOrderStatus } from '../dispatch';
+import { ORDER_NOTIFICATIONS } from '../lib/notifications';
 
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 });
 
@@ -328,6 +329,17 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     // El token inválido (registration-token-not-registered) quedó BORRADO.
     const left = await dbf.collection('users/cli-a/fcmTokens').get();
     expect(left.docs.map((x) => String(x.data()['token']))).toEqual(['tok-a-valid-1']);
+
+    // 5.90 · El aviso quedó TAMBIÉN en el historial in-app (users/cli-a/notifs):
+    // el MISMO texto que viajó en el push, más code/status/createdAtMs.
+    const histA = await dbf.collection('users/cli-a/notifs').get();
+    expect(histA.size).toBe(1);
+    const n1 = histA.docs[0]!.data();
+    expect(n1['status']).toBe('en_verificacion');
+    expect(n1['code']).toBe(codeA);
+    expect(n1['title']).toBe('SPOT 24 · Verificando pago');
+    expect(n1['body']).toBe(`Tu pago está en revisión. Te avisamos al confirmar. (${codeA})`);
+    expect(typeof n1['createdAtMs']).toBe('number');
   });
 
   it('FASE 2 · uploadReceipt (re-subida) NO notifica y la orden sigue en en_verificacion', async () => {
@@ -369,6 +381,16 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     await expectNoNewSends(before);
     sends = recorded();
     expect(sends).toHaveLength(2);
+
+    // 5.90 · Historial acumulado: en_verificacion + pagado (el replay NO
+    // duplicó doc in-app tampoco — la notificación solo corre en transición).
+    const histA3 = await admin.firestore().collection('users/cli-a/notifs').get();
+    expect(histA3.size).toBe(2);
+    expect(histA3.docs.map((x) => String(x.data()['status'])).sort()).toEqual(
+      ['en_verificacion', 'pagado'],
+    );
+    const pagadoDoc = histA3.docs.find((x) => x.data()['status'] === 'pagado')!;
+    expect(pagadoDoc.data()['title']).toBe('SPOT 24 · Pago confirmado');
   });
 
   it('FASE 4 · despacho por rol → «preparado», «en_camino», «entregado»; replays sin duplicar', async () => {
@@ -522,6 +544,18 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     expect(order?.['payment']?.['status']).toBe('rechazado');
     expect(Number((await dbf.doc('products/p9/variants/w1').get()).data()?.['stock'])).toBe(stockAntes + 1);
     await expectNoNewSends(before);
+
+    // 5.90 · EL PUNTO DE LA RONDA: sin tokens NO hubo push (0 envíos), pero
+    // el historial in-app SÍ existe — la campana /notificaciones sirve para
+    // quien nunca activó los avisos del teléfono. 2 avisos: el nacimiento
+    // (en_verificacion) y el rechazo (cancelado).
+    const histC = await dbf.collection('users/cli-c/notifs').get();
+    expect(histC.size).toBe(2);
+    expect(histC.docs.map((x) => String(x.data()['status'])).sort()).toEqual(
+      ['cancelado', 'en_verificacion'],
+    );
+    const cancelDoc = histC.docs.find((x) => x.data()['status'] === 'cancelado')!;
+    expect(cancelDoc.data()['title']).toBe('SPOT 24 · Pedido cancelado');
   });
 
   it('FASE 7 · cancelación por el CLIENTE → push «cancelado»', async () => {
@@ -565,6 +599,34 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     expect(s10.tokens).toEqual(['tok-b-valid-1']);
     expect(s10.title).toBe('SPOT 24 · Pedido cancelado');
     expect(s10.data.status).toBe('cancelado');
+  });
+
+  it('FASE 8 · 5.90: historial con ROTACIÓN — el usuario no pasa de 30 avisos', async () => {
+    const dbf = admin.firestore();
+    const col = dbf.collection('users/cli-rot/notifs');
+    // 35 avisos viejos (createdAtMs 1000..35000). cli-rot NO tiene fcmTokens.
+    const batch = dbf.batch();
+    for (let i = 1; i <= 35; i++) {
+      batch.set(col.doc(`viejo-${String(i).padStart(2, '0')}`), {
+        code: 'SP-VIEJO-0001', status: 'pagado', title: 'Viejo', body: 'Viejo',
+        createdAtMs: i * 1000,
+      });
+    }
+    await batch.commit();
+
+    // Sin tokens: 0 pushes; el aviso entra SOLO al historial y el drenaje
+    // deja EXACTAMENTE 30 (35 + 1 nuevo = 36 → borra las 6 más viejas).
+    const before = fcmRecorder.sends.length;
+    await ORDER_NOTIFICATIONS.send('cli-rot', 'SP-260101-9999', 'pagado');
+    await expectNoNewSends(before);
+
+    const after = await col.get();
+    expect(after.size).toBe(30);
+    const ms = after.docs.map((x) => Number(x.data()['createdAtMs']));
+    expect(Math.min(...ms)).toBe(7000); // 1000..6000 se drenaron
+    expect(Math.max(...ms)).toBeGreaterThan(35000); // el aviso recién creado
+    const nuevo = after.docs.find((x) => x.data()['code'] === 'SP-260101-9999');
+    expect(nuevo?.data()['title']).toBe('SPOT 24 · Pago confirmado');
   });
 
   it('CIERRE · auditoría global: solo clientes reciben, secuencia correcta, inventario consistente', async () => {
@@ -615,5 +677,26 @@ d('[E2E notificaciones] flujo completo con push por rol', () => {
     expect(Number((await dbf.doc('products/p9/variants/w2').get()).data()?.['stock'])).toBe(2);
     expect(Number((await dbf.doc('products/p9/variants/w1').get()).data()?.['stockReserved'])).toBe(0);
     expect(Number((await dbf.doc('products/p9/variants/w2').get()).data()?.['stockReserved'])).toBe(0);
+
+    // 5.90 · El historial in-app replica la MISMA secuencia que sonaron los
+    // pushes: cada hito del teléfono quedó guardado en la app (campana).
+    const histAAll = await dbf.collection('users/cli-a/notifs').get();
+    expect(histAAll.size).toBe(5);
+    const seqHistA = histAAll.docs
+      .sort((a, b) => Number(a.data()['createdAtMs']) - Number(b.data()['createdAtMs']))
+      .map((x) => String(x.data()['status']));
+    expect(seqHistA).toEqual(['en_verificacion', 'pagado', 'preparado', 'en_camino', 'entregado']);
+
+    const histBAll = await dbf.collection('users/cli-b/notifs').get();
+    expect(histBAll.size).toBe(5);
+    const seqHistB = histBAll.docs
+      .sort((a, b) => Number(a.data()['createdAtMs']) - Number(b.data()['createdAtMs']))
+      .map((x) => String(x.data()['status']));
+    expect(seqHistB).toEqual(['en_verificacion', 'pagado', 'preparado', 'en_verificacion', 'cancelado']);
+
+    // El staff (jefe-1) NO acumula historial: los avisos del personal
+    // (despacho/pagos) van por push a roles y NO tocan users/{uid}/notifs.
+    const histJefe = await dbf.collection('users/jefe-1/notifs').get();
+    expect(histJefe.size).toBe(0);
   });
 });

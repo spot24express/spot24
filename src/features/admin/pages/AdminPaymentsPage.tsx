@@ -7,7 +7,7 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { StatusBadge } from '@/shared/components/ui/Badge';
 import { adminSubscribeOrders, adminVerifyPayment } from '../services/admin.service';
 import type { Order } from '@/features/orders/types';
-import { PAYMENT_METHOD_LABELS } from '@/shared/constants/orders';
+import { PAYMENT_METHOD_LABELS, PAYMENT_REQUIRES_RECEIPT } from '@/shared/constants/orders';
 import { formatBs, usdToBs } from '@/shared/lib/format';
 import { AppError, userMessage } from '@/shared/lib/errors';
 import { VOICE } from '@/shared/constants/brand';
@@ -68,8 +68,12 @@ export default function AdminPaymentsPage() {
 
   // Separación por PAGO REALIZADO (comprobante subido), no por estado: cubre
   // también órdenes viejas que quedaron «pendiente» con comprobante ya subido.
+  // Contra entrega (efectivo/punto_venta, 5.80) NO participa: no hay
+  // comprobante que verificar — se cobra al recibir y se procesa en Pedidos.
   const queue = orders.filter((o) => o.payment?.hasReceipt === true);
-  const waiting = orders.filter((o) => o.payment?.hasReceipt !== true);
+  const waiting = orders.filter(
+    (o) => o.payment?.hasReceipt !== true && PAYMENT_REQUIRES_RECEIPT[o.payment?.method ?? 'pago_movil'],
+  );
 
   const verify = async (approve: boolean) => {
     if (!selected) return;
@@ -177,7 +181,10 @@ export default function AdminPaymentsPage() {
 
           {/* Sin comprobante: INFORMATIVA. No hay aprobar posible (el backend
               lo rehúsa); el pedido entra solo a la cola cuando el cliente
-              suba el archivo. Sin botones: aquí solo se vigila. */}
+              suba el archivo. Sin botones: aquí solo se vigila. Los pedidos
+              de CONTRA ENTREGA (efectivo/punto de venta) no aparecen aquí:
+              nunca suben comprobante — se cobran al entregar y se procesan
+              desde la página Pedidos (5.80). */}
           {waiting.length > 0 && (
             <section className="mt-10">
               <h3 className="font-display text-lg font-bold italic uppercase text-paper">
@@ -185,6 +192,7 @@ export default function AdminPaymentsPage() {
               </h3>
               <p className="spot-subtitle mt-1 mb-4">
                 El cliente creó el pedido pero aún no sube el pago. En cuanto lo suba, entra solo a la cola de arriba.
+                Los pedidos en Efectivo o Punto de venta no aparecen aquí: se cobran al entregar (revísalos en Pedidos).
               </p>
               <ul className="space-y-3">
                 {waiting.map((o) => (

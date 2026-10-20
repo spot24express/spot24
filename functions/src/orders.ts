@@ -107,6 +107,22 @@ function requireReceiptImage(raw: unknown): string {
   if (typeof raw !== 'string' || raw.length === 0) {
     throw new HttpsError('invalid-argument', 'Falta el comprobante de pago: adjunta la foto antes de confirmar.');
   }
+  return parseReceiptImage(raw);
+}
+
+/**
+ * Comprobante OPCIONAL (5.80): contra entrega (efectivo / punto de venta) el
+ * pago ocurre al recibir — no hay captura que subir. Si el cliente igual
+ * envía una imagen, se valida con el mismo criterio y se sube (prueba de
+ * compra reservada); si no envía, se acepta vacío.
+ */
+function optionalReceiptImage(raw: unknown): string {
+  if (typeof raw !== 'string' || raw.length === 0) return '';
+  return parseReceiptImage(raw);
+}
+
+/** Validación común base64: misma política de tamaño y formato. */
+function parseReceiptImage(raw: string): string {
   const image = raw.slice(raw.indexOf(',') + 1).replace(/\s/g, '');
   if (image.length > MAX_RECEIPT_BASE64) {
     throw new HttpsError('invalid-argument', 'La imagen pasa de 5 MB comprimida.');
@@ -566,11 +582,32 @@ interface CreateOrderReq {
   notes: unknown;
   paymentMethod: unknown;
   paymentDetails: unknown;
-  /** FLUJO ESTRICTO (5i-k): comprobante en base64 puro. OBLIGATORIO. */
+  /** Comprobante en base64 puro. OBLIGATORIO en electrónicas (5i-k);
+   *  opcional/vacío en contra entrega (efectivo, punto_venta — 5.80). */
   receiptImage: unknown;
 }
 
-const PAYMENT_METHODS = new Set(['pago_movil']);
+// Rondas 5.79 + 5.80: SEIS formas de pago. El dueño activa/desactiva cada
+// cuenta desde /admin/ajustes (settings/payment_accounts.active) y puede
+// tener VARIAS del mismo método — el checkout las ofrece como chips
+// independientes y manda `method` + details (y `cuenta` si la nombró).
+// · Electrónicas (RECEIPT): comprobante OBLIGATORIO (flujo estricto) —
+//   refHash se calcula desde paymentDetails.referencia.
+// · Contra entrega (efectivo, punto_venta): SIN comprobante — se cobran al
+//   recibir; el pedido nace igual en en_verificacion para su procesamiento.
+// ⚠ Cambiar aquí requiere `firebase deploy --only functions` (ronda 5.80).
+const PAYMENT_METHODS = new Set([
+  'pago_movil',
+  'transferencia',
+  'efectivo',
+  'punto_venta',
+  'zelle',
+  'binance',
+]);
+
+/** Formas que EXIGEN comprobante: las electrónicas (5.79). Las de contra
+ *  entrega (5.80) lo aceptan opcional pero no lo requieren. */
+const PAYMENT_METHODS_RECEIPT = new Set(['pago_movil', 'transferencia', 'zelle', 'binance']);
 
 /**
  * Etiqueta la fase de createOrder que falla. Si Firestore lanza un error crudo
@@ -640,7 +677,10 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
     // orden. Si imgbb falla, NO hay pedido (cero pedidos sin pago) y el
     // cliente reintenta con la misma imagen en el estado. Va DESPUÉS del
     // chequeo de idempotencia para que un replay no duplique la imagen.
-    const receiptUrl = await phase('comprobante', () => uploadReceiptToImgbb(req.receiptImage));
+    // Contra entrega (5.80): sin imagen — no se llama a imgbb (vacío = pase).
+    const receiptUrl = req.receiptImage
+      ? await phase('comprobante', () => uploadReceiptToImgbb(req.receiptImage))
+      : '';
 
     // Totales calculados SOLO aquí (6.3): precios, envío, IVA y Bs.
     const totals = await phase('montos', () => computeTotals(uid, req.lines, isPickup ? null : req.address['zoneId']));
@@ -718,9 +758,11 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
         status: 'pendiente',
         refHash,
         detailsEncrypted: encPaymentDetails,
-        // FLUJO ESTRICTO: nace con comprobante (pago realizado y probado).
-        hasReceipt: true,
-        receiptUrl,
+        // FLUJO ESTRICTO: los electrónicos nacen con comprobante (pago
+        // realizado y probado). Contra entrega (5.80) nace SIN él: se cobra
+        // al recibir y la cajera lo procesa desde Pedidos.
+        hasReceipt: receiptUrl !== '',
+        receiptUrl: receiptUrl || null,
         masked: {
           banco: req.paymentDetails['banco'] ?? req.paymentDetails['bancoOrigen'] ?? '',
           telefono: req.paymentDetails['telefono'] ? `•••${String(req.paymentDetails['telefono']).slice(-4)}` : '',
@@ -1098,9 +1140,12 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
   const notes = sanitizeStr(data.notes, 300);
   const reservationId = data.reservationId ? sanitizeStr(data.reservationId, 120) || null : null;
 
-  // FLUJO ESTRICTO (5i-k): el comprobante es OBLIGATORIO. Sin este campo la
-  // creación se rechaza aquí, antes de tocar Firestore o imgbb.
-  const receiptImage = requireReceiptImage(data.receiptImage);
+  // FLUJO ESTRICTO (5i-k): el comprobante es OBLIGATORIO en las formas
+  // electrónicas. Contra entrega (efectivo/punto_venta, 5.80) lo acepta
+  // opcional: sin este campo el pedido entra igual (se cobra al recibir).
+  const receiptImage = PAYMENT_METHODS_RECEIPT.has(paymentMethod)
+    ? requireReceiptImage(data.receiptImage)
+    : optionalReceiptImage(data.receiptImage);
 
   return { idempotencyKey, reservationId, fulfillment, lines, contact, address: { ...address, location }, deliveryWindow, notes, paymentMethod, paymentDetails, receiptImage };
 }

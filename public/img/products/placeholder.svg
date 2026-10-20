@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+  <rect width="600" height="600" fill="#0A0A0A"/>
+  <g transform="skewX(-14) translate(60 0)">
+    <rect x="120" y="60" width="180" height="20" rx="8" fill="#F40901" opacity="0.9"/>
+    <rect x="90" y="100" width="120" height="20" rx="8" fill="#F40901" opacity="0.55"/>
+    <rect x="60" y="140" width="70" height="20" rx="8" fill="#F40901" opacity="0.3"/>
+  </g>
+  <g transform="translate(150 190) scale(7)" fill="none" stroke="#FFFFFF" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round">
+    <rect x="4" y="8" width="40" height="32" rx="4"/>
+    <circle cx="16" cy="19" r="4"/>
+    <path d="M44 32 32 20 14 40"/>
+  </g>
+  <text x="300" y="530" text-anchor="middle" font-family="Saira, sans-serif" font-weight="800" font-style="italic" font-size="46" letter-spacing="8" fill="#F40901">SPOT 24</text>
+  <text x="300" y="566" text-anchor="middle" font-family="Saira, sans-serif" font-weight="600" font-size="21" letter-spacing="6" fill="#FFFFFF" opacity="0.85">FOTO PENDIENTE</text>
+</svg>

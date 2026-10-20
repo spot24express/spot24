@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 
 interface ModalProps {
   open: boolean;
@@ -11,6 +12,17 @@ interface ModalProps {
 /**
  * Modal accesible: foco atrapado, cierre con ESC, rol dialog.
  * Sin dependencias externas.
+ *
+ * 5.88 · Se monta por PORTAL en document.body: el overlay `fixed inset-0`
+ * debe anclarse SIEMPRE al viewport. Si algún ancestro con transform
+ * (p. ej. una transición de ruta con fill-mode both, como la 5.75) envuelve
+ * la página, ese ancestro se vuelve el containing block del fixed y el
+ * modal se ancla a la PÁGINA completa — en páginas altas (57 productos ≈
+ * 3.200 px) el editor quedaba recortado en PC e invisible en móvil. El
+ * portal desacuerpa el modal del árbol de la página: inmune a cualquier
+ * transform presente o futuro. El foco, ESC y el clic-fuera siguen
+ * funcionando igual (React propaga los eventos por el árbol de componentes,
+ * no por el del DOM).
  */
 export function Modal({ open, onClose, title, children, wide = false }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null);
@@ -53,7 +65,7 @@ export function Modal({ open, onClose, title, children, wide = false }: ModalPro
   }, [open, onClose]);
 
   if (!open) return null;
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-6" role="presentation" onClick={(e) => e.target === e.currentTarget && onClose()}>
       <div
         ref={ref}
@@ -77,6 +89,7 @@ export function Modal({ open, onClose, title, children, wide = false }: ModalPro
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

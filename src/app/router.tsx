@@ -28,6 +28,8 @@ const AdminPromosPage = lazy(() => import('@/features/admin/pages/AdminPromosPag
 const AdminUsersPage = lazy(() => import('@/features/admin/pages/AdminUsersPage'));
 const AdminMetricsPage = lazy(() => import('@/features/admin/pages/AdminMetricsPage'));
 const AdminSettingsPage = lazy(() => import('@/features/admin/pages/AdminSettingsPage'));
+const AdminBackupsPage = lazy(() => import('@/features/admin/pages/AdminBackupsPage'));
+const NotificationsPage = lazy(() => import('@/features/orders/pages/NotificationsPage'));
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<RouteSkeleton />}>{children}</Suspense>;
@@ -77,6 +79,7 @@ export const router = createBrowserRouter([
       { path: 'checkout', element: <GuardAuth><Lazy><CheckoutPage /></Lazy></GuardAuth> },
       { path: 'checkout/exito/:orderId', element: <GuardAuth><Lazy><CheckoutSuccessPage /></Lazy></GuardAuth> },
       { path: 'pedidos', element: <GuardAuth><Lazy><MyOrdersPage /></Lazy></GuardAuth> },
+      { path: 'notificaciones', element: <GuardAuth><Lazy><NotificationsPage /></Lazy></GuardAuth> },
       { path: 'pedido/:orderId', element: <GuardAuth><Lazy><OrderDetailPage /></Lazy></GuardAuth> },
       {
         path: 'admin',
@@ -92,6 +95,7 @@ export const router = createBrowserRouter([
           { path: 'usuarios', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminUsersPage /></Lazy></GuardSection> },
           { path: 'metricas', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminMetricsPage /></Lazy></GuardSection> },
           { path: 'ajustes', element: <GuardSection allow={['admin']}><Lazy><AdminSettingsPage /></Lazy></GuardSection> },
+          { path: 'copias', element: <GuardSection allow={['admin']}><Lazy><AdminBackupsPage /></Lazy></GuardSection> },
         ],
       },
       { path: '*', element: <Lazy><HomePage /></Lazy> },

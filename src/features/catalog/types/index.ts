@@ -39,6 +39,9 @@ export interface ProductWithVariants extends Product {
 
 export interface CatalogFilters {
   categoryId?: string;
+  /** Ronda 5.76 · rama completa de categorías (padre + subcategorías).
+   *  Si viene, reemplaza a categoryId (consulta con `in`, tope 30 ids). */
+  categoryIds?: string[];
   /** precio mínimo USD sobre basePriceUsd */
   minPriceUsd?: number;
   maxPriceUsd?: number;

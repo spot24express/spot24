@@ -63,18 +63,21 @@ export function useCategories() {
   });
 }
 
-export function useCategoryCount(categoryId: string | undefined) {
+export function useCategoryCount(categoryId: string | undefined, extraIds: string[] = []) {
   useCatalogLive();
+  const extras = extraIds.join(',');
   return useQuery({
-    queryKey: catalogKeys.counts(categoryId ?? ''),
-    queryFn: () => countByCategory(categoryId!),
+    queryKey: catalogKeys.counts(`${categoryId ?? ''}|${extras}`),
+    queryFn: () => countByCategory(categoryId!, extraIds),
     enabled: Boolean(categoryId),
     staleTime: staleTimeMin,
   });
 }
 
-/** Listado infinito con paginación por cursor (staleTime por tipo de dato). */
-export function useProductList(filters: CatalogFilters, pageSize = 12) {
+/** Listado infinito con paginación por cursor (staleTime por tipo de dato).
+ *  5.81 · `enabled`: la bahía con subcategorías ya no consulta productos
+ *  (la tienda solo muestra las tarjetas de subcategorías) → cero lecturas en vano. */
+export function useProductList(filters: CatalogFilters, pageSize = 12, enabled = true) {
   useCatalogLive();
   return useInfiniteQuery({
     queryKey: catalogKeys.list({ ...filters }),
@@ -82,6 +85,7 @@ export function useProductList(filters: CatalogFilters, pageSize = 12) {
     initialPageParam: null as string | null,
     getNextPageParam: (last) => (last.hasMore ? last.cursor : null),
     staleTime: staleTimeMin,
+    enabled,
   });
 }
 

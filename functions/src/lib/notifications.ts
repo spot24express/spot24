@@ -144,6 +144,53 @@ async function firstDisplayName(uid: string): Promise<string> {
   }
 }
 
+/**
+ * 5.90 · Tope del historial in-app por usuario. Cada aviso nuevo drena las
+ * más viejas (offset + orderBy de UN campo → sin índices compuestos).
+ */
+export const NOTIFS_TOPE_POR_USUARIO = 30;
+
+/**
+ * 5.90 · HISTORIAL IN-APP del cliente (users/{uid}/notifs): cada aviso de
+ * estado queda guardado en la subcolección PRIVADA del usuario para la
+ * campana /notificaciones de PC/tablet. El push es efímero (cortina del
+ * teléfono) y solo existe si el cliente activó los avisos; el historial es
+ * la MEMORIA consultable de la app y la única vía para quien nunca activó
+ * push. Escritura EXCLUSIVA del servidor (Admin SDK): las reglas dejan la
+ * subcolección en solo-lectura para el dueño. Rotación: conserva las
+ * NOTIFS_TOPE_POR_USUARIO más recientes (borra hasta 10 viejas por aviso —
+ * con 30 acumulados y aviso por hito de pedido, sobra). Best-effort:
+ * cualquier fallo queda atrapado y NO interrumpe el push ni la operación
+ * de negocio que lo disparó.
+ */
+async function guardarNotifEnHistorial(
+  uid: string,
+  code: string,
+  status: string,
+  title: string,
+  body: string,
+): Promise<void> {
+  try {
+    const col = db().collection(`users/${uid}/notifs`);
+    await col.add({
+      code: code.slice(0, 40),
+      status,
+      title,
+      body,
+      createdAtMs: Date.now(),
+    });
+    // Drena las excedentes más viejas (35 acumulados → borra 5 y quedan 30).
+    const viejas = await col
+      .orderBy('createdAtMs', 'desc')
+      .offset(NOTIFS_TOPE_POR_USUARIO)
+      .limit(10)
+      .get();
+    await Promise.all(viejas.docs.map((d) => d.ref.delete()));
+  } catch (e) {
+    console.warn('[notificaciones] historial in-app fallido (best-effort)', e);
+  }
+}
+
 /** Tokens del personal con cualquiera de los roles dados (5.28).
  *  Consulta `role in [...]` (un solo campo: sin índice compuesto) y luego
  *  lee la subcolección fcmTokens de cada uno (acotada a 20 por usuario). */
@@ -238,6 +285,13 @@ export const ORDER_NOTIFICATIONS = {
       const base = firstName
         ? `${firstName}, ${msg.body.charAt(0).toLowerCase()}${msg.body.slice(1)}`
         : msg.body;
+      const body = orderCode ? `${base} (${orderCode})` : base;
+
+      // 5.90 · El aviso entra al HISTORIAL IN-APP SIEMPRE (con o sin tokens
+      // de push) ANTES del gate de tokens: la campana /notificaciones de
+      // PC/tablet lo muestra aunque el cliente jamás haya activado los
+      // avisos del teléfono. Best-effort: si falla, el push sigue igual.
+      await guardarNotifEnHistorial(uid, orderCode, status, msg.title, body);
 
       const tokensSnap = await db().collection(`users/${uid}/fcmTokens`).limit(20).get();
       if (tokensSnap.empty) return;
@@ -246,7 +300,6 @@ export const ORDER_NOTIFICATIONS = {
         .filter((r) => r.token);
       if (refs.length === 0) return;
 
-      const body = orderCode ? `${base} (${orderCode})` : base;
       await sendAndCleanup(refs, msg.title, body, {
         status,
         orderCode: orderCode.slice(0, 40),

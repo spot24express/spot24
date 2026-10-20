@@ -5,6 +5,7 @@ import { logger } from '@/shared/lib/logger';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { adminSubscribeOrders } from '../services/admin.service';
 import type { Order } from '@/features/orders/types';
+import { PAYMENT_REQUIRES_RECEIPT } from '@/shared/constants/orders';
 
 /**
  * Alerta global de pedidos nuevos para quien verifica pagos
@@ -72,12 +73,23 @@ export function NewOrderAlert() {
     unsub = adminSubscribeOrders(
       ['pendiente', 'en_verificacion'],
       (orders) => {
-        const q = orders.filter((o) => o.payment?.hasReceipt === true);
+        // (5.80) Pedidos ACCIONABLES: con comprobante por verificar O de
+        // contra entrega (efectivo/punto de venta — no suben comprobante,
+        // se cobran al recibir; igual necesitan que el personal los mire).
+        const q = orders.filter(
+          (o) =>
+            o.payment?.hasReceipt === true ||
+            PAYMENT_REQUIRES_RECEIPT[o.payment?.method ?? 'pago_movil'] === false,
+        );
         const ids = new Set(q.map((o) => o.id));
         if (seenIds.current !== null) {
           for (const o of q) {
             if (!seenIds.current.has(o.id)) {
-              toast.info(`Nuevo pedido ${o.code} por verificar`);
+              toast.info(
+                o.payment?.hasReceipt === true
+                  ? `Nuevo pedido ${o.code} por verificar`
+                  : `Nuevo pedido ${o.code} · pago al recibir`,
+              );
             }
           }
         }

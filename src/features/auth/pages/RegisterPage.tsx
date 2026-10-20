@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
-import { Input } from '@/shared/components/ui/Input';
+import { Input, Textarea } from '@/shared/components/ui/Input';
 import { Button } from '@/shared/components/ui/Button';
 import { SpeedLines } from '@/shared/components/brand/Logo';
 import { AuthBackdrop } from '@/shared/components/brand/AuthBackdrop';
@@ -13,13 +13,15 @@ import {
 
 /**
  * Registro: nombre, correo, teléfono venezolano y clave (5.3).
+ * 5.75: + cédula (solo dígitos) y dirección completa — guardados en el
+ * perfil (users/{uid}) y prellenados en el checkout como el nombre/teléfono.
  * La verificación por teléfono se ofrece desde Cuenta.
  */
 export default function RegisterPage() {
   useDocumentTitle('Crear cuenta');
   const navigate = useNavigate();
   const { signUp } = useAuth();
-  const [form, setForm] = useState({ name: '', email: '', phone: '', password: '' });
+  const [form, setForm] = useState({ name: '', email: '', phone: '', cedula: '', address: '', password: '' });
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [loading, setLoading] = useState(false);
 
@@ -30,6 +32,13 @@ export default function RegisterPage() {
     if (!isValidPersonName(form.name)) e['name'] = 'Escribe tu nombre y apellido.';
     if (!isValidEmail(form.email)) e['email'] = 'Correo no válido.';
     if (!isValidPhoneVE(form.phone)) e['phone'] = 'Teléfono móvil venezolano: 04141234567.';
+    // Cédula: SOLO números (4-8 dígitos). La guardamos sin V-, sin puntos:
+    // viaja tal cual al «Cédula del pagador» del pago móvil.
+    const ced = form.cedula.replace(/\D/g, '');
+    if (ced.length < 4 || ced.length > 8) e['cedula'] = 'Cédula: solo números (4 a 8 dígitos).';
+    // Dirección completa: el mismo mínimo que exige el checkout (8 letras)
+    // para que el autollenado pase la validación de entrada.
+    if (form.address.trim().length < 8) e['address'] = 'Dirección: urbanización, calle y casa o apartamento.';
     if (form.password.length < 6) e['password'] = 'Mínimo 6 caracteres.';
     setErrors(e);
     return Object.values(e).every((x) => !x);
@@ -42,7 +51,7 @@ export default function RegisterPage() {
     try {
       const phone = normalizePhoneVE(form.phone);
       const e164 = `+58${phone.startsWith('0') ? phone.slice(1) : phone}`;
-      await signUp(form.name, form.email, form.password, e164);
+      await signUp(form.name, form.email, form.password, e164, form.cedula, form.address);
       navigate('/', { replace: true });
     } catch (err) {
       setErrors({ email: userMessage(err) });
@@ -86,6 +95,28 @@ export default function RegisterPage() {
             onChange={(e) => set('phone')(e.target.value)}
             error={errors['phone']}
             hint="Lo usamos solo para coordinar tu entrega."
+            required
+          />
+          <Input
+            label="Cédula"
+            inputMode="numeric"
+            autoComplete="off"
+            placeholder="12345678"
+            value={form.cedula}
+            onChange={(e) => set('cedula')(e.target.value.replace(/\D/g, '').slice(0, 8))}
+            error={errors['cedula']}
+            hint="Solo números. Va prellenada en tu pago móvil."
+            required
+          />
+          <Textarea
+            label="Dirección completa"
+            rows={2}
+            autoComplete="street-address"
+            placeholder="Urb. Los Taladros, Av. Principal, Casa 24, Piso 1"
+            value={form.address}
+            onChange={(e) => set('address')(e.target.value)}
+            error={errors['address']}
+            hint="Urbanización, calle y casa o apartamento. Va prellenada en tus pedidos."
             required
           />
           <Input

@@ -13,6 +13,12 @@ export const BRAND = {
   supportEmail: 'ericksimosa@gmail.com', // ← reemplazar por el correo real
 } as const;
 
+/**
+ * 5.75 · El horario de los DELIVERYS ya NO vive aquí: el dueño lo edita en
+ * Admin → Ajustes (settings/general.deliveryHours) y aplica sin deploy.
+ * El valor por defecto vive en GENERAL_SEED (settings.service.ts).
+ */
+
 /** Mensajes de marca para estados de UI (voz afirmativa y corta). */
 export const VOICE = {
   emptyCart: 'Tu carrito espera. Para. Resuelve. Sigue.',
@@ -57,24 +63,69 @@ export const VE_BANKS: readonly string[] = [
 ] as const;
 
 /**
- * Cuenta de recaudación de SPOT 24 (Pago Móvil) mostrada al cliente en el paso de pago.
- * En producción vive en Firestore → settings/payment_accounts (editable por
- * el admin); este valor es el semilla por defecto.
+ * Cuentas de recaudación de SPOT 24 mostradas al cliente en el paso de pago.
+ * En producción viven en Firestore → settings/payment_accounts (editable por
+ * el admin); estos valores son la semilla por defecto.
+ * Ronda 5.79: interruptor «active» por forma — el dueño decide cuáles ve el
+ * cliente en el checkout.
+ * Ronda 5.80: MULTICUENTA — el array admite varias cuentas del mismo método
+ * (ej. transferencias de Banesco Y del BNC): cada una con su `id` estable
+ * (selección del cliente) y su `label` opcional para distinguirlas.
  */
+import type { PaymentMethod } from './orders';
+
 export interface PaymentAccount {
-  method: 'pago_movil';
+  /** Id estable de la cuenta (5.80): el checkout recuerda cuál eligió.
+   *  Documentos previos sin id: se asume `method` (una cuenta por método). */
+  id?: string;
+  /** Nombre para distinguir cuentas del mismo método (ej. «Banesco»,
+   *  «Cuenta Erick»). Opcional: sin él se usa el nombre del método. */
+  label?: string;
+  method: PaymentMethod;
+  /** Interruptor del dueño. Documentos viejos sin el campo se tratan como activos. */
+  active: boolean;
+  /** Banco de recaudación (pago móvil/transferencia) o entidad emisora. */
   bank: string;
+  /** RIF del negocio — se copia sin letras en los métodos VE; '' en Zelle/Binance. */
   rif: string;
+  /** Número de cuenta 20 dígitos (transferencia; opcional en pago móvil). */
   accountNumber?: string;
+  /** Teléfono afiliado al Pago Móvil. */
   phone?: string;
+  /** Correo de recaudo (Zelle; opcional en el resto). */
   email?: string;
+  /** Titular de la cuenta (Zelle/Binance). */
+  holderName?: string;
+  /** Binance Pay ID / UID de recaudo. */
+  binanceId?: string;
+  /** Imagen QR de la cuenta (subida por el dueño desde Ajustes → imgbb,
+   *  o enlace pegado). 5.80: cada cuenta tiene el SUYO. */
+  qrUrl?: string;
 }
 
+/** QR de Pago Móvil empaquetado (Suiche 7B del dueño, ronda 5.79). */
+export const DEFAULT_QR_PAGO_MOVIL = '/img/qr-pago-movil.jpg';
+
+/**
+ * Semilla (solo si Firestore aún no tiene documento guardado):
+ * · Pago Móvil activa con el QR empaquetado — la tienda cobra desde el día 1.
+ * · Efectivo y Punto de venta activas (5.80, pedido del dueño): se cobran al
+ *   entregar, no necesitan datos de recaudo.
+ * · Transferencia/Zelle/Binance inactivas hasta que el dueño llene sus datos.
+ */
 export const DEFAULT_PAYMENT_ACCOUNTS: readonly PaymentAccount[] = [
   {
+    id: 'pago_movil',
     method: 'pago_movil',
+    active: true,
     bank: 'Mercantil Banco',
     rif: 'J-00000000-0', // ← reemplazar por el RIF real
     phone: '0412-0000000', // ← reemplazar por el teléfono real
+    qrUrl: DEFAULT_QR_PAGO_MOVIL,
   },
+  { id: 'transferencia', method: 'transferencia', active: false, bank: '', rif: '' },
+  { id: 'efectivo', method: 'efectivo', active: true, bank: '', rif: '' },
+  { id: 'punto_venta', method: 'punto_venta', active: true, bank: '', rif: '' },
+  { id: 'zelle', method: 'zelle', active: false, bank: '', rif: '' },
+  { id: 'binance', method: 'binance', active: false, bank: '', rif: '' },
 ];

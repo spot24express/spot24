@@ -26,22 +26,28 @@ import { useZones } from '@/features/delivery/hooks/useZones';
 import { reserveStock, quoteTotals, createOrder } from '../services/checkout.service';
 import { buildIdempotencyKey } from '../lib/idempotency';
 import {
-  PAYMENT_METHOD_LABELS, PAYMENT_INSTRUCTIONS,
+  PAYMENT_METHOD_LABELS, PAYMENT_INSTRUCTIONS, PAYMENT_REQUIRES_RECEIPT,
+  type PaymentMethod,
 } from '@/shared/constants/orders';
 import { VE_BANKS, DEFAULT_PAYMENT_ACCOUNTS, BRAND, type PaymentAccount } from '@/shared/constants/brand';
+import {
+  activeAccountsOf, accountChipLabel, accountKey, buildPaymentDetails,
+  copyRowsForAccount, qrForAccount, validatePaymentForm,
+  usesVeForm, EMPTY_PAYMENT_FORM, type PaymentFormState,
+} from '@/shared/lib/paymentMethods';
 import { getPaymentAccounts } from '@/shared/services/settings.service';
 import {
   isValidPersonName, isValidCedulaVE, isValidPhoneVE,
-  isValidPaymentReference, normalizeCedulaVE, normalizePhoneVE, sanitizeMultiline, sanitizeText,
+  normalizeCedulaVE, normalizePhoneVE, sanitizeMultiline, sanitizeText,
   isAllowedUploadType, RECEIPT_IMAGE_TYPES,
 } from '@/shared/lib/validation';
 import { MAX_INPUT_MB, fileToBase64 } from '@/shared/lib/imageCompress';
 import { userMessage, AppError } from '@/shared/lib/errors';
 import { trackEvent } from '@/shared/lib/analytics';
-import { formatBs, usdToBs } from '@/shared/lib/format';
+import { formatBs, usdToBs, cleanAmountBs } from '@/shared/lib/format';
+import { copyText } from '@/shared/lib/clipboard';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import type { CreateOrderResponse, QuoteResponse, ReservationResponse, FulfillmentMode } from '../types';
-import type { PaymentMethod } from '@/shared/constants/orders';
 import { getGeneralSettings } from '@/shared/services/settings.service';
 
 const STEPS = ['Datos', 'Entrega', 'Pago', 'Confirmación'] as const;
@@ -52,10 +58,8 @@ interface ContactForm {
 interface AddressForm {
   zoneId: string; details: string; notes: string;
 }
-interface PaymentForm {
-  method: PaymentMethod;
-  banco: string; cedula: string; telefono: string; referencia: string; fecha: string;
-}
+/* Formulario del paso Pago: forma + campos viven en paymentMethods.ts (5.79):
+   una sola fuente de verdad compartida con el panel y los tests. */
 /** Comprobante ya comprimido y listo para viajar con createOrder (5i-k). */
 interface ReceiptReady {
   name: string;
@@ -83,9 +87,7 @@ export default function CheckoutPage() {
   const [contact, setContact] = useState<ContactForm>({ name: '', cedula: '', phone: '' });
   const [address, setAddress] = useState<AddressForm>({ zoneId: '', details: '', notes: '' });
   const [gps, setGps] = useState<{ lat: number; lng: number } | null>(null);
-  const [payment, setPayment] = useState<PaymentForm>({
-    method: 'pago_movil', banco: '', cedula: '', telefono: '', referencia: '', fecha: '',
-  });
+  const [payment, setPayment] = useState<PaymentFormState>(EMPTY_PAYMENT_FORM);
   const [pickupInfo, setPickupInfo] = useState<{ address: string; hours: string }>({ address: '', hours: '' });
   const [reservation, setReservation] = useState<ReservationResponse | null>(null);
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
@@ -140,9 +142,20 @@ export default function CheckoutPage() {
   // Datos precargados del perfil. El teléfono vive en users/{uid}.phoneE164
   // como +58XXXXXXXXX (uso interno): al cliente NUNCA se le muestra el +58,
   // se normaliza a formato local 04XXXXXXXXX antes de tocar la pantalla.
+  // 5.75: la cédula y la dirección del registro/«Mis datos» prellenan el
+  // contacto, la dirección de entrega Y la «Cédula del pagador» del pago
+  // móvil (casi siempre es la misma persona). Solo si el campo está vacío:
+  // lo que el cliente ya escribió en esta compra JAMÁS se pisa.
   useEffect(() => {
     if (user) {
-      setContact((c) => ({ ...c, name: user.name || c.name, phone: normalizePhoneVE(user.phone ?? '') || c.phone }));
+      setContact((c) => ({
+        ...c,
+        name: user.name || c.name,
+        phone: normalizePhoneVE(user.phone ?? '') || c.phone,
+        cedula: c.cedula || user.cedula || '',
+      }));
+      setAddress((a) => ({ ...a, details: a.details || user.address || '' }));
+      setPayment((p) => ({ ...p, cedula: p.cedula || user.cedula || '' }));
     }
   }, [user]);
 
@@ -190,14 +203,15 @@ export default function CheckoutPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fulfillment, address.zoneId, quoteAttempt]);
 
-  // Datos de recaudación: primero Firestore (editable desde /admin/ajustes
-  // sin deploy); si aún no hay documento o falla la red, se usa la semilla.
+  // Formas de pago: primero Firestore (el dueño activa/desactiva desde
+  // /admin/ajustes sin deploy); si aún no hay documento o falla la red, se
+  // usa la semilla. El checkout SOLO ofrece las formas activas (5.79).
   const [accounts, setAccounts] = useState<readonly PaymentAccount[]>(DEFAULT_PAYMENT_ACCOUNTS);
   useEffect(() => {
     let alive = true;
     void getPaymentAccounts()
       .then((a) => {
-        if (alive && a && a.length > 0) setAccounts(a);
+        if (alive && a) setAccounts(a);
       })
       .catch(() => {
         /* respaldo silencioso: seguimos con la semilla del repo */
@@ -207,10 +221,38 @@ export default function CheckoutPage() {
     };
   }, []);
 
-  const zoneAccounts = useMemo(
-    () => accounts.filter((a) => a.method === payment.method),
-    [accounts, payment.method],
+  const activeAccounts = useMemo(() => activeAccountsOf(accounts), [accounts]);
+  // Cuenta ELEGIDA (5.80: puede haber varias del mismo método — el cliente
+  // escoge una concreta, no solo un método). Si la elegida se desactivó (o
+  // Firestore cargó tarde), cae a la primera activa y se sincroniza solo.
+  const [accId, setAccId] = useState<string | null>(null);
+  const zoneAccount = useMemo(
+    () => activeAccounts.find((a) => accountKey(a) === accId) ?? activeAccounts[0] ?? null,
+    [activeAccounts, accId],
   );
+  useEffect(() => {
+    if (zoneAccount && (zoneAccount.method !== payment.method || accountKey(zoneAccount) !== accId)) {
+      setPayment((p) => ({ ...p, method: zoneAccount.method }));
+      setAccId(accountKey(zoneAccount));
+    }
+  }, [zoneAccount, accId, payment.method]);
+  // QR solo en formas electrónicas: en contra-entrega no hay QR que escanear.
+  const payQr = zoneAccount && PAYMENT_REQUIRES_RECEIPT[zoneAccount.method]
+    ? qrForAccount(zoneAccount)
+    : null;
+  // 5.86 · lightbox del QR: el cliente TOCA el QR y se abre AMPLIADO para
+  // escanearlo cómodo desde su app bancaria (o mostrarlo a quien cobra).
+  const [qrZoom, setQrZoom] = useState(false);
+  // Cuántas cuentas activas hay de cada método: los chips se distinguen
+  // («Transferencia · Banesco») solo cuando hace falta.
+  const siblingsOf = useMemo(() => {
+    const m = new Map<PaymentMethod, number>();
+    for (const a of activeAccounts) m.set(a.method, (m.get(a.method) ?? 0) + 1);
+    return (a: PaymentAccount) => m.get(a.method) ?? 1;
+  }, [activeAccounts]);
+  /** ¿La forma elegida exige comprobante? Contra entrega (efectivo/punto de
+   *  venta) no: se cobra al recibir y no se pide foto ni formulario. */
+  const needsReceipt = PAYMENT_REQUIRES_RECEIPT[payment.method];
 
   // GPS del cliente: OBLIGATORIO en delivery — el mensajero recibe el punto
   // exacto para llegar. En retiro en tienda no se pide (no aplica).
@@ -314,16 +356,13 @@ export default function CheckoutPage() {
   };
 
   const validateStep2 = (): boolean => {
-    const e: Record<string, string | null> = {};
-    if (!payment.banco) e['banco'] = 'Selecciona el banco del pago.';
-    if (!isValidCedulaVE(payment.cedula)) e['cedula'] = 'Cédula del pagador: solo los números.';
-    if (!isValidPhoneVE(payment.telefono)) e['telefono'] = 'Teléfono móvil del pago.';
-    if (!isValidPaymentReference(payment.referencia)) e['referencia'] = 'Los últimos 6 dígitos de la referencia (los muestra el banco).';
-    if (!payment.fecha) e['fecha'] = 'Fecha del pago.';
-    // FLUJO ESTRICTO (5i-k): sin comprobante no se avanza. El pedido se
-    // envía ya pagado: nace en verificación y el cajero lo aprueba con la
-    // foto delante, sin llamadas de «solicítalo por teléfono».
-    if (!receipt) e['receipt'] = 'Adjunta la foto del comprobante de pago.';
+    // Reglas por método (banco/cédula/teléfono en VE; titular/confirmación en
+    // Zelle/Binance) viven en paymentMethods.validatePaymentForm (5.79).
+    // Contra entrega (5.80): sin formulario ni comprobante — solo avanzar.
+    const e = validatePaymentForm(payment);
+    // FLUJO ESTRICTO (5i-k): sin comprobante no se avanza — SOLO en las formas
+    // electrónicas. Efectivo y punto de venta se cobran al recibir (5.80).
+    if (needsReceipt && !receipt) e['receipt'] = 'Adjunta la foto del comprobante de pago.';
     setErrors(e);
     return Object.values(e).every((x) => !x);
   };
@@ -332,8 +371,9 @@ export default function CheckoutPage() {
   const confirm = async (ev: FormEvent) => {
     ev.preventDefault();
     if (!user) return;
-    // Guard de doble llave: sin comprobante no se llama al servidor (5i-k).
-    if (!receipt) {
+    // Guard de doble llave: en formas electrónicas, sin comprobante no se
+    // llama al servidor (5i-k). Contra entrega no necesita foto (5.80).
+    if (needsReceipt && !receipt) {
       toast.error('Adjunta la foto del comprobante de pago.');
       setStep(2);
       return;
@@ -359,12 +399,13 @@ export default function CheckoutPage() {
         now: Date.now(),
       });
 
+      // Claves por método (banco, titular, referencia, fecha…): el antifraude
+      // del backend calcula refHash desde `referencia` en TODAS las formas (5.79).
+      // 5.80: `cuenta` viaja cuando el dueño nombró la cuenta (ej. «Banesco»)
+      // — la cajera sabe a cuál cuenta de recaudo llegó el pago.
       const paymentDetails: Record<string, string> = {
-        banco: payment.banco,
-        cedula: normalizeCedulaVE(payment.cedula),
-        telefono: normalizePhoneVE(payment.telefono),
-        referencia: payment.referencia,
-        fecha: payment.fecha,
+        ...buildPaymentDetails(payment),
+        ...(zoneAccount?.label?.trim() ? { cuenta: zoneAccount.label.trim() } : {}),
       };
 
       const response = await createOrder(
@@ -408,7 +449,8 @@ export default function CheckoutPage() {
           // servidor lo sube a imgbb ANTES de escribir el documento: si la
           // subida falla, NO hay pedido y el cliente reintenta sin perder
           // nada (la imagen sigue aquí, lista para reenviar).
-          receiptImage: receipt.base64,
+          // Contra entrega (5.80): vacío — el servidor NO pide imagen.
+          receiptImage: needsReceipt && receipt ? receipt.base64 : '',
         },
       );
 
@@ -477,12 +519,21 @@ export default function CheckoutPage() {
           </dl>
           {/* FLUJO ESTRICTO (5i-k): el comprobante ya viajó con el pedido.
               Ya no se pide «sube tu comprobante»: el siguiente paso es la
-              verificación del pago por el personal, con aviso por push. */}
+              verificación del pago por el personal, con aviso por push.
+              Contra entrega (5.80): no hay comprobante — se dice cuándo y
+              con qué se paga. */}
           <div className="mt-6 rounded-brand border-2 border-line bg-ink p-4 text-left">
             <p className="spot-label mb-1">Siguiente paso</p>
             <p className="text-body-base text-paper">
-              Recibimos tu comprobante ({PAYMENT_METHOD_LABELS[payment.method]}): tu pedido ya está en la cola de
-              verificación. Te avisamos con una notificación apenas confirmemos el pago.
+              {needsReceipt ? (
+                <>Recibimos tu comprobante ({PAYMENT_METHOD_LABELS[payment.method]}): tu pedido ya está en la cola de
+                verificación. Te avisamos con una notificación apenas confirmemos el pago.</>
+              ) : (
+                <>Tu pedido ya está en cola. {payment.method === 'efectivo'
+                  ? 'Prepara el efectivo: pagas al recibir (monto exacto si puedes).'
+                  : 'Ten tu tarjeta lista: pagas en el punto de venta al recibir.'}
+                </>
+              )}
             </p>
           </div>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row sm:justify-center">
@@ -694,55 +745,145 @@ export default function CheckoutPage() {
                 )}
               </section>
 
-              {/* Métodos de pago */}
+              {/* Formas de pago (5.79 + 5.80): chips por CUENTA — el dueño
+                  puede tener varias del mismo método (ej. transferencias de
+                  varios bancos) y el cliente elige la suya. Sin cuenta activa
+                  no hay checkout: se ofrece WhatsApp como canal de rescate. */}
               <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
                 <h2 className="font-display text-lg font-bold italic uppercase text-paper">Método de pago</h2>
                 <p className="mt-2 text-sm text-muted">{PAYMENT_INSTRUCTIONS[payment.method]}</p>
-                <div
-                  aria-label="Método de pago"
-                  className="mt-4 flex min-h-[56px] items-center rounded-brand border-2 border-signal bg-signal/10 px-4 py-3 font-body font-semibold text-signal"
-                >
-                  {PAYMENT_METHOD_LABELS['pago_movil']}
-                </div>
+                {activeAccounts.length === 0 ? (
+                  <p className="mt-4 rounded-brand border-2 border-dashed border-line bg-ink p-4 text-sm text-muted">
+                    No hay formas de pago activas ahora mismo. Escríbenos por WhatsApp para coordinar tu compra.
+                  </p>
+                ) : (
+                  <>
+                    <div role="radiogroup" aria-label="Formas de pago" className="mt-4 grid gap-2 sm:grid-cols-2">
+                      {activeAccounts.map((a) => {
+                        const on = zoneAccount !== null && accountKey(a) === accountKey(zoneAccount);
+                        return (
+                          <button
+                            key={accountKey(a)}
+                            type="button"
+                            role="radio"
+                            aria-checked={on}
+                            onClick={() => {
+                              setPayment((p) => ({ ...p, method: a.method }));
+                              setAccId(accountKey(a));
+                            }}
+                            className={`rounded-brand border-2 px-4 py-3 text-left font-body font-semibold transition active:scale-[0.98] ${
+                              on
+                                ? 'border-signal bg-signal/10 text-signal'
+                                : 'border-line bg-ink text-paper hover:border-muted'
+                            }`}
+                          >
+                            {accountChipLabel(a, siblingsOf(a))}
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                {/* Datos de recaudación */}
-                {zoneAccounts.length > 0 && zoneAccounts[0] && (
-                  <div className="mt-4 rounded-brand border-2 border-dashed border-line bg-ink p-4">
-                    <p className="spot-label mb-2">Datos de SPOT 24 para pagar</p>
-                    <ul className="space-y-1 text-body-base text-paper">
-                      <li>Banco: <strong>{zoneAccounts[0].bank}</strong></li>
-                      <li>RIF: <strong>{zoneAccounts[0].rif}</strong></li>
-                      {zoneAccounts[0].phone && normalizePhoneVE(zoneAccounts[0].phone) && (
-                        <li>Teléfono: <strong>{normalizePhoneVE(zoneAccounts[0].phone)}</strong></li>
-                      )}
-                      {zoneAccounts[0].accountNumber && <li>Cuenta: <strong>{zoneAccounts[0].accountNumber}</strong></li>}
-                      {zoneAccounts[0].email && <li>Correo: <strong>{zoneAccounts[0].email}</strong></li>}
-                    </ul>
-                  </div>
+                    {/* Datos de recaudación — cada dato con su ícono de copiar
+                        (5.79): el cliente pega cada campo directo en su app
+                        bancaria. El RIF se copia SOLO con los números; el
+                        total, como número limpio (sin «Bs.» ni miles).
+                        Contra entrega (5.80): sin bloque de datos — no hay
+                        cuenta a la que transferir, se paga al recibir. */}
+                    {zoneAccount && needsReceipt && (
+                      <div className="mt-4 rounded-brand border-2 border-dashed border-line bg-ink p-4">
+                        <p className="spot-label mb-2">Datos de SPOT 24 para pagar</p>
+                        <ul className="space-y-2 text-body-base text-paper">
+                          {copyRowsForAccount(zoneAccount).map((r) => (
+                            <CopyRow key={r.label} label={r.label} value={r.value} copy={r.copy} />
+                          ))}
+                          {quoteState === 'ok' && quote && (
+                            <li className="flex items-center justify-between gap-3 border-t border-line pt-2">
+                              <span>
+                                Total a pagar:{' '}
+                                <strong className="font-display text-lg italic text-signal">{formatBs(quote.totalVes)}</strong>
+                              </span>
+                              <CopyButton label="Total a pagar" value={cleanAmountBs(quote.totalVes)} />
+                            </li>
+                          )}
+                        </ul>
+                        {/* QR de la cuenta (5.79): pagar sin teclear datos.
+                            Fondo blanco: los lectores necesitan contraste.
+                            5.86: TOCABLE — lo abre AMPLIADO para escanearlo. */}
+                        {payQr && (
+                          <div className="mt-3 flex items-center gap-3 border-t border-line pt-3">
+                            <button
+                              type="button"
+                              onClick={() => setQrZoom(true)}
+                              aria-label="Ampliar el código QR para escanearlo"
+                              aria-haspopup="dialog"
+                              className="shrink-0 cursor-zoom-in rounded-brand border-2 border-line bg-white p-1 transition-transform hover:scale-105 active:scale-95"
+                            >
+                              <img
+                                src={payQr}
+                                alt="Código QR para pagar"
+                                loading="lazy"
+                                className="h-36 w-36"
+                              />
+                            </button>
+                            <p className="text-xs text-muted">
+                              Escanea el QR con tu app del banco: te llena los datos solo. <strong className="text-paper">Tócalo para ampliarlo.</strong> Después vuelve aquí y registra el pago.
+                            </p>
+                          </div>
+                        )}
+                        <p className="mt-2 text-xs text-muted">
+                          Toca el ícono de copiar junto a cada dato y pégalo en tu app bancaria.
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Formulario del pago: campos según la forma elegida (5.79).
+                        Contra entrega (5.80): sin formulario — nada que llenar. */}
+                    {usesVeForm(payment.method) ? (
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <Select label="Banco del pago" value={payment.banco} onChange={(e) => setPayment((p) => ({ ...p, banco: e.target.value }))} error={errors['banco']} required>
+                          <option value="">Selecciona…</option>
+                          {VE_BANKS.map((b) => <option key={b} value={b}>{b}</option>)}
+                        </Select>
+                        <Input label="Cédula del pagador (solo números)" value={payment.cedula} onChange={(e) => setPayment((p) => ({ ...p, cedula: e.target.value }))} placeholder="12345678" inputMode="numeric" error={errors['cedula']} required />
+                        <Input label="Teléfono del pago" type="tel" value={payment.telefono} onChange={(e) => setPayment((p) => ({ ...p, telefono: e.target.value }))} placeholder="04241234567" error={errors['telefono']} required />
+                        <Input label="Referencia (últimos 6 dígitos)" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.replace(/\D/g, '').slice(0, 6) }))} error={errors['referencia']} inputMode="numeric" maxLength={6} placeholder="123456" required />
+                        <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
+                      </div>
+                    ) : payment.method === 'zelle' ? (
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <Input label="Banco de origen (ej. Chase, BofA)" value={payment.banco} onChange={(e) => setPayment((p) => ({ ...p, banco: e.target.value }))} placeholder="Chase" error={errors['banco']} required />
+                        <Input label="Titular de la cuenta que paga" value={payment.titular} onChange={(e) => setPayment((p) => ({ ...p, titular: e.target.value }))} placeholder="Nombre y apellido" error={errors['titular']} required />
+                        <Input label="Número de confirmación" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.trim().slice(0, 40) }))} placeholder="U123456789" error={errors['referencia']} required />
+                        <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
+                      </div>
+                    ) : payment.method === 'binance' ? (
+                      <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                        <Input label="Usuario Binance (correo o teléfono)" value={payment.titular} onChange={(e) => setPayment((p) => ({ ...p, titular: e.target.value }))} placeholder="tucorreo@mail.com" error={errors['titular']} required />
+                        <Input label="Order ID de la transacción" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.trim().slice(0, 40) }))} placeholder="123456789012" error={errors['referencia']} required />
+                        <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
+                      </div>
+                    ) : (
+                      <p className="mt-4 rounded-brand border-2 border-dashed border-line bg-ink p-4 text-sm text-muted">
+                        {payment.method === 'efectivo'
+                          ? 'Paga en efectivo al recibir tu pedido (o en tienda al retirar). No necesitas nada más: confirmamos y preparamos.'
+                          : 'Paga con tu tarjeta en el punto de venta al recibir tu pedido (o en tienda al retirar). No necesitas nada más: confirmamos y preparamos.'}
+                      </p>
+                    )}
+                  </>
                 )}
-
-                {/* Formulario Pago Móvil */}
-                <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                  <Select label="Banco del pago" value={payment.banco} onChange={(e) => setPayment((p) => ({ ...p, banco: e.target.value }))} error={errors['banco']} required>
-                    <option value="">Selecciona…</option>
-                    {VE_BANKS.map((b) => <option key={b} value={b}>{b}</option>)}
-                  </Select>
-                  <Input label="Cédula del pagador (solo números)" value={payment.cedula} onChange={(e) => setPayment((p) => ({ ...p, cedula: e.target.value }))} placeholder="12345678" inputMode="numeric" error={errors['cedula']} required />
-                  <Input label="Teléfono del pago" type="tel" value={payment.telefono} onChange={(e) => setPayment((p) => ({ ...p, telefono: e.target.value }))} placeholder="04241234567" error={errors['telefono']} required />
-                  <Input label="Referencia (últimos 6 dígitos)" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.replace(/\D/g, '').slice(0, 6) }))} error={errors['referencia']} inputMode="numeric" maxLength={6} placeholder="123456" required />
-                  <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
-                </div>
               </section>
 
-              {/* FLUJO ESTRICTO (5i-k): comprobante OBLIGATORIO aquí. El
-                  pedido nace con el pago incluido y el cajero solo ve pedidos
-                  ya pagados: nadie aprobará a ciegas ni llamará «para pedir el
-                  comprobante». */}
-              <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Comprobante de pago">
-                <h2 className="font-display text-lg font-bold italic uppercase text-paper">Comprobante de pago</h2>
-                <p className="mt-2 text-sm text-muted">
-                  Adjunta la foto o captura del comprobante de tu Pago Móvil.
-                </p>
+              {/* FLUJO ESTRICTO (5i-k): comprobante OBLIGATORIO aquí — SOLO en
+                  formas electrónicas. Contra entrega (5.80) no hay foto: se
+                  cobra al recibir (efectivo o terminal). El pedido nace con el
+                  pago incluido y el cajero solo ve pedidos ya pagados: nadie
+                  aprobará a ciegas ni llamará «para pedir el comprobante». */}
+              {needsReceipt ? (
+                <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Comprobante de pago">
+                  <h2 className="font-display text-lg font-bold italic uppercase text-paper">Comprobante de pago</h2>
+                  <p className="mt-2 text-sm text-muted">
+                    Adjunta la foto o captura del comprobante de tu {PAYMENT_METHOD_LABELS[payment.method]}.
+                  </p>
                 <input
                   ref={receiptInputRef}
                   type="file"
@@ -799,7 +940,20 @@ export default function CheckoutPage() {
                 {errors['receipt'] && (
                   <p className="mt-2 text-sm font-semibold text-signal">{errors['receipt']}</p>
                 )}
-              </section>
+                </section>
+              ) : (
+                <section className="rounded-brand-lg border-2 border-signal bg-signal/10 p-6" aria-label="Pago contra entrega">
+                  <h2 className="font-display text-lg font-bold italic uppercase text-paper">Pago contra entrega</h2>
+                  <p className="mt-2 text-sm text-paper">
+                    {payment.method === 'efectivo'
+                      ? 'Pagarás EN EFECTIVO al recibir tu pedido (o al retirar en tienda). Si puedes, ten el monto exacto: el mensajero lleva el total anotado.'
+                      : 'Pagarás con tu TARJETA en el punto de venta al recibir tu pedido (o al retirar en tienda). El terminal va listo con el total exacto.'}
+                  </p>
+                  <p className="mt-2 text-xs text-muted">
+                    Sin comprobante que subir: confirma y tu pedido entra en cola.
+                  </p>
+                </section>
+              )}
 
               <div className="flex gap-3">
                 <Button variant="secondary" type="button" onClick={() => setStep(1)}>Volver</Button>
@@ -844,7 +998,12 @@ export default function CheckoutPage() {
                     value={fulfillment === 'pickup' ? 'Retiro en tienda' : (zone?.name ?? address.zoneId)}
                   />
                   <Row label="Método de pago" value={PAYMENT_METHOD_LABELS[payment.method]} />
-                  <Row label="Comprobante" value={receipt ? 'Foto adjuntada ✓' : 'Sin adjuntar'} />
+                  <Row
+                    label={needsReceipt ? 'Comprobante' : 'Pago'}
+                    value={needsReceipt
+                      ? (receipt ? 'Foto adjuntada ✓' : 'Sin adjuntar')
+                      : 'Contra entrega · al recibir'}
+                  />
                   {quote && (
                     <Row
                       label="Total a pagar"
@@ -885,6 +1044,29 @@ export default function CheckoutPage() {
         </div>
       </Modal>
 
+      {/* 5.86 · QR AMPLIADO (pide el dueño): al tocar el QR del checkout se
+          abre a pantalla grande para escanearlo bien desde la app del banco.
+          Cierra con la ✕, tocando el fondo o con ESC (el Modal lo trae). */}
+      {payQr && zoneAccount && qrZoom && (
+        <Modal
+          open
+          onClose={() => setQrZoom(false)}
+          title={`QR · ${accountChipLabel(zoneAccount, siblingsOf(zoneAccount))}`}
+        >
+          <div className="flex flex-col items-center gap-4">
+            <img
+              src={payQr}
+              alt="Código QR ampliado para pagar"
+              className="w-full max-w-[380px] rounded-brand border-2 border-line bg-white p-2"
+            />
+            <p className="text-center text-sm text-muted">
+              Aquí lo tienes más grande para que lo escanees bien. Cuando el banco
+              te muestre los datos, confirma y vuelve aquí para registrar tu pago.
+            </p>
+          </div>
+        </Modal>
+      )}
+
       <SpeedDivider className="mt-12" />
     </div>
   );
@@ -898,5 +1080,49 @@ function Row({ label, value, strong = false }: { label: string; value: string; s
         {value}
       </dd>
     </div>
+  );
+}
+
+/** Fila de dato de pago con su ícono de copiar (5.79; antes decía «Copiar»). */
+function CopyRow({ label, value, copy }: { label: string; value: string; copy: string }) {
+  return (
+    <li className="flex items-center justify-between gap-3">
+      <span className="min-w-0">
+        {label}: <strong className="break-all">{value}</strong>
+      </span>
+      <CopyButton label={label} value={copy} />
+    </li>
+  );
+}
+
+/** Ícono de copiar (dos hojas superpuestas, trazo 5.79). */
+function CopyIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="9" width="12" height="12" rx="2.5" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+/** Botón ícono de copiar: feedback por toast; solo reporta éxito si el texto
+ *  REALMENTE llegó al portapapeles (Clipboard API con respaldo execCommand).
+ *  Ronda 5.79: ya no dice «Copiar» — cuadrado con el ícono y aria-label. */
+function CopyButton({ label, value }: { label: string; value: string }) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void copyText(value).then((ok) => {
+          if (ok) toast.success(`${label} copiado.`);
+          else toast.error('No se pudo copiar. Cópialo a mano.');
+        });
+      }}
+      className="grid h-8 w-8 shrink-0 place-items-center rounded-brand border border-line text-signal transition hover:bg-signal/10 active:scale-95"
+      aria-label={`Copiar ${label}`}
+      title={`Copiar ${label}`}
+    >
+      <CopyIcon />
+    </button>
   );
 }

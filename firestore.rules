@@ -128,20 +128,24 @@ service cloud.firestore {
     }
 
     /* ── users: el dueño lee/escribe SOLO sus campos de perfil ──
-       Ronda 3: create con validación estricta; update con LISTA BLANCA
-       (name, phoneE164). email, createdAt, createdAtMs (antifraude), role y
-       sessionEpoch quedan congelados para el cliente. */
+       Ronda 3: create con validación estricta; update con LISTA BLANCA.
+       Ronda 5.75: la lista blanca crece a (name, phoneE164, cedula, address):
+       el registro pide cédula y dirección completa, y «Mis datos» en Mi
+       Cuenta permite corregirlos. email, createdAt, createdAtMs (antifraude),
+       role y sessionEpoch siguen congelados para el cliente. */
     match /users/{uid} {
       allow read: if isOwner(uid) || isAdmin() || isGerente();
       allow create: if isOwner(uid)
         && request.resource.data.keys().hasAll(['name', 'email', 'role', 'sessionEpoch', 'createdAt'])
-        && request.resource.data.keys().hasOnly(['name', 'email', 'phoneE164', 'role', 'sessionEpoch', 'createdAt', 'createdAtMs'])
+        && request.resource.data.keys().hasOnly(['name', 'email', 'phoneE164', 'cedula', 'address', 'role', 'sessionEpoch', 'createdAt', 'createdAtMs'])
         && request.resource.data.role == 'customer'
         && str(request.resource.data.name, 1, 80)
         && request.resource.data.email is string
         && request.resource.data.email.size() >= 5
         && request.resource.data.email.size() <= 320
         && (!('phoneE164' in request.resource.data) || str(request.resource.data.phoneE164, 0, 20))
+        && (!('cedula' in request.resource.data) || str(request.resource.data.cedula, 0, 8))
+        && (!('address' in request.resource.data) || str(request.resource.data.address, 0, 200))
         && request.resource.data.sessionEpoch is number
         && request.resource.data.createdAt == request.time
         && (!('createdAtMs' in request.resource.data)
@@ -149,11 +153,19 @@ service cloud.firestore {
                   && request.resource.data.createdAtMs >= 0
                   && request.resource.data.createdAtMs <= request.time.toMillis() + 60000));
       allow update: if isOwner(uid)
-        // Lista blanca: nada más que nombre y teléfono puede cambiar el dueño.
+        // Lista blanca 5.75 + 5.90: nombre, teléfono, cédula, dirección y
+        // notifsLastReadAt (la campana marca los avisos como leídos al
+        // abrir /notificaciones — 1 write por visita, sin tocar avisos).
         && request.resource.data.diff(resource.data).affectedKeys()
-              .hasOnly(['name', 'phoneE164'])
+              .hasOnly(['name', 'phoneE164', 'cedula', 'address', 'notifsLastReadAt'])
         && (!('name' in request.resource.data) || str(request.resource.data.name, 1, 80))
-        && (!('phoneE164' in request.resource.data) || str(request.resource.data.phoneE164, 0, 20));
+        && (!('phoneE164' in request.resource.data) || str(request.resource.data.phoneE164, 0, 20))
+        && (!('cedula' in request.resource.data) || str(request.resource.data.cedula, 0, 8))
+        && (!('address' in request.resource.data) || str(request.resource.data.address, 0, 200))
+        && (!('notifsLastReadAt' in request.resource.data)
+              || (request.resource.data.notifsLastReadAt is number
+                  && request.resource.data.notifsLastReadAt >= 0
+                  && request.resource.data.notifsLastReadAt <= request.time.toMillis() + 60000));
       allow delete: if false;
 
       /* Tokens FCM del propio usuario (5.5). La validación de datos aplica
@@ -164,6 +176,15 @@ service cloud.firestore {
           && request.resource.data.keys().hasAll(['token'])
           && str(request.resource.data.token, 20, 4096);
         allow delete: if isOwner(uid);
+      }
+
+      /* 5.90 · Historial in-app de avisos (campana /notificaciones).
+         El cliente SOLO LEE sus avisos; la escritura es EXCLUSIVA del
+         servidor (Admin SDK bypasea reglas). La lectura de la lista ya la
+         acota el propio código (onSnapshot con limit 30, más nuevo arriba). */
+      match /notifs/{notifId} {
+        allow read: if isOwner(uid);
+        allow write: if false;
       }
     }
 
@@ -211,6 +232,10 @@ service cloud.firestore {
     match /counters/{id}                  { allow read, write: if false; }
     match /auditLog/{id}                  { allow read, write: if false; }
     match /fraudReview/{id}               { allow read, write: if false; }
+    // 5.89 · Copias de seguridad del catálogo: snapshots SOLO vía funciones
+    // (Admin SDK ignora las reglas). Explícita por claridad: el catch-all de
+    // abajo ya la bloquea, así que re-deployar reglas NO es imprescindible.
+    match /catalogBackups/{id}            { allow read, write: if false; }
 
     /* ── DENY BY DEFAULT: cualquier otra ruta queda bloqueada ── */
     match /{document=**} {

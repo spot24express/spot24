@@ -22,13 +22,14 @@
 import {
   createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut as fbSignOut,
   sendPasswordResetEmail, onAuthStateChanged, updateProfile,
+  reauthenticateWithCredential, updatePassword, EmailAuthProvider,
   RecaptchaVerifier, linkWithPhoneNumber, type ConfirmationResult, type RecaptchaVerifier as RecaptchaVerifierType, type User,
 } from 'firebase/auth';
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { logger } from '@/shared/lib/logger';
 import { AppError } from '@/shared/lib/errors';
-import { sanitizeText, isValidEmail } from '@/shared/lib/validation';
+import { sanitizeText, sanitizeDigits, sanitizeMultiline, isValidEmail } from '@/shared/lib/validation';
 import type { SpotUser } from '../types';
 
 /* ── Mensajes de error genéricos: el detalle técnico solo a logs (6.9) ── */
@@ -40,6 +41,9 @@ function mapUser(user: User, extra?: Partial<SpotUser>): SpotUser {
     email: user.email,
     phone: user.phoneNumber,
     name: user.displayName ?? '',
+    // Perfil extendido (5.75): el doc users/{uid} los completa en fetchProfile.
+    cedula: '',
+    address: '',
     role: 'customer', // el rol real llega por claims en fetchProfile
     emailVerified: user.emailVerified,
     sessionEpoch: 0,
@@ -54,6 +58,8 @@ async function fetchProfile(user: User): Promise<SpotUser> {
   const fb = await loadFirebase();
   let name = base.name;
   let phone = base.phone;
+  let cedula = base.cedula;
+  let address = base.address;
   let sessionEpoch = 0;
   // Ronda 5i-l: rol leído del doc users/{uid} como RESPALDO del claim.
   // ¿Por qué? El ID token vive ~1 h: si el admin asigna el rol con la sesión
@@ -75,6 +81,17 @@ async function fetchProfile(user: User): Promise<SpotUser> {
       if (typeof stored === 'string' && stored.trim() !== '') {
         phone = stored.trim();
       }
+      // Perfil extendido (5.75): cédula (solo dígitos) y dirección completa.
+      // Cuentas anteriores a 5.75 vienen sin estos campos → quedan '' y la
+      // propia pantalla «Mis datos» de Mi Cuenta invita a completarlos.
+      const storedCedula = snap.data()['cedula'];
+      if (typeof storedCedula === 'string' && storedCedula.trim() !== '') {
+        cedula = storedCedula.trim();
+      }
+      const storedAddress = snap.data()['address'];
+      if (typeof storedAddress === 'string' && storedAddress.trim() !== '') {
+        address = storedAddress.trim();
+      }
       docRole = snap.data()['role'];
     }
   }
@@ -86,6 +103,8 @@ async function fetchProfile(user: User): Promise<SpotUser> {
     ...base,
     name,
     phone,
+    cedula,
+    address,
     sessionEpoch,
     role: asRole(claimsRole) ?? asRole(docRole) ?? 'customer',
   };
@@ -93,10 +112,20 @@ async function fetchProfile(user: User): Promise<SpotUser> {
 
 /* ───────────────────────────── API pública ───────────────────────────── */
 
-export async function signUpEmail(name: string, email: string, password: string, phoneE164: string): Promise<SpotUser> {
+export async function signUpEmail(
+  name: string,
+  email: string,
+  password: string,
+  phoneE164: string,
+  cedula: string,
+  address: string,
+): Promise<SpotUser> {
   if (!isValidEmail(email)) throw new AppError('generic', 'email inválido en signUp');
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic', 'Firebase no configurado');
+  // 5.75: cédula SOLO dígitos (1-8) y dirección sanitizada con saltos.
+  const ced = sanitizeDigits(cedula, 8);
+  const addr = sanitizeMultiline(address, 200);
   try {
     const cred = await createUserWithEmailAndPassword(fb.auth, email.trim(), password);
     await updateProfile(cred.user, { displayName: sanitizeText(name, 80) });
@@ -107,6 +136,8 @@ export async function signUpEmail(name: string, email: string, password: string,
         name: sanitizeText(name, 80),
         email: email.trim().toLowerCase(),
         phoneE164: sanitizeText(phoneE164, 20),
+        cedula: ced,
+        address: addr,
         role: 'customer',
         sessionEpoch: nowMs,
         createdAt: serverTimestamp(),
@@ -117,7 +148,7 @@ export async function signUpEmail(name: string, email: string, password: string,
       },
       { merge: true },
     );
-    return mapUser(cred.user, { name: sanitizeText(name, 80), sessionEpoch: nowMs });
+    return mapUser(cred.user, { name: sanitizeText(name, 80), cedula: ced, address: addr, sessionEpoch: nowMs });
   } catch (e) {
     logger.warn('signUp falló', e);
     const code = (e as { code?: string }).code ?? '';
@@ -153,6 +184,71 @@ export async function sendReset(email: string): Promise<void> {
   } catch (e) {
     logger.warn('reset falló', e);
     // Respuesta neutra: no revelar si el correo existe (enumeración de usuarios).
+  }
+}
+
+/**
+ * Guarda cédula y dirección del PROPIO usuario en users/{uid} (ronda 5.75,
+ * «Mis datos» en Mi Cuenta). Reglas: lista blanca de update ampliada a
+ * ['name','phoneE164','cedula','address'] — nada más puede tocar el cliente.
+ * Devuelve los valores ya sanitizados para parchear el store sin relectura.
+ */
+export async function saveCustomerData(cedula: string, address: string): Promise<{ cedula: string; address: string }> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic', 'Firebase no configurado');
+  const user = fb.auth.currentUser;
+  if (!user) throw new AppError('unauthenticated', 'Inicia sesión para guardar tus datos.');
+  const ced = sanitizeDigits(cedula, 8);
+  const addr = sanitizeMultiline(address, 200);
+  if (ced.length < 4) throw new AppError('generic', 'La cédula necesita al menos 4 dígitos.');
+  if (addr.length < 8) throw new AppError('generic', 'La dirección necesita urbanización, calle y casa/apto.');
+  await setDoc(doc(fb.db, 'users', user.uid), { cedula: ced, address: addr }, { merge: true });
+  return { cedula: ced, address: addr };
+}
+
+/**
+ * Cambio de contraseña en sesión (ronda 5.75): re-autentica con la clave
+ * ACTUAL (Firebase lo exige) y actualiza. Sin correos, sin reenvío: el
+ * cliente resuelve en 20 segundos desde Mi Cuenta.
+ */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic', 'Firebase no configurado');
+  const user = fb.auth.currentUser;
+  if (!user || !user.email) {
+    throw new AppError('unauthenticated', 'Inicia sesión para cambiar tu contraseña.');
+  }
+  // 1) Re-autenticación: confirma identidad con la clave actual.
+  try {
+    await reauthenticateWithCredential(user, EmailAuthProvider.credential(user.email, currentPassword));
+  } catch (e) {
+    const code = (e as { code?: string }).code ?? '';
+    logger.warn('changePassword · reauth falló', code);
+    if (code.includes('wrong-password')) {
+      throw new AppError('generic', 'La contraseña actual no coincide.');
+    }
+    if (code.includes('too-many-requests')) {
+      throw new AppError('generic', 'Demasiados intentos. Espera un minuto e intenta de nuevo.');
+    }
+    if (code.includes('network-request-failed')) {
+      throw new AppError('generic', 'Sin conexión con Firebase. Revisa tu red e intenta de nuevo.');
+    }
+    throw new AppError('generic', 'No pudimos confirmar tu identidad. Revisa la contraseña actual.');
+  }
+  // 2) Actualización de la clave (la sesión acaba de revalidarse: no hay
+  //    requires-recent-login en la práctica; igual lo mapeamos por si acaso).
+  try {
+    await updatePassword(user, newPassword);
+  } catch (e) {
+    const code = (e as { code?: string }).code ?? '';
+    logger.warn('changePassword · update falló', code);
+    if (code.includes('weak-password')) {
+      throw new AppError('generic', 'La nueva contraseña necesita al menos 6 caracteres.');
+    }
+    if (code.includes('requires-recent-login')) {
+      throw new AppError('generic', 'Por seguridad, cierra sesión, vuelve a entrar e intenta de nuevo.');
+    }
+    throw new AppError('generic', 'No pudimos cambiar la contraseña. Intenta de nuevo en unos segundos.');
   }
 }
 

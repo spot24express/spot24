@@ -9,9 +9,8 @@ import {
   adminGetMetrics, type AdminMetrics, type BcvRateInfo,
 } from '../services/admin.service';
 import { loadFirebase } from '@/shared/lib/firebase';
-import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { STATUS_LABELS, ORDER_STATUSES, type OrderStatus } from '@/shared/constants/orders';
-import { formatUsd, formatBs, usdToBs } from '@/shared/lib/format';
+import { formatUsd } from '@/shared/lib/format';
 
 /**
  * Métricas básicas de ventas y pedidos (5.6), calculadas en el backend.
@@ -63,7 +62,6 @@ export default function AdminMetricsPage() {
   const [error, setError] = useState(false);
   // Tasa BCV: undefined = cargando · null = sin doc todavía · objeto = publicada.
   const [rate, setRate] = useState<BcvRateInfo | null | undefined>(undefined);
-  const liveRate = useBcvRate();
   // Tick de staleness: re-render cada 60 s para que la edad del último intento
   // no quede congelada si el panel queda abierto.
   const [, setTick] = useState(0);
@@ -242,9 +240,9 @@ export default function AdminMetricsPage() {
   };
 
   const maxDay = metrics ? Math.max(1, ...metrics.ordersLast7d) : 1;
-  // Conversión de la venta 30d a Bs con la tasa en vivo (solo presentación).
-  const revenueBs =
-    metrics && liveRate ? usdToBs(metrics.revenueUsd30d, liveRate.rate) : null;
+  const hayPedidos7d = metrics ? metrics.ordersLast7d.some((n) => n > 0) : false;
+  // Día de HOY en el eje lun→dom (0=lun … 6=dom): es la barra resaltada.
+  const hoyIdx = (new Date().getDay() + 6) % 7;
 
   // ── Vigía del cron (ronda 5.5) ──
   // lastAttemptAt se escribe en CADA lectura del cron (tasa nueva o no):
@@ -423,9 +421,6 @@ export default function AdminMetricsPage() {
             <div className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
               <p className="spot-label">Ventas 30 días</p>
               <BigFigure tone="signal">{formatUsd(metrics.revenueUsd30d).replace('US$', '$')}</BigFigure>
-              {revenueBs !== null && (
-                <p className="mt-1 spot-label">≈ {formatBs(revenueBs)} con la tasa BCV vigente</p>
-              )}
             </div>
             <div className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
               <p className="spot-label">Pedidos totales</p>
@@ -454,22 +449,33 @@ export default function AdminMetricsPage() {
             </ul>
           </section>
 
-          {/* Últimos 7 días */}
+          {/* Semana actual lun→dom — FIX 5.75: (a) las barras medían 0 px
+              (height % contra columna sin altura definida): el gráfico nunca
+              se vio — ahora la columna estira la caja y muestra su número;
+              (b) ventana cambiada de «rodante 7 días» a SEMANA FIJA lun→dom
+              (a pedido del dueño); la barra de HOY se resalta en señal. */}
           <section aria-labelledby="week-metrics">
-            <h3 id="week-metrics" className="mb-4 spot-title text-xl">Pedidos últimos 7 días</h3>
-            <div className="flex h-40 items-end gap-3 rounded-brand-lg border-2 border-line bg-surface-1 p-6">
-              {metrics.ordersLast7d.map((n, i) => (
-                <div key={i} className="flex flex-1 flex-col items-center gap-2">
-                  <div
-                    className={`w-full rounded-t-brand ${i === metrics.ordersLast7d.length - 1 ? 'bg-signal' : 'bg-surface-3'}`}
-                    style={{ height: `${Math.max(6, (n / maxDay) * 100)}%` }}
-                    role="img"
-                    aria-label={`${n} pedidos`}
-                  />
-                  <span className="spot-label">{['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'][(new Date().getDay() - (metrics.ordersLast7d.length - 1 - i) + 7) % 7]}</span>
-                </div>
-              ))}
-            </div>
+            <h3 id="week-metrics" className="mb-4 spot-title text-xl">Pedidos de la semana (lun → dom)</h3>
+            {hayPedidos7d ? (
+              <div className="flex h-40 items-end gap-3 rounded-brand-lg border-2 border-line bg-surface-1 p-6">
+                {metrics.ordersLast7d.map((n, i) => (
+                  <div key={i} className="flex h-full flex-1 flex-col items-center justify-end gap-1.5">
+                    <span aria-hidden="true" className="font-display text-sm font-bold italic text-paper">{n}</span>
+                    <div
+                      className={`w-full rounded-t-brand ${i === hoyIdx ? 'bg-signal' : 'bg-surface-3'}`}
+                      style={{ height: `${Math.max(3, (n / maxDay) * 60)}%` }}
+                      role="img"
+                      aria-label={`${n} pedidos`}
+                    />
+                    <span className="spot-label">{['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'][i]}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="rounded-brand-lg border-2 border-line bg-surface-1 p-6 spot-label">
+                Sin pedidos esta semana. En cuanto entren, aparecen aquí por día.
+              </p>
+            )}
           </section>
 
           <SpeedLines />

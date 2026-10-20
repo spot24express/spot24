@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateAdd, clampSetQty, mergeCarts, subtotalRef, itemCount, cartLineKey } from '../lib/cartLogic';
+import { validateAdd, clampSetQty, mergeCarts, subtotalRef, itemCount, cartLineKey, singleLineForProduct } from '../lib/cartLogic';
 import type { CartItem } from '../types';
 
 const item = (variantId: string, qty: number, stockAtAdd = 10, unitPriceUsd = 5): CartItem => ({
@@ -97,5 +97,23 @@ describe('totales referenciales', () => {
     const items = [item('v1', 2, 10, 12.5), item('v2', 1, 10, 3.25)];
     expect(subtotalRef(items)).toBe(28.25);
     expect(itemCount(items)).toBe(3);
+  });
+});
+
+describe('singleLineForProduct (5.81 · stepper en tarjeta)', () => {
+  it('sin líneas → null (la tarjeta muestra el círculo «+»)', () => {
+    expect(singleLineForProduct([], 'p1')).toBeNull();
+    expect(singleLineForProduct([item('v1', 2)], 'pX')).toBeNull();
+  });
+
+  it('una línea → esa línea (la tarjeta muestra «− qty +»)', () => {
+    const line = singleLineForProduct([item('v1', 3, 10)], 'p1');
+    expect(line?.qty).toBe(3);
+    expect(line?.stockAtAdd).toBe(10);
+  });
+
+  it('dos o más líneas (varias variantes) → null (ajuste fino en el carrito)', () => {
+    const items = [item('v1', 1), item('v2', 2)];
+    expect(singleLineForProduct(items, 'p1')).toBeNull();
   });
 });

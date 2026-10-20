@@ -38,13 +38,23 @@ async function appCheckToken(): Promise<string | null> {
 function toAppError(code: string, serverMessage?: string): AppError {
   let mapped: AppErrorCode = 'generic';
   if (code.includes('unauthenticated')) mapped = 'unauthenticated';
-  else if (code.includes('permission-denied') || code.includes('failed-precondition')) {
+  else if (code.includes('permission-denied')) mapped = 'forbidden';
+  else if (code.includes('failed-precondition')) {
     // Ronda 5i-b: la reserva vencida viaja como failed-precondition y el
     // cliente TIENE un código propio para ella ('reservation': CheckoutPage
     // re-reserva y pide confirmar de nuevo), pero nunca se mapeaba → el
     // cliente veía el genérico «No tienes acceso a esta área.» (mismo vicio
     // que el 5g corrigió en AdminPaymentsPage).
-    mapped = serverMessage?.startsWith('Reserva vencida') ? 'reservation' : 'forbidden';
+    // 5.87d: los errores CRUDOS de Firestore también llegan aquí como
+    // 'failed-precondition' (http-ctx normaliza el gRPC 9) con mensaje que
+    // empieza «9 FAILED_PRECONDITION: …» (p. ej. índice faltante). NO son un
+    // problema de permisos: viajan como 'generic' («reintenta») y el motivo
+    // real queda en e.message para los flujos de admin que lo muestran —
+    // antes el toast decía «No tienes acceso a esta área.» por un índice,
+    // diagnóstico imposible para el dueño.
+    if (serverMessage?.startsWith('Reserva vencida')) mapped = 'reservation';
+    else if (serverMessage?.startsWith('9 FAILED_PRECONDITION')) mapped = 'generic';
+    else mapped = 'forbidden';
   }
   else if (code.includes('resource-exhausted')) mapped = 'rate-limit';
   else if (code.includes('out-of-range')) mapped = 'stock';
@@ -124,10 +134,12 @@ export async function callFunction<TRes = unknown>(
     // («Sin stock suficiente.», «Variante inexistente.», etc.). Antes solo
     // se registraba el código y diagnosticar un 400 obligaba a adivinar.
     // El mensaje es estático y sin PII (lo controla nuestro propio backend).
-    logger.warn(`fn ${name} falló`, {
-      code: code || res.status,
-      motivo: payload?.error?.message ?? '(sin mensaje del servidor)',
-    });
+    // Ronda 5.87b: línea PLANA de una pieza — con el objeto anidado la consola
+    // del dueño mostraba «Object» y el paste no traía información. Así el
+    // código y el motivo real llegan completos en cualquier copia de consola.
+    logger.warn(
+      `fn ${name} falló · http=${res.status} · code=${code || 'n/d'} · motivo=${payload?.error?.message ?? '(sin mensaje del servidor)'}`,
+    );
     throw toAppError(code, payload?.error?.message);
   }
   return payload.result as TRes;

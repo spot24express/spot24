@@ -66,6 +66,21 @@ export default defineConfig({
             },
           },
           {
+            // Fix 5.75 · imgbb a prueba de redes venezolanas: TODO lo subido por
+            // el panel y los comprobantes de pago viven en imgbb (i.ibb.co,
+            // nombres con hash = inmutables). El CDN de imgbb a veces no
+            // responde desde redes venezolanas (ERR_CONNECTION_TIMED_OUT):
+            // si la imagen ya se vio una vez, el SW la sirve del cache SIN
+            // volver a tocar la red. Mismo trato que Storage (CacheFirst).
+            urlPattern: /^https:\/\/i\.ibb\.co\/.*/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'spot24-imgbb-images',
+              expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
             // Respuestas GET de Firestore: network-first con timeout corto.
             // Permite leer catálogo y carrito sin conexión (Workbox), sin
             // cachear nunca escrituras (los POST/PUT no pasan por aquí).
@@ -95,6 +110,12 @@ export default defineConfig({
     host: true,
     strictPort: true,
     headers: { 'Content-Security-Policy': DEV_CSP },
+    // Fix 5.75 · netlify dev sirve la página en :8888 y hace proxy HTTP hacia
+    // Vite (:3000), pero su proxy NO reenvía el handshake WebSocket del HMR
+    // (400). clientPort: 3000 → el navegador conecta el WS de recarga DIRECTO
+    // a Vite, sin pasar por el proxy (HTTP sigue por 8888, el WS por 3000).
+    // Clave SOLO de desarrollo: el build de producción no la usa.
+    hmr: { clientPort: 3000 },
   },
   preview: {
     port: 3000,

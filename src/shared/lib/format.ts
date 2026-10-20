@@ -78,3 +78,22 @@ export function maskPhone(phone: string): string {
   if (clean.length < 4) return '••••';
   return `${clean.slice(0, 4)}•••••${clean.slice(-4)}`;
 }
+
+/**
+ * RIF listo para app bancaria (5.75): J-12345678-9 → 123456789.
+ * Los bancos rechazan letras y guiones al pegar el RIF del beneficiario,
+ * así que el botón «Copiar» del checkout entrega SOLO los números.
+ */
+export function rifToDigits(rif: string): string {
+  return rif.replace(/\D/g, '');
+}
+
+/**
+ * Monto en Bs limpio para pegar en la app del banco (5.75): 1234,56 —
+ * sin «Bs.», sin separador de miles y con coma decimal (lo que esperan
+ * Banesco/Mercantil/BOD al capturar el monto del pago móvil).
+ */
+export function cleanAmountBs(amount: number): string {
+  const safe = Number.isFinite(amount) ? amount : 0;
+  return safe.toFixed(2).replace('.', ',');
+}

@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { logger } from '@/shared/lib/logger';
+import { normalizeCategoryList } from '@/shared/lib/categoryTree';
 import type { CatalogQuery, Product } from '../types';
 import type { Page } from '@/shared/types';
 import type { CategoryDef } from '@/shared/constants/categories';
@@ -36,7 +37,11 @@ function decodeCursor(cursor: string): { createdAt: number; id: string } | null 
 
 function buildProductsQuery(q: CatalogQuery, base: Query<DocumentData>): Query<DocumentData> {
   const clauses: Parameters<typeof query>[1][] = [];
-  if (q.categoryId) clauses.push(where('categoryId', '==', q.categoryId));
+  // categoryIds (varios ids con `in`) queda como soporte GENÉRICO de la API:
+  // desde 5.78c la tienda NO lo usa — cada categoría filtra solo lo suyo
+  // (categoryId ==). Ningún caller lo pasa hoy.
+  if (q.categoryIds?.length) clauses.push(where('categoryId', 'in', q.categoryIds.slice(0, 30)));
+  else if (q.categoryId) clauses.push(where('categoryId', '==', q.categoryId));
   if (q.minPriceUsd !== undefined) clauses.push(where('basePriceUsd', '>=', q.minPriceUsd));
   if (q.maxPriceUsd !== undefined) clauses.push(where('basePriceUsd', '<=', q.maxPriceUsd));
   if (q.inStockOnly) clauses.push(where('stockTotal', '>', 0));
@@ -71,15 +76,17 @@ function mapProduct(id: string, data: DocumentData): Product {
 
 /* ───────────────────────────── API pública ───────────────────────────── */
 
-/** Mapa de un documento de categoría (compartido por lectura y vigía en vivo). */
-function mapCategory(id: string, c: DocumentData, i: number): CategoryDef {
+/** Mapa de un documento de categoría (compartido por lectura y vigía en vivo).
+ *  code y parentId quedan afinados por normalizeCategoryList (shared/lib/categoryTree). */
+function mapCategory(id: string, c: DocumentData): CategoryDef {
   return {
     id,
-    code: String(i + 1).padStart(2, '0'),
+    code: '',
     name: String(c.name ?? ''),
     tagline: String(c.tagline ?? ''),
     imageUrl: typeof c.imageUrl === 'string' && c.imageUrl ? c.imageUrl : undefined,
     active: c.active !== false,
+    parentId: typeof c.parentId === 'string' && c.parentId ? c.parentId : '',
   };
 }
 
@@ -97,19 +104,26 @@ export async function listCategories(): Promise<CategoryDef[]> {
       query(collection(fb.db, 'categories'), orderBy('createdAt', 'asc'), fbLimit(60)),
     );
     if (snap.empty) return [];
-    return snap.docs
-      .map((d, i) => mapCategory(d.id, d.data(), i))
-      .filter((c) => c.name && c.active !== false);
+    return normalizeCategoryList(
+      snap.docs
+        .map((d) => mapCategory(d.id, d.data()))
+        .filter((c) => c.name && c.active !== false),
+    );
   } catch {
     return [];
   }
 }
 
-export async function countByCategory(categoryId: string): Promise<number> {
+/**
+ * Conteo de productos activos de una rama: la categoría + sus subcategorías
+ * (ronda 5.76). La consulta usa `in` con la misma forma que el listado.
+ */
+export async function countByCategory(categoryId: string, extraIds: string[] = []): Promise<number> {
   const fb = await loadFirebase();
   if (!fb) return 0;
+  const ids = [...new Set([categoryId, ...extraIds])].slice(0, 30);
   const snap = await getCountFromServer(
-    query(collection(fb.db, PRODUCTS), where('categoryId', '==', categoryId), where('active', '==', true)),
+    query(collection(fb.db, PRODUCTS), where('categoryId', 'in', ids), where('active', '==', true)),
   );
   return snap.data().count;
 }
@@ -230,7 +244,7 @@ export function subscribeCategoryChanges(cb: () => void): () => void {
     unsub = onSnapshot(
       query(collection(fb.db, 'categories'), orderBy('createdAt', 'asc'), fbLimit(60)),
       (snap) => {
-        const sig = JSON.stringify(snap.docs.map((d, i) => mapCategory(d.id, d.data(), i)));
+        const sig = JSON.stringify(snap.docs.map((d) => mapCategory(d.id, d.data())));
         if (prev !== null && sig !== prev) cb();
         prev = sig;
       },

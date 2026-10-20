@@ -4,11 +4,12 @@ import { SpeedDivider, SpeedLines } from '@/shared/components/brand/Logo';
 import { ProductGridSkeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState, ErrorState } from '@/shared/components/ui/States';
 import { useCategories, useProductList, usePromos } from '../hooks/useCatalog';
-import { useZones } from '@/features/delivery/hooks/useZones';
+import { isTopLevel } from '@/shared/lib/categoryTree';
 import { CategoryCard } from '../components/CategoryCard';
 import { ProductCard } from '../components/ProductCard';
 import { SearchBar } from '../components/SearchBar';
 import { VOICE } from '@/shared/constants/brand';
+import { getGeneralSettingsCached, GENERAL_SEED } from '@/shared/services/settings.service';
 
 /** Fotos del local para el banner (limpias, sin texto superpuesto).
  *  FALLBACK: se muestran cuando no hay promos activas en Firestore. */
@@ -54,13 +55,30 @@ interface Slide {
 export default function HomePage() {
   useDocumentTitle('Tu parada segura. 24/7');
   const { data: categories } = useCategories();
+  // Ronda 5.76: el Home muestra SOLO categorías principales — las subcategorías
+  // viven dentro de su bahía (chips del catálogo), no como tarjetas sueltas.
+  const parents = categories?.filter(isTopLevel) ?? [];
   const { data: page, isError, refetch } = useProductList({}, 8);
-  const { data: zones } = useZones();
-
-  // Cobertura real (zonas activas del admin): ETA mínimo y máximo de Maracay.
-  const activeZones = zones?.filter((z) => z.active) ?? [];
-  const etaMin = activeZones.length ? Math.min(...activeZones.map((z) => z.etaMinMinutes)) : null;
-  const etaMax = activeZones.length ? Math.max(...activeZones.map((z) => z.etaMaxMinutes)) : null;
+  // 5.75: la franja de cobertura ya NO muestra el ETA de zonas («en 15-20 min»):
+  // muestra el HORARIO en que trabajan los deliverys, que el dueño edita en
+  // Admin → Ajustes (settings/general.deliveryHours) sin deploy ni código.
+  // Fallback: seed del servicio mientras el doc no exista o el campo venga vacío.
+  const [deliveryHours, setDeliveryHours] = useState(GENERAL_SEED.deliveryHours);
+  useEffect(() => {
+    let alive = true;
+    void getGeneralSettingsCached()
+      .then((g) => {
+        // Promesa compartida con RootLayout: 1 sola lectura de settings/general
+        // por carga de app, sin costo extra aunque el Home se abra mil veces.
+        if (alive && g?.deliveryHours) setDeliveryHours(g.deliveryHours);
+      })
+      .catch(() => {
+        /* sin ajustes: sigue el valor por defecto */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // Promos del carrusel EN VIVO: undefined = cargando, [] = sin promos activas
   // (usa BANNER). El vigía refresca al instante cuando el admin edita promos.
@@ -131,7 +149,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* COBERTURA — operamos en Maracay: retiro en tienda + envío por zona */}
+      {/* COBERTURA — operamos en Maracay: horario de deliverys + retiro en tienda */}
       <section className="mt-4" aria-label="Cobertura de entrega">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-brand border-2 border-line bg-surface-1 px-4 py-3">
           <span className="inline-flex items-center gap-1.5 font-display text-sm font-bold italic uppercase text-signal">
@@ -142,9 +160,7 @@ export default function HomePage() {
             Maracay, Aragua
           </span>
           <p className="text-sm text-muted">
-            {etaMin !== null && etaMax !== null
-              ? `Envío a domicilio en ${etaMin}–${etaMax} min · Retiro en tienda sin costo`
-              : 'Envío a domicilio por zonas · Retiro en tienda sin costo'}
+            Envío a domicilio {deliveryHours} · Retiro en tienda sin costo
           </p>
         </div>
       </section>
@@ -210,11 +226,11 @@ export default function HomePage() {
       {/* CATEGORÍAS — bahías según la cantidad que gestione el admin */}
       <section className="mt-12" aria-labelledby="cats-title">
         <h2 id="cats-title" className="spot-title mb-2">
-          {categories && categories.length === 1 ? 'La bahía' : categories && categories.length > 1 ? `${categories.length} bahías` : 'Las bahías'}
+          {parents.length === 1 ? 'La bahía' : parents.length > 1 ? `${parents.length} bahías` : 'Las bahías'}
         </h2>
         <p className="spot-subtitle mb-6">Elige tu categoría. Todo en el mismo pit stop.</p>
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {categories?.map((c) => (
+          {parents.map((c) => (
             <CategoryCard key={c.id} category={c} />
           ))}
         </div>

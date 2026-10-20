@@ -33,6 +33,8 @@ export function useAuth() {
   const signUp = useAuthStore((s) => s.signUp);
   const signOut = useAuthStore((s) => s.signOut);
   const resetPassword = useAuthStore((s) => s.resetPassword);
+  const saveMyData = useAuthStore((s) => s.saveMyData);
+  const changeMyPassword = useAuthStore((s) => s.changeMyPassword);
   return {
     user,
     ready,
@@ -44,6 +46,9 @@ export function useAuth() {
     signUp,
     signOut,
     resetPassword,
+    /** 5.75: «Mis datos» (cédula + dirección) y cambio de contraseña. */
+    saveMyData,
+    changeMyPassword,
   };
 }
 

@@ -76,3 +76,17 @@ export function subtotalRef(items: CartItem[]): number {
 export function itemCount(items: CartItem[]): number {
   return items.reduce((acc, i) => acc + i.qty, 0);
 }
+
+/**
+ * Ronda 5.81 · La ÚNICA línea en carrito de un producto, o null.
+ * La tarjeta de producto la usa para mostrar el stepper «− qty +» (Farmatodo):
+ * · 0 líneas  → null  → la tarjeta muestra el círculo «+» de agregado rápido.
+ * · 1 línea   → esa línea → la tarjeta muestra el stepper sobre ella.
+ * · 2+ líneas → null  → producto con VARIAS variantes elegidas en la ficha:
+ *   no hay una cantidad única que subir/bajar, así que la tarjeta conserva
+ *   el «+» (que lleva a la ficha) y el ajuste fino vive en el carrito.
+ */
+export function singleLineForProduct(items: CartItem[], productId: string): CartItem | null {
+  const lines = items.filter((i) => i.productId === productId);
+  return lines.length === 1 ? lines[0] ?? null : null;
+}

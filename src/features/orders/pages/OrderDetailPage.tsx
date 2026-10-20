@@ -11,11 +11,14 @@ import { ListSkeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState } from '@/shared/components/ui/States';
 import { subscribeOrder, listOrderEvents, cancelOrder, uploadReceipt } from '../services/orders.service';
 import type { Order, OrderEvent } from '../types';
-import { STATUS_CUSTOMER_TEXT, STATUS_LABELS, PAYMENT_METHOD_LABELS } from '@/shared/constants/orders';
+import {
+  customerStatusText, STATUS_LABELS, PAYMENT_METHOD_LABELS, PAYMENT_REQUIRES_RECEIPT,
+} from '@/shared/constants/orders';
 import { formatBs, usdToBs, maskReference } from '@/shared/lib/format';
 import { getProductsByIds } from '@/features/catalog/services/catalog.service';
 import { cleanProductName } from '@/shared/lib/display';
 import { userMessage } from '@/shared/lib/errors';
+import { alFallarFoto } from '@/shared/lib/imgFallback';
 import { AppError } from '@/shared/lib/errors';
 
 /** Seguimiento en vivo: listener acotado a un documento (5.5). */
@@ -91,11 +94,17 @@ export default function OrderDetailPage() {
   }
 
   /* POLÍTICA DEL DUEÑO (5.26): el cliente cancela solo ANTES de efectuar el
-   * pago. Todo pedido nuevo nace con comprobante (5i-k), así que el botón
-   * solo aparece en los legacy sin comprobante; con pago registrado NO hay
-   * cancelación para el cliente y NO se ofrece ningún canal (WhatsApp fuera). */
+   * pago. Todo pedido electrónico nace con comprobante (5i-k); los de contra
+   * entrega (5.80) nacen ya en verificación sin comprobante que subir. El
+   * botón solo aparece en los legacy «pendiente» sin pago registrado: con
+   * pedido en curso NO hay cancelación para el cliente ni canal de rescate. */
   const canCancel = order.status === 'pendiente' && !order.payment.hasReceipt;
-  const needsReceipt = !order.payment.hasReceipt && order.status !== 'entregado' && order.status !== 'cancelado';
+  // Contra entrega (efectivo/punto_venta, 5.80): NUNCA se pide comprobante —
+  // el pago ocurre al recibir. Solo las electrónicas muestran el botón de subida.
+  const needsReceipt = PAYMENT_REQUIRES_RECEIPT[order.payment.method]
+    && !order.payment.hasReceipt
+    && order.status !== 'entregado'
+    && order.status !== 'cancelado';
   const receiptToShow = order.payment.receiptUrl ?? null;
 
   /* Ronda 3: el cliente SOLO ve bolívares. Toda partida se muestra en Bs con
@@ -131,7 +140,7 @@ export default function OrderDetailPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="spot-title">{order.code}</h1>
-          <p className="spot-subtitle mt-1">{STATUS_CUSTOMER_TEXT[order.status]}</p>
+          <p className="spot-subtitle mt-1">{customerStatusText(order.status, order.payment.method)}</p>
         </div>
         <StatusBadge status={order.status} />
       </div>
@@ -161,7 +170,7 @@ export default function OrderDetailPage() {
                 const displayName = brand ? cleanProductName(line.name, brand) : line.name;
                 return (
                   <li key={`${line.productId}:${line.variantId}`} className="flex items-center gap-4">
-                    <img src={line.image} alt={displayName} className="h-16 w-16 shrink-0 rounded-brand border border-line object-cover" loading="lazy" />
+                    <img src={line.image} alt={displayName} className="h-16 w-16 shrink-0 rounded-brand border border-line object-cover" loading="lazy" onError={alFallarFoto} />
                     <div className="min-w-0 flex-1">
                       {brand && <p className="spot-label truncate">{brand}</p>}
                       {/* FIX 5.32: nombre hasta 2 LÍNEAS como en el carrito
@@ -211,6 +220,14 @@ export default function OrderDetailPage() {
           <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
             <h2 className="font-display text-lg font-bold italic uppercase text-paper">Pago</h2>
             <p className="mt-2 text-paper">{PAYMENT_METHOD_LABELS[order.payment.method]}</p>
+            {/* Contra entrega (5.80): se dice CUÁNDO se paga, sin referencia. */}
+            {!PAYMENT_REQUIRES_RECEIPT[order.payment.method] && (
+              <p className="mt-1 text-sm text-muted">
+                {order.payment.method === 'efectivo'
+                  ? 'Pagas en efectivo al recibir tu pedido (o en tienda al retirar).'
+                  : 'Pagas con tu tarjeta en el punto de venta al recibir (o en tienda al retirar).'}
+              </p>
+            )}
             {order.payment.referenceMasked && (
               <p className="mt-1 text-sm text-muted">Referencia {maskReference(order.payment.referenceMasked)}</p>
             )}

@@ -5,9 +5,10 @@ import { Logo, LogoShield, SpeedLines } from '@/shared/components/brand/Logo';
 import { OfflineBanner } from '@/shared/components/ui/States';
 import { useCart } from '@/features/cart/hooks/useCart';
 import { useAuth } from '@/features/auth/hooks/useAuth';
+import { useNotifs } from '@/features/orders/hooks/useNotifs';
 import { NewOrderAlert } from '@/features/admin/components/NewOrderAlert';
 import { BRAND } from '@/shared/constants/brand';
-import { getGeneralSettings } from '@/shared/services/settings.service';
+import { getGeneralSettingsCached } from '@/shared/services/settings.service';
 import { waHref } from '@/shared/lib/whatsapp';
 
 function TopBar() {
@@ -25,6 +26,10 @@ function TopBar() {
           <Logo className="h-8" />
         </NavLink>
         <nav className="flex items-center gap-2" aria-label="Principal">
+          {/* 5.90 · Campana del historial de avisos (cliente con sesión): SOLO
+              PC/tablet (≥sm, igual que «Panel») — en el teléfono no cabe y su
+              seguimiento ya vive en Pedidos y en los avisos del sistema. */}
+          {user && <NotifBell />}
           {/* Personal (admin/gerente/cajero/delivery): entrada al panel operativo.
               Ronda 5i-i: antes solo aparecía para admin y el resto del personal
               no tenía NINGUNA entrada visible (había que teclear /admin). */}
@@ -242,13 +247,22 @@ function Footer({ waLink }: { waLink: string | null }) {
 
 export function RootLayout() {
   const location = useLocation();
+  // 5.75 · Key del envoltorio de transición: la ruta COMPLETA fuera del panel
+  // (cada entrada a producto/categoría/página entra con animación) y key FIJA
+  // dentro de /admin/* (AdminLayout es layout anidado: con key por ruta se
+  // remontaría el panel entero en cada navegación interna — flicker del menú
+  // y re-suscripciones gratis). Los ?query no tocan el pathname: filtros
+  // y búsquedas NO remontan.
+  const routeKey = location.pathname.startsWith('/admin') ? 'admin' : location.pathname;
   // WhatsApp de soporte: número fijado por el admin en /admin/ajustes.
+  // 5.75: promesa COMPARTIDA (getGeneralSettingsCached) — el Home (horario de
+  // deliverys) y este layout consumen la MISMA lectura: 1 doc leído por carga.
   const [waLink, setWaLink] = useState<string | null>(null);
   // Registra el service worker de la PWA (autoUpdate, sin inline script).
   useEffect(() => {
     registerSW({ immediate: true });
     let alive = true;
-    void getGeneralSettings()
+    void getGeneralSettingsCached()
       .then((g) => {
         if (alive && g) setWaLink(waHref(g.whatsappNumber));
       })
@@ -264,13 +278,19 @@ export function RootLayout() {
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [location.pathname]);
-
   return (
     <div className="flex min-h-dvh flex-col">
       <OfflineBanner />
       <TopBar />
       <main className="flex-1 pb-16 sm:pb-0">
-        <Outlet />
+        {/* 5.75 · Transición de ruta: el contenido entra con fundido + subida
+            leve (CSS .route-enter, 180 ms) en vez del corte seco de antes.
+            El key (routeKey, ver arriba) remonta el envoltorio SOLO al cambiar
+            de página; el bloque global prefers-reduced-motion de index.css la
+            desactiva para quien la pida. */}
+        <div key={routeKey} className="route-enter">
+          <Outlet />
+        </div>
       </main>
       <Footer waLink={waLink} />
       {waLink && <WhatsAppFab href={waLink} />}
@@ -345,6 +365,35 @@ function InstagramIcon({ size }: NavIconProps) {
       <rect x="2.5" y="2.5" width="19" height="19" rx="5.5" />
       <circle cx="12" cy="12" r="4.2" />
       <circle cx="17.4" cy="6.6" r="1.1" fill="currentColor" stroke="none" />
+    </Icon>
+  );
+}
+
+/** 5.90 · Campana → /notificaciones con puntito de avisos sin leer. */
+function NotifBell() {
+  const { unread } = useNotifs();
+  return (
+    <NavLink
+      to="/notificaciones"
+      aria-label={unread > 0 ? `Notificaciones, ${unread} sin leer` : 'Notificaciones'}
+      className="relative hidden min-h-[44px] min-w-[44px] items-center justify-center rounded-brand border-2 border-line hover:border-signal sm:inline-flex"
+    >
+      <BellIcon size={20} />
+      {unread > 0 && (
+        <span
+          aria-hidden="true"
+          className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-signal ring-2 ring-ink"
+        />
+      )}
+    </NavLink>
+  );
+}
+
+function BellIcon({ size }: NavIconProps) {
+  return (
+    <Icon size={size}>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
     </Icon>
   );
 }

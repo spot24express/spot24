@@ -15,6 +15,7 @@ const NAV: ReadonlyArray<{ to: string; label: string; code: string; roles: reado
   { to: '/admin/metricas', label: 'Métricas', code: '07', roles: ['admin', 'gerente'] },
   { to: '/admin/promos', label: 'Promos', code: '08', roles: ['admin', 'gerente'] },
   { to: '/admin/ajustes', label: 'Ajustes', code: '09', roles: ['admin'] },
+  { to: '/admin/copias', label: 'Copias', code: '10', roles: ['admin'] },
 ];
 
 const SUBTITLE: Record<string, string> = {

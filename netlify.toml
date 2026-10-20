@@ -35,6 +35,36 @@
 [functions."fn-runBcvRate"]
   timeout = 26
 
+# 5.75 · Reparación one-shot del stockTotal (fn-recomputeStock): con catálogos
+# grandes lee variantes de todos los productos en tandas; 26 s = margen igual
+# que el resto de funciones administrativas.
+[functions."fn-recomputeStock"]
+  timeout = 26
+
+# 5.87 · Importar inventario (fn-importInventory): lee el PDF del POS (hasta
+# 400 páginas), empareja por código y escribe en lotes; 26 s = margen igual
+# que el resto de funciones administrativas (en producción corre en 1-5 s).
+[functions."fn-importInventory"]
+  timeout = 26
+
+# 5.89 · Copias de seguridad del catálogo: exportar ensambla el catálogo y
+# guardar/restaurar escriben snapshots en Firestore (la restauración además
+# guarda la copia previa de seguridad); 26 s = margen igual que el resto.
+[functions."fn-exportCatalog"]
+  timeout = 26
+
+[functions."fn-listCatalogBackups"]
+  timeout = 26
+
+[functions."fn-saveCatalogBackup"]
+  timeout = 26
+
+[functions."fn-restoreCatalog"]
+  timeout = 26
+
+[functions."backup-catalog"]
+  timeout = 26
+
 # Funciones de negocio (ronda 5.7): con la red del operador degradada (QUIC
 # con pérdida de paquetes), cada llamada a Firestore tarda 17-28 s en
 # `netlify dev` y el tope por defecto mataba la lambda → 500 SIN cuerpo
@@ -128,12 +158,19 @@
 #   la frontera dura está en script-src (nunca hay JS inline).
 # connect-src: Firestore, Auth, Installations, App Check, Messaging y telemetría
 #   de Firebase; las funciones de negocio viven en el mismo origen ('self').
+#   + ws://localhost:3000 y ws://127.0.0.1:3000 — SOLO el HMR de Vite en
+#     desarrollo: la página se abre vía el proxy de netlify dev (:8888) pero
+#     el cliente de Vite conecta su websocket directo al servidor de Vite
+#     (:3000, con token); sin esto la CSP lo bloqueaba («Connecting to
+#     'ws://localhost:3000/?token=…' violates … connect-src») y los cambios
+#     no se aplicaban en caliente — había que recargar con F5. En producción
+#     es inocuo: nada conecta a un websocket localhost.
 # img-src: 'self' data: blob: https: — las promos pueden apuntar a cualquier
 #   host https (Storage, GitHub, el host que sea) sin tocar la CSP de nuevo.
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY=' 'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY=' 'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: ws://localhost:3000 ws://127.0.0.1:3000 https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
     Strict-Transport-Security = "max-age=63072000; includeSubDomains; preload"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"

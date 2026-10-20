@@ -160,17 +160,26 @@ export async function coreGetAdminMetrics(ctx: CoreCtx): Promise<unknown> {
     salesSnap.docs.reduce((acc, d) => acc + Number(d.data()['totals']?.['totalUsd'] ?? 0), 0) * 100,
   ) / 100;
 
-  // Pedidos últimos 7 días por día.
+  // Pedidos de la SEMANA ACTUAL lunes→domingo (5.75, a pedido del dueño).
+  // Cortes de día a medianoche de Venezuela (UTC-4, sin DST): el servidor
+  // corre en UTC, así que leemos el «reloj de pared» VE restando 4 h y las
+  // volvemos a sumar para obtener el epoch real de cada medianoche VE.
+  const VE_MS = 4 * 60 * 60 * 1000;
+  const veNow = new Date(Date.now() - VE_MS);
+  const daysSinceMonday = (veNow.getUTCDay() + 6) % 7; // lun=0 … dom=6
+  const mondayVe = Date.UTC(
+    veNow.getUTCFullYear(),
+    veNow.getUTCMonth(),
+    veNow.getUTCDate() - daysSinceMonday,
+  );
+  const mondayStartMs = mondayVe + VE_MS; // epoch real del lunes 00:00 VE
   const ordersLast7d: number[] = [];
-  for (let i = 6; i >= 0; i--) {
-    const dayStart = new Date();
-    dayStart.setHours(0, 0, 0, 0);
-    dayStart.setDate(dayStart.getDate() - i);
-    const dayEnd = dayStart.getTime() + 24 * 60 * 60 * 1000;
+  for (let i = 0; i < 7; i++) {
+    const start = mondayStartMs + i * 24 * 60 * 60 * 1000;
     const c = await db()
       .collection('orders')
-      .where('createdAt', '>=', dayStart.getTime())
-      .where('createdAt', '<', dayEnd)
+      .where('createdAt', '>=', start)
+      .where('createdAt', '<', start + 24 * 60 * 60 * 1000)
       .count()
       .get();
     ordersLast7d.push(c.data().count);

@@ -12,9 +12,21 @@ interface AuthState {
   /** true cuando el perfil tiene claim admin. */
   isAdmin: () => boolean;
   signIn: (email: string, password: string) => Promise<SpotUser>;
-  signUp: (name: string, email: string, password: string, phoneE164: string) => Promise<SpotUser>;
+  signUp: (
+    name: string,
+    email: string,
+    password: string,
+    phoneE164: string,
+    cedula: string,
+    address: string,
+  ) => Promise<SpotUser>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
+  /** «Mis datos» (5.75): guarda cédula + dirección del propio usuario y
+   *  parchea el store con los valores sanitizados (sin relectura Firestore). */
+  saveMyData: (cedula: string, address: string) => Promise<void>;
+  /** Cambio de contraseña en sesión (5.75). */
+  changeMyPassword: (currentPassword: string, newPassword: string) => Promise<void>;
   setUser: (u: SpotUser | null) => void;
 }
 
@@ -30,8 +42,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     return user;
   },
 
-  signUp: async (name, email, password, phoneE164) => {
-    const user = await authService.signUpEmail(name, email, password, phoneE164);
+  signUp: async (name, email, password, phoneE164, cedula, address) => {
+    const user = await authService.signUpEmail(name, email, password, phoneE164, cedula, address);
     set({ user });
     return user;
   },
@@ -43,6 +55,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   resetPassword: async (email) => {
     await authService.sendReset(email);
+  },
+
+  saveMyData: async (cedula, address) => {
+    const clean = await authService.saveCustomerData(cedula, address);
+    set((s) => (s.user ? { user: { ...s.user, ...clean } } : {}));
+  },
+
+  changeMyPassword: async (currentPassword, newPassword) => {
+    await authService.changePassword(currentPassword, newPassword);
   },
 
   setUser: (u) => set({ user: u, ready: true }),

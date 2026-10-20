@@ -19,6 +19,9 @@ import type { Order, OrderEvent } from '../types';
 const ORDERS = 'orders';
 const PAGE_SIZE = 10;
 
+/** Tamaño de página público: la UI lo usa para saber cuándo ofrecer «Cargar más». */
+export const MY_ORDERS_PAGE_SIZE = PAGE_SIZE;
+
 function mapOrder(id: string, d: Record<string, unknown>): Order {
   return {
     id,
@@ -85,6 +88,56 @@ export async function listMyOrders(uid: string, cursor: string | null): Promise<
     items,
     cursor: snap.docs.length === PAGE_SIZE && last ? String(last.get('createdAt') as number) : null,
     hasMore: snap.docs.length === PAGE_SIZE,
+  };
+}
+
+/**
+ * Vigía 5.75: escucha EN VIVO la primera página de pedidos propios.
+ * MISMA consulta que listMyOrders (where uid + orderBy createdAt desc, 5.32):
+ * mismas reglas de Firestore (leer solo lo propio), mismo índice automático,
+ * pero con onSnapshot en vez de getDocs. Así la lista «Mis pedidos» se
+ * actualiza sola: nuevo pedido aparece arriba, el estatus cambia en la
+ * tarjeta, el tracking entra — sin recargar ni reentrar.
+ * Costo: la primera emisión lee lo mismo que la carga puntual de siempre
+ * (hasta PAGE_SIZE lecturas); después, SOLO los documentos que cambian de
+ * verdad (~1 lectura por cambio). Sin pedidos abiertos, el canal queda
+ * quieto y no consume lecturas.
+ */
+export function subscribeMyOrders(
+  uid: string,
+  onData: (items: Order[]) => void,
+  onError?: (err: unknown) => void,
+): () => void {
+  let unsub: (() => void) | null = null;
+  let cancelled = false;
+  void loadFirebase().then((fb) => {
+    if (cancelled) return;
+    if (!fb) {
+      // Sin Firebase (modo demo): primera emisión vacía para que la UI
+      // resuelva en su estado de «sin pedidos» y no quede cargando.
+      onData([]);
+      return;
+    }
+    const q = query(
+      collection(fb.db, ORDERS),
+      where('uid', '==', uid),
+      orderBy('createdAt', 'desc'),
+      fbLimit(PAGE_SIZE),
+    );
+    unsub = onSnapshot(
+      q,
+      (snap) => onData(snap.docs.map((d) => mapOrder(d.id, d.data() as Record<string, unknown>))),
+      (err) => {
+        // Fallo de transporte (QUIC/CLOSED en redes degradadas): el canal se
+        // reconecta solo; aquí solo avisamos. La lista ya cargada NO se borra.
+        logger.warn('subscribeMyOrders error', err);
+        onError?.(err);
+      },
+    );
+  });
+  return () => {
+    cancelled = true;
+    unsub?.();
   };
 }
 

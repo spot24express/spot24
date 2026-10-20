@@ -6,7 +6,7 @@
  */
 export interface CategoryDef {
   id: string;
-  /** Número de bahía derivado del orden (01, 02, …). */
+  /** Número de bahía derivado del orden (01, 02, …). Solo categorías principales. */
   code: string;
   name: string;
   tagline: string;
@@ -14,4 +14,7 @@ export interface CategoryDef {
   imageUrl?: string;
   /** Categoría activa (las inactivas no se listan en la tienda). */
   active?: boolean;
+  /** Ronda 5.76 · id de la categoría padre. Vacío/ausente = categoría principal.
+   *  SOLO hay un nivel: una subcategoría nunca puede ser padre de otra. */
+  parentId?: string;
 }
