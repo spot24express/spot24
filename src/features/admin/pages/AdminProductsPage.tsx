@@ -524,7 +524,7 @@ function ProductModal({
             </div>
             <p className="mt-2 text-xs text-muted">
               Las fotos se comprimen solas antes de subirse. La PRIMERA es la portada (lo que se ve en
-              tarjetas y carrito); en la ficha el cliente pasa las fotos con el dedo, como Farmatodo.
+              tarjetas y carrito); en la ficha el cliente pasa las fotos con el dedo, como en las apps grandes.
               Al guardar el producto, la lista queda aplicada — y editar precio o stock NO las toca:
               solo cambian si agregas, quitas o reordenas fotos.
             </p>

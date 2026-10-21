@@ -18,27 +18,27 @@ interface ProductCardProps {
 }
 
 /**
- * Tarjeta de producto (estilo referencia Farmatodo adaptado al tema pit stop):
+ * Tarjeta de producto (estilo de app de farmacia de referencia, adaptado al tema pit stop):
  * imagen arriba con el agregado rápido y aviso de stock, y en el cuerpo marca
  * (sola, arriba) → nombre sin repetir la marca → precio en Bs. (tasa BCV en vivo).
  * · 5.83 · la tarjeta muestra SOLO la imagen de PORTADA (la primera), como
- *   Farmatodo: el carrusel deslizable con puntos vive DENTRO de la ficha del
+ *   en las apps de farmacia: el carrusel deslizable con puntos vive DENTRO de la ficha del
  *   producto, no aquí (corrección del dueño sobre la entrega de 5.82).
- * · Agregado rápido (5.85 · comportamiento EXACTO de Farmatodo, 32 px):
+ * · Agregado rápido (5.85 · comportamiento EXACTO de la app de referencia de farmacia, 32 px):
  *   · producto SIN línea en carrito → círculo «+» (el símbolo ocupa el 80 %
  *     del círculo): producto de UNA variante agrega directo y se abre la
  *     cápsula; de VARIAS → lleva a la ficha para elegirla.
  *   · producto CON una sola línea en carrito → círculo con el NÚMERO (al
  *     80 %). Al tocarlo se abre la cápsula «− qty +»; cada ajuste la deja
  *     abierta y al soltar (1.8 s) se RETRAE sola y queda el número en el
- *     círculo, como Farmatodo. «−» a 0 quita la línea; «+» respeta stock y
+ *     círculo, como en la app de referencia. «−» a 0 quita la línea; «+» respeta stock y
  *     tope. Con varias líneas (variantes elegidas en la ficha) vuelve el
  *     «+» → ficha.
  *   · 5.85 · todo un paso más pequeño (36 → 32 px) y el chip «Últimas N» /
  *     «Sin stock» pasó a ABAJO-izquierda con más transparencia (85 → 50 %).
  */
 
-/** Tiempo que la cápsula queda abierta tras el último toque (como Farmatodo). */
+/** Tiempo que la cápsula queda abierta tras el último toque (como en la app de referencia). */
 const STEPPER_COLLAPSE_MS = 1800;
 
 export function ProductCard({ product }: ProductCardProps) {
@@ -67,7 +67,7 @@ export function ProductCard({ product }: ProductCardProps) {
   const maxQty = Math.min(line?.stockAtAdd ?? 0, MAX_QTY_PER_LINE);
   const atCap = Boolean(line && line.qty >= maxQty);
 
-  // 5.85 · retiro automático de la cápsula (Farmatodo): abrir/ajustar re-arma
+  // 5.85 · retiro automático de la cápsula (patrón de la app de referencia): abrir/ajustar re-arma
   // el temporizador; al vencer, la cápsula se retrae y queda el número en el
   // círculo. La línea que desaparece la colapsa al instante.
   const lineKey = line ? `${line.productId}:${line.variantId}` : '';
@@ -123,7 +123,7 @@ export function ProductCard({ product }: ProductCardProps) {
         1,
       );
       if (ok) {
-        setExpanded(true); // 5.85 · como Farmatodo: la cápsula se abre al agregar
+        setExpanded(true); // 5.85 · como en la app de referencia: la cápsula se abre al agregar
         toast.success('En el carrito. Para. Resuelve. Sigue.');
       }
     } catch (e) {
@@ -136,7 +136,7 @@ export function ProductCard({ product }: ProductCardProps) {
 
   return (
     <article className="group relative flex flex-col overflow-hidden rounded-brand-lg border-2 border-line bg-surface-1 transition-colors hover:border-signal focus-within:border-signal">
-      {/* 5.83 · SOLO la PORTADA en la tarjeta (como Farmatodo): el carrusel
+      {/* 5.83 · SOLO la PORTADA en la tarjeta (como en la app de referencia): el carrusel
           con todas las fotos vive en la ficha del producto. Tocar la foto
           abre la ficha. Con una sola foto, misma tarjeta de siempre. */}
       <div className="relative aspect-square overflow-hidden bg-surface-2">
@@ -167,7 +167,7 @@ export function ProductCard({ product }: ProductCardProps) {
         )}
       </div>
 
-      {/* 5.85 · stepper Farmatodo que se RETRAE: círculo «+» → cápsula «− qty +»
+      {/* 5.85 · stepper de la app de referencia que se RETRAE: círculo «+» → cápsula «− qty +»
           → al soltar (1.8 s) se retrae sola y queda el NÚMERO en el círculo;
           tocar el círculo vuelve a abrir la cápsula. Todo a 32 px (antes 36 px)
           y el símbolo/número ocupa el 80 % del círculo. «−» a 0 quita la línea;

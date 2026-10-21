@@ -45,7 +45,7 @@ export function CategoryCard({ category }: { category: CategoryDef }) {
 }
 
 /**
- * Ronda 5.77 · Tarjeta de SUBCATEGORÍA (ejemplo Farmatodo, adaptado al pit-stop):
+ * Ronda 5.77 · Tarjeta de SUBCATEGORÍA (ejemplo de app de farmacia, adaptado al pit-stop):
  * vive DENTRO de su categoría en el catálogo, ANTES de los productos. Ronda 5.78:
  * pedido del dueño — SIN contador de productos (ni el número grande de la esquina
  * ni la línea "N productos"); queda solo el nombre, el tagline opcional y la foto.

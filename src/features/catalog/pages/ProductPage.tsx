@@ -29,7 +29,7 @@ export default function ProductPage() {
   const [qty, setQty] = useState(1);
   const [liveStockTotal, setLiveStockTotal] = useState<number | null>(null);
   // 5.81/5.83 · galería de la ficha: carrusel DESLIZABLE con puntos (como
-  // Farmatodo) + miniaturas sincronizadas (tocar una desliza hasta esa foto).
+  // en la app de referencia) + miniaturas sincronizadas (tocar una desliza hasta esa foto).
   const [imgIdx, setImgIdx] = useState(0);
   const carouselRef = useRef<HTMLDivElement>(null);
   const { addItem } = useCart();
@@ -173,7 +173,7 @@ export default function ProductPage() {
       </nav>
 
       <div className="grid gap-8 lg:grid-cols-2">
-        {/* GALERÍA — 5.83 · carrusel DESLIZABLE con puntos (como Farmatodo):
+        {/* GALERÍA — 5.83 · carrusel DESLIZABLE con puntos (como en la app de referencia):
             el dueño lo corrigió: la TARJETA solo muestra la portada y el
             carrusel se ve AQUÍ, dentro de la ficha. Varias fotos se pasan con
             el dedo (scroll con resortes) y los puntos indican cuál se ve; las

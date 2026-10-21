@@ -132,7 +132,7 @@ export function SearchBar({ compact = false }: { compact?: boolean }) {
  * creó categorías, solo se ve el chip «Todas».
  * Ronda 5.76: solo categorías principales en la fila (las hijas no van aquí).
  * Ronda 5.77: el afinado por subcategoría vive en las TARJETAS que CatalogPage
- * pinta debajo (estilo Farmatodo con contador) — la fila repetida de chips
+ * pinta debajo (estilo app de conveniencia, con contador) — la fila repetida de chips
  * chiquitos se quitó para no duplicar la misma navegación dos veces.
  */
 export function FilterBar({

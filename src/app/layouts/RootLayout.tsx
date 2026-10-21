@@ -144,7 +144,7 @@ function BottomNav() {
 
 /**
  * Contenedor con la SILUETA EXACTA del escudo SPOT 24 para los iconos de la
- * barra inferior (patrón Farmatodo: el contorno del logo envuelve el icono
+ * barra inferior (patrón de la app de farmacia de referencia: el contorno del logo envuelve el icono
  * del tab ACTIVO).
  * · Path vectorizado desde escudo.png oficial (borde alfa externo, 23 vértices,
  *   viewBox 493×512 = bbox real del escudo → misma forma y tamaño que el tab

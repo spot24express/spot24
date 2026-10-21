@@ -140,7 +140,10 @@
 # ── Cabeceras globales de seguridad ──
 # script-src: 'self' + dominios del SDK de Firebase/App Check (reCAPTCHA v3/Enterprise)
 #   + hashes de los scripts inline que el SDK de Auth/reCAPTCHA inyecta dentro
-#   de su iframe srcdoc (los iframes srcdoc heredan la CSP del sitio)
+#   de su iframe srcdoc (los iframes srcdoc heredan la CSP del sitio).
+#   5.90.2: el SDK de Auth trajo un 4º script inline con hash NUEVO
+#   (sha256-BkKP2XO6WOEc3kXOiLr2ZoY83hamalKjPY9xBcbXVuw=, aviso «about:srcdoc:85»
+#   en consola) → añadido. Inocuo para la seguridad: es código del propio SDK.
 #   + hash del «preamble» de React Refresh (sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk=).
 #     ⚠️ Ese script inline SOLO existe en desarrollo: @vitejs/plugin-react lo inyecta en
 #     la línea 4 del HTML servido por Vite, y `netlify dev` aplica ESTAS cabeceras también
@@ -167,10 +170,25 @@
 #     es inocuo: nada conecta a un websocket localhost.
 # img-src: 'self' data: blob: https: — las promos pueden apuntar a cualquier
 #   host https (Storage, GitHub, el host que sea) sin tocar la CSP de nuevo.
+# 5.90.2 · FIX «imágenes rotas» (causa raíz del reporte post-deploy del dueño):
+#   el CacheFirst de i.ibb.co (5.75) hace que el SERVICE WORKER pida las fotos
+#   con fetch() DENTRO de su propio contexto; ese fetch NO lo gobierna img-src
+#   de la página sino connect-src de LA CSP QUE VIAJA CON sw.js (esta cabecera
+#   global /* también cubre /sw.js — verificado en producción con curl).
+#   Sin i.ibb.co en connect-src, toda imagen no-cacheada era rechazada:
+#   «Refused to connect … violates CSP» → no-response → foto rota / «FOTO
+#   PENDIENTE» en teléfono y PC desde que el lote 5.75 llegó a producción
+#   (1ª visita sin SW seguía cargando: por eso el diagnóstico inicial falló).
+#   → connect-src += https://i.ibb.co. Probado A/B con SW real: modo A 3/3
+#   rotas, modo B 0/3.
+#   → connect-src += https://firebasestorage.googleapis.com: la ruta CacheFirst
+#   de Storage ya existía en el SW (vite.config); era una mina latente con la
+#   misma mecánica. Hoy no hay imágenes de producto en Storage; si algún día
+#   las hay, ya quedan cubiertas.
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY=' 'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: ws://localhost:3000 ws://127.0.0.1:3000 https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY=' 'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk=' 'sha256-BkKP2XO6WOEc3kXOiLr2ZoY83hamalKjPY9xBcbXVuw='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: ws://localhost:3000 ws://127.0.0.1:3000 https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com https://i.ibb.co https://firebasestorage.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
     Strict-Transport-Security = "max-age=63072000; includeSubDomains; preload"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"

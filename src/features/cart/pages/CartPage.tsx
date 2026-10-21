@@ -47,7 +47,7 @@ import { useCartStore, type SnapshotFix } from '../store/cart.store';
  * Ronda 5.24 — FILA DE CANTIDAD BAJO LA IMAGEN EN MÓVIL (petición del dueño):
  * en teléfono, el escalador −1+ ahora queda DEBAJO de la foto alineado a la
  * izquierda y el precio en ESA MISMA línea alineado a la derecha (patrón
- * MercadoLibre/Farmatodo: la mano no cruza la tarjeta para editar cantidad).
+ * MercadoLibre y las apps de autoservicio: la mano no cruza la tarjeta para editar cantidad).
  * En PC (sm+) la tarjeta no cambia: foto izquierda con marca/nombre arriba y
  * la fila cantidad+precio al pie de la columna derecha.
  * Implementación: CSS Grid con posiciones responsivas — sin duplicar el
@@ -213,7 +213,7 @@ export default function CartPage() {
           </dl>
           <SpeedDivider className="my-4" />
 
-          {/* Cómo funciona el pedido: confianza ANTES de pagar (patrón Farmatodo) */}
+          {/* Cómo funciona el pedido: confianza ANTES de pagar (patrón de apps de delivery) */}
           <div className="rounded-brand border-2 border-dashed border-line bg-ink p-4">
             <p className="spot-label mb-2">¿Cómo funciona tu pedido?</p>
             <ol className="space-y-2 text-sm text-paper">

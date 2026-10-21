@@ -25,7 +25,7 @@ export default function CatalogPage() {
   // directos. Un producto movido a una subcategoría sale ÚNICAMENTE dentro de
   // esa subcategoría — la principal ya NO lo repite (desde 5.76 la principal
   // sumaba también lo de sus hijas y el dueño lo vio como producto doble).
-  // Ronda 5.81 (estilo Farmatodo): si la categoría activa TIENE subcategorías,
+  // Ronda 5.81 (estilo app de conveniencia): si la categoría activa TIENE subcategorías,
   // muestra SOLO las tarjetas de subcategorías — ni productos ni vacío. Solo
   // una categoría SIN subcategorías muestra sus productos directamente.
   const catHasSubcats = Boolean(cat && categories && hasSubcategories(categories, cat));
@@ -44,7 +44,7 @@ export default function CatalogPage() {
 
   const category = categories?.find((c) => c.id === cat);
 
-  // Ronda 5.77 · TARJETAS DE SUBCATEGORÍAS (ejemplo Farmatodo, estilo pit-stop):
+  // Ronda 5.77 · TARJETAS DE SUBCATEGORÍAS (ejemplo de app de farmacia, estilo pit-stop):
   // si la categoría activa —o la rama, si hay una subcategoría elegida— tiene
   // hijas, se ven como tarjetas ANTES de los productos, sin contador (5.78).
   // Así el cliente las descubre sin leer chips.
@@ -115,7 +115,7 @@ export default function CatalogPage() {
       )}
 
       {/* Ronda 5.77 · Subcategorías de la categoría activa. 5.81: si hay
-          subcategorías, ESTA es toda la vista (estilo Farmatodo): los
+          subcategorías, ESTA es toda la vista (estilo app de conveniencia): los
           productos de la bahía quedan reservados a categorías sin hijas. */}
       {subcats.length > 0 && (
         <section className="mt-8" aria-label="Subcategorías">

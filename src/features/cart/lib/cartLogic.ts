@@ -79,7 +79,7 @@ export function itemCount(items: CartItem[]): number {
 
 /**
  * Ronda 5.81 · La ÚNICA línea en carrito de un producto, o null.
- * La tarjeta de producto la usa para mostrar el stepper «− qty +» (Farmatodo):
+ * La tarjeta de producto la usa para mostrar el stepper «− qty +» (patrón de app de conveniencia):
  * · 0 líneas  → null  → la tarjeta muestra el círculo «+» de agregado rápido.
  * · 1 línea   → esa línea → la tarjeta muestra el stepper sobre ella.
  * · 2+ líneas → null  → producto con VARIAS variantes elegidas en la ficha:

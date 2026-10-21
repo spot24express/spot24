@@ -23,7 +23,7 @@ import { userMessage } from '@/shared/lib/errors';
  * (un solo nivel: principal → subcategorías). Lo que se guarda aquí sale en
  * vivo en la tienda: las principales son las bahías del Home y sus
  * subcategorías aparecen como TARJETAS dentro de su categoría en el catálogo
- * (5.77: con foto opcional y contador de productos, estilo Farmatodo).
+ * (5.77: con foto opcional y contador de productos, estilo app de conveniencia).
  */
 export default function AdminCategoriesPage() {
   const [categories, setCategories] = useState<CategoryDef[]>([]);

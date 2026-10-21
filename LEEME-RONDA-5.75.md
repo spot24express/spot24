@@ -143,6 +143,32 @@
 > al día. Los avisos nunca se perdían: el servidor los guarda ANTES de
 > mandar el push — al reconectar aparece todo, incluido lo que sonó
 > mientras la página estaba sorda.
+>
+> **Ajuste 5.90.2 (mismo lote, tras tu deploy — EL ARREGLO DE LAS IMÁGENES):**
+> tenías razón: no era tu Wi-Fi ni imgbb. El «cacheo de imágenes» de la 5.75
+> hace que el service worker pida las fotos ÉL MISMO, y el permiso de
+> seguridad (la CSP que viaja con sw.js) no incluía a imgbb: toda foto que
+> no estuviera ya en el caché del teléfono/PC era rechazada (en tu consola:
+> «Refused to connect … Content Security Policy» y «no-response» de workbox).
+> Por eso antes del deploy todo cargaba y después se rompió: el cacheo llegó
+> a producción con tu push. Arreglo: UNA línea de permiso en `netlify.toml`
+> + el hash nuevo que salía en tu consola de PC (about:srcdoc:85, inofensivo).
+> **Después del push: abre la app DOS veces en el teléfono** — la 1ª visita
+> actualiza el service worker, la 2ª ya muestra todas las fotos (y los QR de
+> pago vuelven a verse para tus clientes).
+>
+> **Ajuste 5.90.3 (mismo lote — «Farmatodo» fuera del alcance del cliente):**
+> barrido completo de la marca en todo lo que puede llegar al navegador. El
+> ÚNICO texto visible que la traía era una ayuda del panel de fotos (solo lo
+> ve el personal, pero viajaba dentro del bundle público que baja cualquier
+> visitante) y ~25 comentarios internos de código. Todo quedó redactado en
+> neutral, el build verificó CERO apariciones y entra un test guardián nuevo
+> (`marcas-cliente.test.ts`) que escanea `src/`, `public/` e `index.html` en
+> cada `npm test`: si la marca — o cualquier otra que agregues a su lista —
+> reaparece, el test falla y el push se detiene. Nota honesta: si algún
+> NOMBRE de producto, promo o categoría tuyo contuviera la palabra, eso vive
+> en TUS datos del panel (se cambia ahí); el código ya quedó limpio.
+
 
 Todo en esta ronda. Nada de esto toca el dinero: la caja fuerte del backend
 (transacciones, App Check, idempotencia) queda intacta.
@@ -809,7 +835,7 @@ funcionan EXACTAMENTE igual que hoy).
 
 ## Despliegue — pasos EN ESTE ORDEN
 
-1. **Copia los 86 archivos** sobre tu repo `C:\Users\Erick\spot24`,
+1. **Copia los 87 archivos** sobre tu repo `C:\Users\Erick\spot24`,
    respetando las carpetas (la estructura del lote es la del repo).
    **5.81: NUEVA carpeta en el lote** `src/features/cart/` (lógica del
    carrito + sus tests) — créala al copiar, respeta la ruta exacta.
@@ -1140,18 +1166,18 @@ consola y los cambios aplican en caliente.)
 | Archivo | Cambio |
 |---|---|
 | `firestore.rules` | Lista blanca users: + cedula, address (create y update) · 5.89: línea explícita `catalogBackups` en el bloque de colecciones internas (solo documentación: el cierre general ya la bloquea) · 5.90: subcolección `users/{uid}/notifs` SOLO-lectura para el dueño (el servidor escribe el historial de avisos) + `notifsLastReadAt` entra en la lista blanca del update de users (número acotado a ahora+1 min) |
-| `netlify.toml` | Timeout 26 s para fn-recomputeStock · 5.87: timeout 26 s para fn-importInventory · 5.87d: la CSP de dev permite el websocket de Vite (HMR sin F5) · 5.89: timeout 26 s para las 4 funciones de copias + backup-catalog (el cron diario) |
+| `netlify.toml` | Timeout 26 s para fn-recomputeStock · 5.87: timeout 26 s para fn-importInventory · 5.87d: la CSP de dev permite el websocket de Vite (HMR sin F5) · 5.89: timeout 26 s para las 4 funciones de copias + backup-catalog (el cron diario) · 5.90.2: FIX imágenes rotas — connect-src += `https://i.ibb.co` (el fetch del SW lo gobierna la CSP de sw.js, NO img-src de la página) y += `https://firebasestorage.googleapis.com` (mina latente de la ruta CacheFirst de Storage) + 4º hash del script inline del SDK de Auth (`about:srcdoc:85`) |
 | `vite.config.ts` | imgbb CacheFirst (300 imgs/30 días) + hmr dev |
 | `package.json` | NUEVO EN LOTE 5.87d · pdfjs-dist TAMBIÉN en la RAÍZ del repo: netlify dev resuelve los paquetes desde aquí (functions/node_modules queda fuera de la cadena) |
 | `package-lock.json` | NUEVO EN LOTE 5.87d · lock de la raíz con pdfjs-dist 4.10.38 (misma versión que en functions/) |
 | `public/img/qr-pago-movil.jpg` | NUEVO 5.79 · Tu QR de pago (Suiche 7B) comprimido y precacheado |
 | `public/img/products/placeholder.svg` | NUEVO 5.87f · cuadro «FOTO PENDIENTE» de SPOT 24 (mismo estilo que los svg de categoría) — portada de los productos sin foto, PRECACHEADO |
 | `src/index.css` | Animación de entrada de ruta (.route-enter, 180 ms) · 5.88: fill-mode `both` → `backwards` — el transform residual desanclaba los modals del viewport (editor cortado en PC e invisible en el teléfono con páginas altas); la animación se ve IDÉNTICA |
-| `src/app/layouts/RootLayout.tsx` | Transición de ruta + caché compartida de ajustes · 5.90: campana `NotifBell` en la barra SOLO ≥sm (PC/tablet), antes de Instagram, con puntito rojo de avisos sin leer + BellIcon |
+| `src/app/layouts/RootLayout.tsx` | Transición de ruta + caché compartida de ajustes · 5.90: campana `NotifBell` en la barra SOLO ≥sm (PC/tablet), antes de Instagram, con puntito rojo de avisos sin leer + BellIcon · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/app/router.tsx` | NUEVO EN LOTE 5.89 · ruta `/admin/copias` con guard SOLO admin (la página de Copias de seguridad) · 5.90: ruta `/notificaciones` con guard de sesión (la página de la campana) |
 | `src/features/admin/pages/AdminLayout.tsx` | NUEVO EN LOTE 5.89 · entrada de menú «Copias» (código 10, SOLO admin) |
 | `src/shared/components/ui/Modal.tsx` | NUEVO EN LOTE 5.88 · el modal se monta por PORTAL en document.body — anclado SIEMPRE a la pantalla aunque un ancestro tenga transform (cinturón del fix 5.88; beneficia a los 15 modals de la app: editor, importar PDF, QR ampliado, categorías, promos, zonas, usuarios, pagos, despacho, comprobante, cancelar) |
-| `src/features/admin/pages/AdminProductsPage.tsx` | FIX: modal no arrastra datos del producto anterior + «Descripción (opcional)» + selector de categoría en árbol (↳) · 5.78: aviso de categoría oculta/eliminada + candado de precio/stock · 5.81: LISTA de fotos (hasta 6, portada + quitar + reordenar) · 5.82: nota de que editar precio/stock NO toca las fotos · 5.87: botón «Importar PDF» + modal (categoría destino, archivo, omitir ceros, resumen) · 5.87b: si la importación falla, el modal muestra el MOTIVO REAL del servidor (nada de adivinar) · 5.87f: placeholder en lista y editor si la foto no carga |
+| `src/features/admin/pages/AdminProductsPage.tsx` | FIX: modal no arrastra datos del producto anterior + «Descripción (opcional)» + selector de categoría en árbol (↳) · 5.78: aviso de categoría oculta/eliminada + candado de precio/stock · 5.81: LISTA de fotos (hasta 6, portada + quitar + reordenar) · 5.82: nota de que editar precio/stock NO toca las fotos · 5.87: botón «Importar PDF» + modal (categoría destino, archivo, omitir ceros, resumen) · 5.87b: si la importación falla, el modal muestra el MOTIVO REAL del servidor (nada de adivinar) · 5.87f: placeholder en lista y editor si la foto no carga · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `functions/src/importInventory.ts` | NUEVO 5.87 · core de la importación: empareja por código/SKU, crea lo que falta y actualiza stock+precio en lotes (admin/gerencia, con auditoría) · 5.87b: la lectura del PDF vive en lib/extraerPdf (fix del worker dentro del bundle) · 5.87e: lectura de variantes SIN where — NINGÚN índice que crear a mano (fuera el FAILED_PRECONDITION «COLLECTION_GROUP_ASC … sku») y emparejamiento de SKU en memoria |
 | `functions/src/lib/inventarioPdf.ts` | NUEVO 5.87 · parser PURO del reporte «Inventario disponible»: filas por coordenadas de columnas (código/desc/existencia/costo) + números VE — 13 tests con items reales del PDF del dueño |
 | `functions/src/lib/extraerPdf.ts` | NUEVO 5.87b · lectura del PDF con pdfjs + registro del worker en el escape hatch oficial (FIX del 400 «No se pudo leer el PDF»: el motor viaja DENTRO del paquete de Netlify) — tope 4 MB / 400 páginas · 5.87c: si el PDF falla, el motivo TÉCNICO llega al modal y al log de netlify dev (mensaje propio para contraseña / corrupto / página rota) + registro blindado del worker (namespace plano o .default) + destroy() del documento + referencia a la declaración pdfjs.d.ts · 5.87d: mensaje PROPIO si falta el paquete del lector (ERR_MODULE_NOT_FOUND → la orden: npm install en la raíz, NO dentro de functions/, y reiniciar netlify dev) |
@@ -1169,7 +1195,7 @@ consola y los cambios aplican en caliente.)
 | `functions/package-lock.json` | NUEVO EN LOTE 5.87 · lock con pdfjs-dist (el build de Netlify lo instala) |
 | `src/tests/inventario-pdf.test.ts` | NUEVO 5.87 · 13 tests del parser (fixture real + casos límite) · 5.87b: +3 — PDF mínimo REAL extremo a extremo (pdfjs → parser), PDF truncado con error accionable y REGRESIÓN que extrae un PDF desde dentro del bundle esbuild de Netlify · 5.87c: +2 — el worker queda registrado con la forma EXACTA que pdfjs consulta y un PDF basura deja ver el motivo técnico (mensaje + log) · 5.87d: +1 — el mensaje de paquete ausente lleva la ORDEN exacta de arreglo |
 | `src/tests/fixtures/inventario-items.sample.json` | NUEVO 5.87 · items REALES del PDF del dueño para los tests |
-| `src/features/admin/pages/AdminCategoriesPage.tsx` | SUBCATEGORÍAS: lista en árbol, campo «Ubicación», guardas al eliminar · 5.81: candado «avisar + mover» al crear subcategoría en bahía con productos + marca ⚠ de productos ocultos |
+| `src/features/admin/pages/AdminCategoriesPage.tsx` | SUBCATEGORÍAS: lista en árbol, campo «Ubicación», guardas al eliminar · 5.81: candado «avisar + mover» al crear subcategoría en bahía con productos + marca ⚠ de productos ocultos · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/features/admin/pages/AdminPaymentsPage.tsx` | 5.80 · fuera de «Sin comprobante» los pedidos contra entrega (Efectivo/Punto de venta): se cobran al entregar y se procesan en Pedidos |
 | `src/features/admin/components/NewOrderAlert.tsx` | 5.80 · la alerta de pedidos nuevos también avisa los contra entrega («pago al recibir») |
 | `src/features/admin/pages/AdminSettingsPage.tsx` | Campo «Horario de los deliverys» en Operación · 5.79: formas de pago con interruptor · 5.80: LISTA de cuentas (varias por método), agregar/quitar, nombre para el cliente y SUBIR el QR como archivo (o enlace) · 5.82: chips «＋ Pago móvil / ＋ Transferencia / …» SIEMPRE visibles (agregar otra cuenta en un toque; fuera el botón del fondo) · 5.84: cuenta nueva nace SIN QR — ni la carga ni la vista previa inyectan el QR del repo (el de la otra cuenta) |
@@ -1187,15 +1213,15 @@ consola y los cambios aplican en caliente.)
 | `src/features/auth/hooks/useAuth.ts` | Expone saveMyData y changeMyPassword |
 | `src/features/auth/pages/RegisterPage.tsx` | Campos Cédula + Dirección completa |
 | `src/features/auth/pages/AccountPage.tsx` | «Mis datos de entrega» + «Seguridad» (cambiar clave, formulario accesible) |
-| `src/features/cart/lib/cartLogic.ts` | NUEVO EN LOTE 5.81 · lógica pura del carrito (stock, topes, fusión) + `singleLineForProduct` (stepper de la tarjeta) |
-| `src/features/cart/pages/CartPage.tsx` | NUEVO EN LOTE 5.87f · onError de fotos en los ítems del carrito (placeholder si la foto no carga) — el resto de la página igual que en tu repo |
+| `src/features/cart/lib/cartLogic.ts` | NUEVO EN LOTE 5.81 · lógica pura del carrito (stock, topes, fusión) + `singleLineForProduct` (stepper de la tarjeta) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
+| `src/features/cart/pages/CartPage.tsx` | NUEVO EN LOTE 5.87f · onError de fotos en los ítems del carrito (placeholder si la foto no carga) — el resto de la página igual que en tu repo · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/features/cart/tests/cartLogic.test.ts` | NUEVO EN LOTE 5.81 · 14 tests de la lógica del carrito (incluye el stepper de la tarjeta) |
-| `src/features/catalog/pages/ProductPage.tsx` | «Descripción» solo si existe + breadcrumb compatible con subcategorías · 5.81: galería con miniaturas CLICABLES (foto grande cambia al tocar) · 5.83: carrusel DESLIZABLE con puntos (Farmatodo) — pasar las fotos con el dedo dentro de la ficha, miniaturas sincronizadas (tocar una desliza hasta ella) · 5.87f: placeholder en carrusel y miniaturas cuando una foto falla |
-| `src/features/catalog/components/ProductCard.tsx` | Chip «Últimas N» dentro de la foto (no tapa el precio) · 5.81: píldora «− qty +» estilo Farmatodo cuando el producto ya está en el carrito · 5.82: «+» y píldora COMPACTOS (36 px) + chip arriba-izquierda · 5.83: la tarjeta vuelve a mostrar SOLO la portada, fija y sin puntos (el carrusel vive en la ficha) · 5.85: chip ABAJO-izquierda + más transparencia (50 %) · stepper que se RETRAE al círculo con el número y vuelve al tocarlo (Farmatodo), todo a 32 px con el «+»/número al 80 % del círculo · 5.87f: placeholder si la portada no carga |
-| `src/features/catalog/components/CategoryCard.tsx` | NUEVO 5.77 · Tarjeta de subcategoría (foto opcional) · 5.78: sin contador de productos |
+| `src/features/catalog/pages/ProductPage.tsx` | «Descripción» solo si existe + breadcrumb compatible con subcategorías · 5.81: galería con miniaturas CLICABLES (foto grande cambia al tocar) · 5.83: carrusel DESLIZABLE con puntos (Farmatodo) — pasar las fotos con el dedo dentro de la ficha, miniaturas sincronizadas (tocar una desliza hasta ella) · 5.87f: placeholder en carrusel y miniaturas cuando una foto falla · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
+| `src/features/catalog/components/ProductCard.tsx` | Chip «Últimas N» dentro de la foto (no tapa el precio) · 5.81: píldora «− qty +» estilo Farmatodo cuando el producto ya está en el carrito · 5.82: «+» y píldora COMPACTOS (36 px) + chip arriba-izquierda · 5.83: la tarjeta vuelve a mostrar SOLO la portada, fija y sin puntos (el carrusel vive en la ficha) · 5.85: chip ABAJO-izquierda + más transparencia (50 %) · stepper que se RETRAE al círculo con el número y vuelve al tocarlo (Farmatodo), todo a 32 px con el «+»/número al 80 % del círculo · 5.87f: placeholder si la portada no carga · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
+| `src/features/catalog/components/CategoryCard.tsx` | NUEVO 5.77 · Tarjeta de subcategoría (foto opcional) · 5.78: sin contador de productos · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/features/catalog/pages/HomePage.tsx` | Horario de deliverys leído de Ajustes + bahías = solo categorías principales |
-| `src/features/catalog/pages/CatalogPage.tsx` | Tarjetas de subcategorías antes de los productos (5.77) · 5.78c: cada categoría filtra SOLO sus productos directos · 5.81: bahía con subcategorías muestra ÚNICAMENTE las subcategorías (sin productos, sin consultas en vano) |
-| `src/features/catalog/components/SearchBar.tsx` | Filtros: fila de categorías principales (los chips repetidos de subcats salieron en 5.77) |
+| `src/features/catalog/pages/CatalogPage.tsx` | Tarjetas de subcategorías antes de los productos (5.77) · 5.78c: cada categoría filtra SOLO sus productos directos · 5.81: bahía con subcategorías muestra ÚNICAMENTE las subcategorías (sin productos, sin consultas en vano) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
+| `src/features/catalog/components/SearchBar.tsx` | Filtros: fila de categorías principales (los chips repetidos de subcats salieron en 5.77) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/features/catalog/services/catalog.service.ts` | Filtrado por categoría + árbol normalizado (`in` queda como soporte genérico) |
 | `src/features/catalog/hooks/useCatalog.ts` | Conteo por categoría (getCountFromServer, cache 5 min + bus en vivo) · 5.81: listado con apagador (bahías con subcategorías no consultan productos) |
 | `src/features/catalog/types/index.ts` | Filtro `categoryIds` (soporte genérico de varios ids, sin uso en la tienda) |
@@ -1220,6 +1246,7 @@ consola y los cambios aplican en caliente.)
 | `src/tests/img-fallback.test.ts` | NUEVO 5.87f · 3 tests del respaldo (cambia al placeholder, sin bucle, imágenes independientes) |
 | `src/tests/backup-file.test.ts` | NUEVO 5.89 · 14 tests del lado panel: parseBackupFile (válido, ida y vuelta, JSON corrupto, no-SPOT, versión, incompleto, tope 1000) + nombre de archivo con fecha LOCAL + fechaCorta/bytesLegibles |
 | `src/tests/notifs-helpers.test.ts` | NUEVO 5.90 · 14 tests de los helpers puros del historial: contarNoLeidas (vacía, sin marca, marca en medio, EMPATE = leído, orden irrelevante) + fechaCortaNotif («—» sin fecha, ceros, mediodía p.m., 12:15 a.m.) + el espejo NOTIFS_PAGE_SIZE=30 con el tope del servidor · 5.90.1: backoff de reconexión (progresión 3→48 s, techo 60 s, basura → 3 s, ciclo error/reset del canal) |
+| `src/tests/marcas-cliente.test.ts` | NUEVO 5.90.3 · guardián de marcas de terceros: recorre src/ + public/ + index.html (archivos textuales) y FALLA si encuentra una marca prohibida (lista extensible; hoy: farmatodo) en textos, aria-labels o comentarios — el dueño pidió que el cliente jamás la lea; se excluye a sí mismo (su lista) |
 | `functions/src/__tests__/notifications-flow.test.ts` | RECUPERADO EN LOTE 5.90 (faltaba en el lote desde las rondas del push — ahora entra sí o sí porque cambió) · E2E con emulador del flujo de avisos: 10 fases (creación→pago→despacho→entrega→cancelación, replays sin duplicar, staff jamás destinatario, inventario consistente, secuencia exacta de 10 pushes) · 5.90: asserts del HISTORIAL in-app en cada fase — el doc users/{uid}/notifs con el MISMO texto del push, cliente SIN tokens acumula historial (el punto de la ronda), replay no duplica doc, secuencia del historial = secuencia de pushes, staff sin historial y FASE 8 de rotación (35+1 → quedan exactamente 30, se drenan las 6 más viejas) |
 | `functions/src/__tests__/backups-core.test.ts` | NUEVO 5.89 · 13 tests del lado servidor (lógica pura sin Firestore): validateBackupFile (lista blanca, coerción, repetidos, huérfanos, topes) + chunk/join UTF-8 (round-trip exacto con acentos, el corte nunca parte un carácter) + planRotación 30/30 + normalizeTs |
 | `src/tests/category-tree.test.ts` | NUEVO · 10 tests del árbol de categorías |
@@ -1333,6 +1360,47 @@ consola y los cambios aplican en caliente.)
   marca de lectura solo la fija el dueño), funciones 21/21 (backend
   intacto) y build precache 114 (sin chunks nuevos: solo cambian archivos
   ya existentes).
+- **5.90.2 — EL ARREGLO DE LAS IMÁGENES (causa raíz del reporte post-deploy
+  del dueño, con su consola en la mano)**: NO era la red del dueño ni el CDN
+  de imgbb. El CacheFirst de i.ibb.co (5.75) hace que el SERVICE WORKER pida
+  las fotos con fetch() DENTRO de su propio contexto; ese fetch NO lo gobierna
+  img-src de la página sino connect-src de LA CSP QUE VIAJA CON sw.js (la
+  cabecera global /* también cubre /sw.js — verificado en producción con
+  curl). Sin i.ibb.co ahí, toda imagen no-cacheada era rechazada («Refused to
+  connect … Content Security Policy» → no-response) desde que el lote 5.75
+  llegó a producción: teléfono sin caché = todas rotas; PC con caché vieja =
+  solo las nuevas. La 1ª visita (SW aún sin control) seguía cargando — por
+  eso la prueba headless de visita fresca dio 18/18 y el diagnóstico inicial
+  falló. Evidencia reproducida: 2ª navegación en producción real = 8/18
+  rotas, TODAS i.ibb.co, hashes idénticos a la consola del dueño; A/B local
+  con SW real: CSP actual 3/3 rotas → con i.ibb.co en connect-src 0/3.
+  Fix: connect-src += `https://i.ibb.co` y += `https://firebasestorage
+  .googleapis.com` (desactiva la mina latente de la ruta CacheFirst de
+  Storage que ya existía en el SW) + script-src += 4º hash
+  `sha256-BkKP2XO6WOEc3kXOiLr2ZoY83hamalKjPY9xBcbXVuw=` (script inline nuevo
+  del SDK de Auth, aviso «about:srcdoc:85» — cosmético, el login nunca dejó
+  de funcionar). Un SOLO archivo tocado: `netlify.toml` (parse OK, 13
+  directivas). Verificación: tsc ×3, tests 144/144, build precache 114. El
+  SW se actualiza SOLO en cada cliente (cada build cambia el bundle → sw.js
+  distinto → autoUpdate con skipWaiting+clientsClaim): **tras el push, abrir
+  la app DOS veces en cada dispositivo** — la 2ª ya muestra las fotos.
+  También reaparecen los QR de pago de las cuentas (eran imgbb).
+- **5.90.3 — «Farmatodo» fuera del código cliente (pedido del dueño,
+  aprovechando el push de 5.90.2)**: auditoría case-insensitive de todo el
+  repo. Hallazgos: 1 texto VISIBLE (ayuda del modal de fotos en
+  AdminProductsPage — lo ve el personal, pero viaja en el bundle público) +
+  ~25 comentarios internos en 10 archivos. Nada de esto era visible al
+  cliente en la tienda (los comentarios no llegan al bundle: esbuild los
+  elimina y sourcemap=false), pero la regla del dueño es «en ningún lado» →
+  todo redactado en neutral («app de farmacia de referencia», «apps de
+  autoservicio») conservando el sentido técnico. Guardián nuevo
+  `src/tests/marcas-cliente.test.ts`: recorre src/ + public/ + index.html
+  (extensiones textuales), lista de marcas prohibidas extensible (hoy:
+  farmatodo), se excluye a sí mismo, y FALLA el push si una reaparece.
+  Verificación: tsc ×3, tests 145/145 (144+1), build PWA v1.3.0 precache
+  114, grep -ric farmatodo sobre dist/ = CERO apariciones. La palabra solo
+  queda en la lista del guardián y en estos documentos privados (LEEME/
+  worklog), que jamás viajan al navegador.
 - Build PWA completo verde (precache 110): `sw.js` y
   `firebase-messaging-sw.js` intactos (tags de stock/despacho/pagos
   y badge +25 % verificados byte a byte), regla imgbb presente en el SW.
