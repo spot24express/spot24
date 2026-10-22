@@ -25,8 +25,21 @@
  * · Los que no existen: producto NUEVO con UNA variante «Estándar»,
  *   activo, con la imagen de la categoría (igual que el alta del panel) en
  *   la categoría que el admin elige al importar.
- * · omitirCero: si el admin lo marca, las filas con existencia 0 no se
- *   crean NI se tocan (el reporte suele traer muchos en cero).
+ * · 5.92 · a pedido del dueño: los productos con existencia 0 y precio 0
+ *   TAMBIÉN se crean (o se ponen en cero) — la importación futura con los
+ *   valores reales los actualiza. Ya no existe la opción «omitir cero».
+ * · 5.92 · detecta el formato automáticamente: el reporte del POS
+ *   (lib/inventarioPdf.parseInventario) o la «lista limpia» del dueño con
+ *   doble precio sin/con impuesto (parseListaLimpia — usa el SIN impuesto
+ *   y resuelve códigos repetidos con sufijo -2/-3…).
+ * · 5.92b · blindaje «No document to update»: cuando el panel borra un
+ *   producto, su subcolección variants SOBREVIVE (Firestore no borra
+ *   subcolecciones en cascada) y collectionGroup la sigue listando — la
+ *   1ª importación real del dueño murió ahí. Los productos candidatos se
+ *   validan por existencia ANTES de planear escrituras; las referencias
+ *   muertas se omiten y sus filas caen como NUEVAS. La variante que se
+ *   inventa para un producto sin variantes va con set (update daría el
+ *   mismo NOT_FOUND).
  * · Escrituras en lotes ≤ 450 ops (límite de Firestore: 500). Re-importar
  *   es seguro: los valores simplemente se vuelven a escribir.
  */
@@ -34,7 +47,7 @@ import admin from 'firebase-admin';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { extraerItemsPdf } from './lib/extraerPdf';
 import { getAdminApp, type CoreCtx } from './lib/ctx';
-import { parseInventario } from './lib/inventarioPdf';
+import { parseInventarioAuto } from './lib/inventarioPdf';
 import { writeAudit } from './payments';
 
 const db = () => admin.firestore(getAdminApp());
@@ -79,6 +92,36 @@ function searchTermsDe(nombre: string, marca: string): string[] {
   return [...new Set(words)].slice(0, 20);
 }
 
+/**
+ * 5.92b · Deja en los mapas code→productId y sku→productId SOLO los
+ * productos que siguen existiendo. Una variante huérfana (el panel borra el
+ * producto con deleteDoc y la subcolección sobrevive — Firestore NO borra
+ * subcolecciones en cascada) o un resto de pruebas apuntan a ids muertos: si
+ * entraran al plan, el lote COMPLETO moriría con NOT_FOUND «No document to
+ * update». Devuelve cuántas referencias muertas se omitieron (auditoría y
+ * resumen del script local).
+ */
+export function filtrarPidsVivos(
+  productoPorCode: Map<string, string>,
+  productoPorSku: Map<string, string>,
+  pidsVivos: Set<string>,
+): number {
+  let omitidas = 0;
+  productoPorCode.forEach((pid, code) => {
+    if (!pidsVivos.has(pid)) {
+      productoPorCode.delete(code);
+      omitidas += 1;
+    }
+  });
+  productoPorSku.forEach((pid, sku) => {
+    if (!pidsVivos.has(pid)) {
+      productoPorSku.delete(sku);
+      omitidas += 1;
+    }
+  });
+  return omitidas;
+}
+
 /** Consulta `where campo in …` por tandas de 30 y devuelve los docs. */
 async function porLotesIn(
   coleccion: admin.firestore.Query,
@@ -113,7 +156,6 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
 
   const pdfBase64 = typeof ctx.data?.['pdfBase64'] === 'string' ? ctx.data['pdfBase64'] : '';
   const categoryId = sanitizeStr(ctx.data?.['categoryId'], 120);
-  const omitirCero = ctx.data?.['omitirCero'] === true;
   if (!pdfBase64) throw new HttpsError('invalid-argument', 'Falta el archivo PDF.');
   if (!categoryId) throw new HttpsError('invalid-argument', 'Elige la categoría donde caerán los productos nuevos.');
 
@@ -124,11 +166,12 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
     throw new HttpsError('invalid-argument', 'La categoría elegida no existe. Recarga el panel.');
   }
 
-  const parseo = parseInventario(await extraerItemsPdf(pdfBase64));
+  const parseo = parseInventarioAuto(await extraerItemsPdf(pdfBase64));
   if (!parseo.filas.length) {
     throw new HttpsError(
       'invalid-argument',
-      'No se reconoció ningún producto. Verifica que el PDF sea el reporte «Inventario disponible» de tu sistema.',
+      'No se reconoció ningún producto. Verifica que el PDF sea el reporte «Inventario disponible» de tu sistema '
+      + 'o una lista con columnas Código / Descripción / Existencia / Precio sin impuesto.',
     );
   }
   if (parseo.filas.length > MAX_FILAS) {
@@ -136,8 +179,7 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
   }
 
   // ── Emparejamiento: por código de producto y por sku de variante ──
-  const filas = omitirCero ? parseo.filas.filter((f) => f.existencia > 0) : parseo.filas;
-  const omitidosCero = parseo.filas.length - filas.length;
+  const filas = parseo.filas;
   const codigos = [...new Set(filas.map((f) => f.codigo))];
 
   const productoPorCode = new Map<string, string>(); // code → productId
@@ -171,6 +213,27 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
       }
     });
   }
+
+  // 5.92b · Blindaje «No document to update»: toda referencia a un producto
+  // borrado (variante huérfana que collectionGroup sigue listando, resto de
+  // pruebas) se valida por EXISTENCIA real antes de planear escrituras —
+  // por documentId, en tandas de 30 como las demás consultas (no necesita
+  // índice). Con el filtro, esas filas caen como NUEVAS (el producto fresco
+  // se crea en el CREATE) y la basura de la base queda sin efecto.
+  const pidsCandidatos = [
+    ...new Set([...productoPorCode.values(), ...productoPorSku.values()]),
+  ];
+  const pidsVivos = new Set<string>();
+  for (let i = 0; i < pidsCandidatos.length; i += EN_CONSULTA) {
+    const tanda = pidsCandidatos.slice(i, i + EN_CONSULTA);
+    if (!tanda.length) continue;
+    const vivos = await db()
+      .collection('products')
+      .where(admin.firestore.FieldPath.documentId(), 'in', tanda)
+      .get();
+    vivos.forEach((d) => pidsVivos.add(d.id));
+  }
+  const omitidasHuerfanas = filtrarPidsVivos(productoPorCode, productoPorSku, pidsVivos);
 
   // ── Plan de escrituras (TODAS las lecturas antes de escribir) ──
   const ahora = Date.now();
@@ -250,11 +313,26 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
     const precios = [...estadoFinal.values()].map((v) => v.priceUsd).filter((p) => Number.isFinite(p) && p >= 0);
     const basePriceUsd = precios.length ? redondearPrecio(Math.min(...precios)) : 0;
 
+    // 5.92b · Solo las variantes que EXISTEN van con update; la inventada
+    // para un producto sin variantes va con set (un update sobre un doc
+    // inexistente daría el mismo NOT_FOUND que abortó la 1ª importación).
+    const vidsExistentes = new Set(varsSnap.docs.map((d) => d.id));
     for (const [vid, cambio] of aplicado) {
-      enLote((b) => b.update(pref.collection('variants').doc(vid), {
-        stock: Math.max(0, Math.round(cambio.stock)),
-        priceUsd: redondearPrecio(cambio.priceUsd),
-      }));
+      const vref = pref.collection('variants').doc(vid);
+      if (vidsExistentes.has(vid)) {
+        enLote((b) => b.update(vref, {
+          stock: Math.max(0, Math.round(cambio.stock)),
+          priceUsd: redondearPrecio(cambio.priceUsd),
+        }));
+      } else {
+        enLote((b) => b.set(vref, {
+          name: 'Estándar',
+          sku: (estadoFinal.get(vid)?.sku ?? '').slice(0, 40),
+          stock: Math.max(0, Math.round(cambio.stock)),
+          priceUsd: redondearPrecio(cambio.priceUsd),
+          active: true,
+        }));
+      }
     }
     enLote((b) => b.update(pref, {
       stockTotal,
@@ -286,7 +364,10 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
       stockTotal: fila.existencia,
       variantCount: 1,
       active: true,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      // 5.92e: número epoch-ms (Date.now()), MISMA convención que el resto de
+      // la app. serverTimestamp() grababa un Timestamp de Firestore y rompía el
+      // cursor de paginación del catálogo (Number(Timestamp) = NaN).
+      createdAt: ahora,
       updatedAt: ahora,
     }));
     enLote((b) => b.set(pref.collection('variants').doc(`${pref.id}-v1`), {
@@ -301,19 +382,23 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
   lote.push(loteActual);
   for (const b of lote) await b.commit();
 
+  const notaHuerfanas = omitidasHuerfanas
+    ? ` · ${omitidasHuerfanas} referencia${omitidasHuerfanas === 1 ? '' : 's'} huérfana${omitidasHuerfanas === 1 ? '' : 's'} omitida${omitidasHuerfanas === 1 ? '' : 's'}`
+    : '';
   await writeAudit({
     action: 'importar_inventario',
     adminUid,
     targetId: categoryId,
-    note: `${parseo.filas.length} filas · +${creados} nuevos · ~${actualizados} actualizados${omitidosCero ? ` · ${omitidosCero} en cero omitidos` : ''}`,
+    note: `${parseo.formato} · ${parseo.filas.length} filas · +${creados} nuevos · ~${actualizados} actualizados${notaHuerfanas}`,
   });
 
   return {
     filas: parseo.filas.length,
     creados,
     actualizados,
-    omitidosCero,
+    formato: parseo.formato,
     problemas: parseo.problemas.slice(0, 20),
+    omitidasHuerfanas,
   };
 }
 

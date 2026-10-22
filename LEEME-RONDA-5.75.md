@@ -168,6 +168,133 @@
 > reaparece, el test falla y el push se detiene. Nota honesta: si algún
 > NOMBRE de producto, promo o categoría tuyo contuviera la palabra, eso vive
 > en TUS datos del panel (se cambia ahí); el código ya quedó limpio.
+>
+> **Ronda 5.91 añadida al mismo lote — SEO + tarjeta de WhatsApp:**
+> tu tienda aprendió a presentarse sola. (1) **WhatsApp con cara bonita**:
+> compartir tu link ya no sale pelado — sale tarjeta con título,
+> descripción y la FOTO de tu fachada de noche (`public/og-cover.jpg`,
+> 1200×630, 143 KB). (2) **Google puede encontrarte**: `public/robots.txt`
+> (permiso + lo privado fuera del buscador) y `public/sitemap.xml` (mapa
+> de las rutas públicas). (3) **Ficha para Google** (JSON-LD con tu
+> Instagram) + link canónico. Sin cambios de app: precache intacto en 114.
+> **Para ESTE push copia SOLO 4 archivos**: `index.html`,
+> `public/robots.txt`, `public/sitemap.xml`, `public/og-cover.jpg`.
+> Después del deploy: comparte tu link en un chat de prueba y mira la
+> tarjeta (guía completa en el paso 32 de abajo: Search Console, Perfil
+> de Negocio y el limpiador de caché de WhatsApp). Cuando compres el
+> dominio propio se cambian 6 URLs y listo.
+>
+> **Ronda 5.92 añadida al mismo lote — el importador entiende TU lista de accesorios:**
+> probé el PDF que me mandaste (la «LISTA LIMPIA» de accesorios) contra el importador y
+> NO lo reconocía: es otro formato (cabecera distinta partida en renglones, precios con
+> «$» y DOS columnas, códigos que empiezan con letra). Ahora el importador DETECTA el
+> formato solo: sirve igual para el reporte del POS y para tus listas con doble precio,
+> usando el precio SIN impuesto (como pediste). Tus 7 forros que compartían el código
+> FORROSINT no se pierden: quedan FORROSINT, FORROSINT-2 … FORROSINT-7 con aviso visible;
+> ídem WT4RUNNE-2. Y ya no existe la casilla «omitir existencia 0»: los productos en cero
+> TAMBIÉN se crean — cuando una importación futura traiga precio y existencia reales,
+> stock y precio se actualizan solos. Probado con TU PDF real: 72 de 72 productos.
+> **Para ESTE push copia SOLO 6 archivos**: `functions/src/lib/inventarioPdf.ts`,
+> `functions/src/importInventory.ts`, `src/features/admin/services/admin.service.ts`,
+> `src/features/admin/pages/AdminProductsPage.tsx`, `src/tests/inventario-pdf.test.ts`
+> y `src/tests/fixtures/lista-limpia-items.sample.json` (NUEVO). ⚙️ Toca la función
+> fn-importInventory: entra sola con el push, NO hace falta `firebase deploy`
+> (guía completa en el paso 33 de abajo).
+>
+> **Ronda 5.92b añadida al mismo lote — fix del 1er intento de importación («No document to update»):**
+> la primera corrida REAL de la importación (con el script local) se detuvo con
+> «5 NOT_FOUND: No document to update: products/cfAX4q…». TRANQUILO: no se escribió
+> NADA en tu base — el lote entero es atómico y se canceló completo; tu catálogo
+> está exactamente como antes. La causa era del importador: cuando en el panel se
+> elimina un producto, sus variantes quedan colgando en la base (Firestore nunca
+> borra subcolecciones en cascada) y el emparejamiento por SKU las tomaba como si
+> el producto padre aún existiera — intentaba actualizar un producto borrado y
+> todo abortaba. Ahora el importador VALIDA que cada producto candidato exista
+> ANTES de planear las escrituras: las referencias muertas se omiten y sus filas
+> se crean como productos NUEVOS. De paso, la variante que se le inventa a un
+> producto sin variantes se crea con set (el update anterior habría dado el mismo
+> error). Tocan: `functions/src/importInventory.ts` (vuelve a copiarlo) y el
+> script local `importar-inventario-local.mjs` (se reemplaza tal cual, mismo uso).
+> Tests del backend: de 21 a 27 (nuevo guardián de variantes huérfanas).
+>
+> **Ronda 5.92c añadida al mismo lote — Eliminar borra el producto COMPLETO:**
+> para que nunca más haya variantes colgando, el botón Eliminar del panel ahora
+> borra en UN lote atómico TODAS las variantes + la ficha del producto: si algo
+> falla no se borra nada, y si sale bien no queda nada huérfano. Solo cambia
+> `src/features/admin/services/admin.service.ts` (vuelve a copiarlo; el resto
+> de la 5.92b sigue igual y el lote sigue en 93 archivos).
+>
+> **Ronda 5.92d añadida al mismo lote — VACIAR el catálogo para partir de cero:**
+> a tu pedido («quitar todo lo que esté en productos y dejarlo en cero para que la
+> importación quede limpia»), el script local ahora puede dejar el catálogo en CERO
+> antes de importar: borra TODOS los productos, TODAS sus variantes y también las
+> variantes huérfanas de productos ya borrados (la basura que abortó la 1ª corrida).
+> SEGURO: ANTES de borrar guarda una copia de seguridad local en JSON con el MISMO
+> formato del panel — puedes restaurarla desde Copias de seguridad → Restaurar desde
+> archivo. Pide confirmación escribiendo VACIAR (con Enter u otra cosa no borra
+> nada) y al final verifica que quedó 0/0. Dos formas de usarlo:
+>   · En la importación normal: te pregunta «¿VACIAR?» después de elegir la
+>     categoría — escribe VACIAR y sigue con SI como siempre. En una sola corrida:
+>     respaldo → vacío → catálogo con solo los productos del PDF.
+>   · Solo vaciar (sin PDF): `node scripts\importar-inventario-local.mjs --vaciar`
+> El script se REEMPLAZA de nuevo (mismo archivo, mismo uso) — es herramienta local
+> y NO va en el push: el lote sigue en 93 archivos. Tus categorías NO se tocan.
+>
+> **Ronda 5.92e añadida al mismo lote — el aviso «duplicate key» de la consola (corregido):**
+> si en la consola del navegador viste «Warning: Encountered two children with the same
+> key», no era basura: era la paginación del catálogo. Tus 72 productos se importaron en
+> UN solo lote (todos con la MISMA fecha de creación, grabada como Timestamp de Firestore)
+> y el cursor de «Cargar más» esperaba un número — con Timestamp daba NaN, la página 2
+> repetía la página 1 y React marcaba las llaves duplicadas. TUS DATOS ESTÁN BIEN: en
+> Firebase hay exactamente 72 productos, sin duplicados. ARREGLO: el catálogo ahora
+> acepta AMBOS formatos (Timestamp o número) y además la grilla deduplica por id
+> (cinturón de seguridad); el importador desde ahora graba la fecha como número (misma
+> convención del resto de la app). NO tienes que reimportar nada. Vuelven a copiarse:
+> `src/features/catalog/services/catalog.service.ts`, `src/features/catalog/pages/CatalogPage.tsx`
+> y `functions/src/importInventory.ts` + 2 NUEVOS archivos: `src/shared/lib/tiempos.ts`
+> y `src/tests/tiempos.test.ts`. **El lote queda en 95 archivos.** Los mensajes
+> `[Violation] …` de la consola son avisos de rendimiento de Chrome en modo desarrollo —
+> inofensivos, ignóralos.
+>
+> **Corrección 5.92e-bis (mismo lote) — «Too many arguments provided to startAfter()»:**
+> al arreglar el cursor de arriba, quedó al descubierto un SEGUNDO bug que llevaba
+> escondido desde siempre: el cursor del catálogo pasaba 2 valores (fecha + id) a
+> `startAfter()` pero la consulta solo declara 1 `orderBy` — Firestore lo rechaza.
+> Antes no se veía porque el cursor NaN ni siquiera llegaba a armar esa cláusula.
+> ARREGLO DEFINITIVO: el cursor ahora es por SNAPSHOT del documento (patrón oficial
+> de Firestore: desempata solo con el nombre del documento — imprescindible con tus
+> 72 productos que comparten la MISMA fecha) y sin ningún índice nuevo. Solo cambia
+> `src/features/catalog/services/catalog.service.ts` (re-cópialo de nuevo).
+>
+> **Ronda 5.92f añadida al mismo lote — textos de la tienda (pedido del
+> dueño):** «cuando un producto no tenga stock, que el chip diga AGOTADO» ✔ ·
+> «en el catálogo, que no salga el "12+ productos"» ✔. El texto «Sin stock»
+> se cambia por «Agotado» en los 3 lugares cara al cliente (tarjeta, ficha y
+> botón del carrito) y el subtítulo del catálogo ya no muestra contadores —
+> de paso se retira la consulta de conteo: una lectura de Firestore menos en
+> cada visita. Nada de datos ni de backend. Re-cópialos:
+> `src/features/catalog/components/ProductCard.tsx`,
+> `src/shared/components/ui/PriceTag.tsx` (NUEVO en el lote: cambia por
+> primera vez), `src/features/catalog/pages/ProductPage.tsx` y
+> `src/features/catalog/pages/CatalogPage.tsx`. **El lote queda en 96
+> archivos.**
+>
+> **Ronda 5.92g añadida al mismo lote — Mi Cuenta a tu manera (pedido del
+> dueño):** «en lugar de "Mis datos de entrega" que diga "Actualización de
+> mis Datos de entrega"» ✔ · «que solo pueda actualizar número de teléfono y
+> dirección completa» ✔ · «la cédula seguirá siendo usada para ser prellenada
+> en cada compra» ✔ · «quita lo que dice "Van prellenados en cada compra"» ✔.
+> El formulario ahora trae TELÉFONO + DIRECCIÓN (validación idéntica a la del
+> registro; se guarda como +58… en el perfil y la UI siempre lo muestra en
+> formato local 04…), la cédula pasa a SOLO LECTURA en la tarjeta «Datos» (la
+> del registro sigue prellenando el checkout — contacto y «Cédula del pagador»
+> del pago móvil — sin cambios de comportamiento) y el rótulo «Van prellenados
+> en cada compra» desapareció. Reglas de Firestore SIN cambios (phoneE164 ya
+> estaba en la lista blanca). Re-cópialos:
+> `src/features/auth/pages/AccountPage.tsx`,
+> `src/features/auth/services/auth.service.ts`,
+> `src/features/auth/store/auth.store.ts` y
+> `src/features/auth/hooks/useAuth.ts`. **El lote sigue en 96 archivos.**
 
 
 Todo en esta ronda. Nada de esto toca el dinero: la caja fuerte del backend
@@ -528,6 +655,8 @@ formulario nativo (Enter envía también).
   (tope 400 / 4 MB) y si el sistema repitiera un código, gana la última.
 - **Casilla «Omitir los productos con existencia 0»**: si tu reporte trae
   muchos en cero, márcala y esos no se crean ni se tocan (los demás sí).
+  *(Actualizado en la 5.92: la casilla se RETIRÓ — los productos en cero
+  SIEMPRE se crean/actualizan; mira el paso 33.)*
 - **Resumen al terminar**: filas leídas · creados · actualizados (y los
   omitidos) + avisos de filas descartadas con su motivo.
 - ⚙️ **Despliegue**: esta ronda SÍ agrega una función de Netlify
@@ -833,10 +962,89 @@ funcionan EXACTAMENTE igual que hoy).
   sin instalar nada. Dos archivos que faltaban del lote por rondas previas
   (`functions/src/lib/notifications.ts` y su test) entran AHORA incluidos.
 
+### 32 · Que Google te encuentre: Search Console + Perfil de Negocio (nuevo 5.91)
+
+Después del push de esta ronda tu tienda ya tiene el letrero puesto. Para que
+Google la muestre cuando alguien la busca, haz estos dos registros (gratis,
+se hacen UNA vez, ~20 minutos en total):
+
+1. **Search Console** (search.google.com/search-console):
+   - Entra con tu cuenta de Google → «Añadir propiedad» → pega
+     `https://spot24express.netlify.app/`.
+   - Verificación: elige **«Archivo HTML»** → Google te descarga un archivo
+     tipo `google1234abcd.html` → ponlo en la RAÍZ de tu repo (al lado de
+     index.html), haz push, y dale «Verificar». (O pásame el contenido del
+     archivo y te lo meto en el próximo lote.)
+   - Ya verificado: menú «Sitemaps» → escribe `sitemap.xml` → «Enviar».
+     Google empieza a indexar en cuestión de días.
+   - Consejo: usa «Inspección de URL» con tu link y pide indexación
+     inmediata en vez de esperar.
+2. **Perfil de Negocio de Google** (business.google.com):
+   - «Administrar ahora» → nombre **SPOT 24** → categoría sugerida:
+     «Tienda de repuestos automotrices» (si te ofrece secundarias, agrega
+     «Tienda de conveniencia»).
+   - Completa teléfono/WhatsApp, dirección o zona de entrega, y en «Sitio
+     web» pega tu URL. Con el perfil verificado apareces en búsquedas y
+     mapas de tu zona — gratis.
+
+**Ver tu tarjeta de WhatsApp**: comparte el link en un chat de prueba (a ti
+mismo). Si aún sale pelado, WhatsApp cachea el enlace ~24 h — se limpia al
+instante con el «Depurador de uso compartido» de Facebook
+(developers.facebook.com/tools/debug): pega tu URL → «Depurar» →
+«Volver a extraer» y comparte de nuevo.
+
+**Nota del dominio (pospuesto a tu pedido)**: cuando compres el dominio
+propio se cambian las 6 URLs absolutas (canónico, og:url, og:image,
+twitter:image, sitemap, JSON-LD), se reenvía el sitemap y todo queda igual
+— te lo preparo en minutos ese día.
+
+### 33 · Tus listas con doble precio entran al importador (nuevo 5.92)
+- **Qué pasaba**: me pasaste tu PDF de accesorios (la «LISTA LIMPIA» con
+  «Precio USD sin impuesto» y «con impuesto») y el importador solo entendía
+  el reporte del POS: devolvía 0 productos.
+- **Qué cambió**:
+  - El importador RECONOCE EL FORMATO SOLO: si el PDF es el reporte
+    «Inventario disponible» del POS se usa el Costo; si es una lista con
+    columnas Código / Descripción / Existencia / «Precio USD sin/con
+    impuesto» se usa el **SIN impuesto** (tu decisión). El resumen del
+    modal te dice cuál detectó.
+  - **Códigos repetidos sin perder nada**: tu lista trae 7 forros distintos
+    que comparten el código FORROSINT y 2 alfombras con WT4RUNNE (el
+    sistema de origen corta los códigos). Antes se perderían 7 productos;
+    ahora quedan FORROSINT, FORROSINT-2 … FORROSINT-7 y WT4RUNNE-2, cada
+    uno con su nombre, y el modal te avisa de cada renombrado. Si un
+    sufijo ya está ocupado por un producto real, salta al siguiente libre.
+  - **Se crean también los productos en cero** (existencia 0 y precio 0):
+    la casilla «omitir existencia 0» se retiró — cuando una importación
+    futura traiga los valores reales, stock y precio se actualizan solos.
+  - Códigos que empiezan con LETRA (CE0501, DM1202, WTAUTANA…) ahora
+    entran bien.
+- **Probado con TU PDF real**: 72 de 72 productos extraídos y 0 ilegibles;
+  el reporte del POS sigue igual que siempre (tests de regresión).
+- **5.92b — el 1er intento real se detuvo con «No document to update» y quedó
+  blindado**: al eliminar un producto del panel, sus variantes quedan colgando
+  en la base (Firestore no borra subcolecciones en cascada) y el emparejamiento
+  por SKU las tomaba como si el producto padre existiera: el plan intentaba
+  actualizar un producto borrado y el lote COMPLETO abortaba. Ahora cada
+  producto candidato se valida por existencia antes de planear nada; las
+  referencias muertas se omiten y sus filas se crean como NUEVAS (el resumen
+  del script te dice cuántas hubo). En la corrida fallida del dueño NO se
+  escribió nada (lote atómico).
+- ⚙️ **Despliegue**: ACTUALIZA fn-importInventory — entra sola con el push
+  (el build de Netlify recompila las funciones); NO hace falta
+  `firebase deploy`.
+
 ## Despliegue — pasos EN ESTE ORDEN
 
-1. **Copia los 87 archivos** sobre tu repo `C:\Users\Erick\spot24`,
+1. **Copia los 96 archivos** sobre tu repo `C:\Users\Erick\spot24`,
    respetando las carpetas (la estructura del lote es la del repo).
+   **5.92f: NUEVO en el lote** `src/shared/components/ui/PriceTag.tsx` —
+   cópialo también (cambia por primera vez desde que existe el lote).
+   **5.92g: ACTUALIZA** `src/features/auth/pages/AccountPage.tsx`,
+   `src/features/auth/services/auth.service.ts`,
+   `src/features/auth/store/auth.store.ts` y
+   `src/features/auth/hooks/useAuth.ts` (Mi Cuenta: «Actualización de mis
+   Datos de entrega» — solo teléfono y dirección editables).
    **5.81: NUEVA carpeta en el lote** `src/features/cart/` (lógica del
    carrito + sus tests) — créala al copiar, respeta la ruta exacta.
    **5.87: NUEVOS archivos en `functions/`** (`package.json`,
@@ -897,6 +1105,19 @@ funcionan EXACTAMENTE igual que hoy).
    `src/app/layouts/RootLayout.tsx` (la campana antes de Instagram).
    Los `src/features/orders/services|store|hooks/` son carpetas nuevas
    en el lote solo para services/store/hooks — cópialos todos.
+   **5.92: ACTUALIZA** `functions/src/lib/inventarioPdf.ts`,
+   `functions/src/importInventory.ts`,
+   `src/features/admin/services/admin.service.ts`,
+   `src/features/admin/pages/AdminProductsPage.tsx` y
+   `src/tests/inventario-pdf.test.ts` + **NUEVO**
+   `src/tests/fixtures/lista-limpia-items.sample.json` (el importador
+   ahora entiende tus listas de accesorios con doble precio) — cópialos
+   todos. **5.92b: vuelve a copiar** `functions/src/importInventory.ts`
+   (blindaje «No document to update»: variantes colgantes de productos
+   borrados) y **AGREGA** `functions/src/__tests__/import-inventario.test.ts`
+   (NUEVO: el guardián de variantes huérfanas) — el resto de la 5.92 sigue
+   igual. **5.92c: vuelve a copiar** `src/features/admin/services/admin.service.ts`
+   (Eliminar borra variantes + ficha en un solo lote atómico).
    Después de copiar corre EN LA RAÍZ (donde está package.json):
    ```powershell
    npm install
@@ -1161,12 +1382,16 @@ consola y los cambios aplican en caliente.)
     app instalada como PWA nada cambió: mismo ícono, mismo offline, mismo
     aviso del sistema.
 
-## Archivos (86) — copiar SOBRE tu repo, respetando carpetas
+## Archivos (95) — copiar SOBRE tu repo, respetando carpetas
 
 | Archivo | Cambio |
 |---|---|
 | `firestore.rules` | Lista blanca users: + cedula, address (create y update) · 5.89: línea explícita `catalogBackups` en el bloque de colecciones internas (solo documentación: el cierre general ya la bloquea) · 5.90: subcolección `users/{uid}/notifs` SOLO-lectura para el dueño (el servidor escribe el historial de avisos) + `notifsLastReadAt` entra en la lista blanca del update de users (número acotado a ahora+1 min) |
 | `netlify.toml` | Timeout 26 s para fn-recomputeStock · 5.87: timeout 26 s para fn-importInventory · 5.87d: la CSP de dev permite el websocket de Vite (HMR sin F5) · 5.89: timeout 26 s para las 4 funciones de copias + backup-catalog (el cron diario) · 5.90.2: FIX imágenes rotas — connect-src += `https://i.ibb.co` (el fetch del SW lo gobierna la CSP de sw.js, NO img-src de la página) y += `https://firebasestorage.googleapis.com` (mina latente de la ruta CacheFirst de Storage) + 4º hash del script inline del SDK de Auth (`about:srcdoc:85`) |
+| `index.html` | NUEVO EN LOTE 5.91 · cara pública de la tienda en buscadores/redes: canónico + Open Graph (título, descripción, `og-cover.jpg` 1200×630, locale es_VE) + Twitter card summary_large_image + JSON-LD AutoPartsStore (nombre, eslogan, Instagram, Venezuela) · el título y la descripción ya existían · 6 URLs absolutas a cambiar cuando haya dominio propio |
+| `public/robots.txt` | NUEVO 5.91 · permiso a buscadores: Allow / + fuera de Google el panel y lo transaccional (admin, carrito, checkout, pedidos, pedido/, notificaciones, recuperar) + apunta al sitemap |
+| `public/sitemap.xml` | NUEVO 5.91 · mapa de rutas públicas: / (1.0, daily), /catalogo (0.9, daily), /cuenta/registro y /cuenta/login · XML validado |
+| `public/og-cover.jpg` | NUEVO 5.91 · tarjeta de WhatsApp/redes: fachada real de noche (billboard «Tu parada segura», letrero encendido, mural del escudo) recortada a 1200×630 · 143 KB · NO precachea (jpg fuera de los globs del SW) |
 | `vite.config.ts` | imgbb CacheFirst (300 imgs/30 días) + hmr dev |
 | `package.json` | NUEVO EN LOTE 5.87d · pdfjs-dist TAMBIÉN en la RAÍZ del repo: netlify dev resuelve los paquetes desde aquí (functions/node_modules queda fuera de la cadena) |
 | `package-lock.json` | NUEVO EN LOTE 5.87d · lock de la raíz con pdfjs-dist 4.10.38 (misma versión que en functions/) |
@@ -1177,9 +1402,10 @@ consola y los cambios aplican en caliente.)
 | `src/app/router.tsx` | NUEVO EN LOTE 5.89 · ruta `/admin/copias` con guard SOLO admin (la página de Copias de seguridad) · 5.90: ruta `/notificaciones` con guard de sesión (la página de la campana) |
 | `src/features/admin/pages/AdminLayout.tsx` | NUEVO EN LOTE 5.89 · entrada de menú «Copias» (código 10, SOLO admin) |
 | `src/shared/components/ui/Modal.tsx` | NUEVO EN LOTE 5.88 · el modal se monta por PORTAL en document.body — anclado SIEMPRE a la pantalla aunque un ancestro tenga transform (cinturón del fix 5.88; beneficia a los 15 modals de la app: editor, importar PDF, QR ampliado, categorías, promos, zonas, usuarios, pagos, despacho, comprobante, cancelar) |
-| `src/features/admin/pages/AdminProductsPage.tsx` | FIX: modal no arrastra datos del producto anterior + «Descripción (opcional)» + selector de categoría en árbol (↳) · 5.78: aviso de categoría oculta/eliminada + candado de precio/stock · 5.81: LISTA de fotos (hasta 6, portada + quitar + reordenar) · 5.82: nota de que editar precio/stock NO toca las fotos · 5.87: botón «Importar PDF» + modal (categoría destino, archivo, omitir ceros, resumen) · 5.87b: si la importación falla, el modal muestra el MOTIVO REAL del servidor (nada de adivinar) · 5.87f: placeholder en lista y editor si la foto no carga · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
-| `functions/src/importInventory.ts` | NUEVO 5.87 · core de la importación: empareja por código/SKU, crea lo que falta y actualiza stock+precio en lotes (admin/gerencia, con auditoría) · 5.87b: la lectura del PDF vive en lib/extraerPdf (fix del worker dentro del bundle) · 5.87e: lectura de variantes SIN where — NINGÚN índice que crear a mano (fuera el FAILED_PRECONDITION «COLLECTION_GROUP_ASC … sku») y emparejamiento de SKU en memoria |
-| `functions/src/lib/inventarioPdf.ts` | NUEVO 5.87 · parser PURO del reporte «Inventario disponible»: filas por coordenadas de columnas (código/desc/existencia/costo) + números VE — 13 tests con items reales del PDF del dueño |
+| `src/shared/components/ui/PriceTag.tsx` | NUEVO EN LOTE 5.92f (cambia por primera vez y ahora viaja) · PriceTag: precio SOLO en Bs. con la tasa BCV en vivo · StockBadge: chip de stock de la ficha — 5.92f: dice «Agotado» sin existencias (antes «Sin stock») |
+| `src/features/admin/pages/AdminProductsPage.tsx` | FIX: modal no arrastra datos del producto anterior + «Descripción (opcional)» + selector de categoría en árbol (↳) · 5.78: aviso de categoría oculta/eliminada + candado de precio/stock · 5.81: LISTA de fotos (hasta 6, portada + quitar + reordenar) · 5.82: nota de que editar precio/stock NO toca las fotos · 5.87: botón «Importar PDF» + modal (categoría destino, archivo, omitir ceros, resumen) · 5.87b: si la importación falla, el modal muestra el MOTIVO REAL del servidor (nada de adivinar) · 5.87f: placeholder en lista y editor si la foto no carga · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento) · 5.92: modal sin casilla de ceros + formato detectado en el resumen + textos de los dos formatos admitidos |
+| `functions/src/importInventory.ts` | NUEVO 5.87 · core de la importación: empareja por código/SKU, crea lo que falta y actualiza stock+precio en lotes (admin/gerencia, con auditoría) · 5.87b: la lectura del PDF vive en lib/extraerPdf (fix del worker dentro del bundle) · 5.87e: lectura de variantes SIN where — NINGÚN índice que crear a mano (fuera el FAILED_PRECONDITION «COLLECTION_GROUP_ASC … sku») y emparejamiento de SKU en memoria · 5.92: detecta el formato SOLO (reporte del POS o lista con doble precio — usa el SIN impuesto) y la casilla «omitir cero» se RETIRÓ: los productos en cero también se crean/actualizan (pedido del dueño) · 5.92b: blindaje «No document to update» — los productos candidatos se validan por EXISTENCIA antes de planear (las variantes colgantes de productos borrados ya no abortan el lote; sus filas se crean como nuevas) y la variante inventada para un producto sin variantes va con set · 5.92e: createdAt = Date.now() (número, la convención de la app — serverTimestamp dejaba Timestamp y rompía el cursor de paginación del catálogo) |
+| `functions/src/lib/inventarioPdf.ts` | NUEVO 5.87 · parser PURO del reporte «Inventario disponible»: filas por coordenadas de columnas (código/desc/existencia/costo) + números VE — 13 tests con items reales del PDF del dueño · 5.92: +parseListaLimpia (cabecera multi-renglón, «$»/«und.», códigos con letra inicial, sufijos -2/-3… para códigos repetidos) y +parseInventarioAuto (detección automática de formato) |
 | `functions/src/lib/extraerPdf.ts` | NUEVO 5.87b · lectura del PDF con pdfjs + registro del worker en el escape hatch oficial (FIX del 400 «No se pudo leer el PDF»: el motor viaja DENTRO del paquete de Netlify) — tope 4 MB / 400 páginas · 5.87c: si el PDF falla, el motivo TÉCNICO llega al modal y al log de netlify dev (mensaje propio para contraseña / corrupto / página rota) + registro blindado del worker (namespace plano o .default) + destroy() del documento + referencia a la declaración pdfjs.d.ts · 5.87d: mensaje PROPIO si falta el paquete del lector (ERR_MODULE_NOT_FOUND → la orden: npm install en la raíz, NO dentro de functions/, y reiniciar netlify dev) |
 | `functions/src/lib/pdfjs.d.ts` | NUEVO 5.87c · declaración de tipos del lector de pdfjs DENTRO del repo — tu VSC dejará de marcar TS2307 «No se encuentra el módulo pdfjs-dist/legacy/build/pdf.mjs» (era solo el editor: la función sí funciona) |
 | `functions/src/lib/pdfjs-worker.d.ts` | NUEVO 5.87b · tipos del worker de pdfjs (el paquete no los publica) |
@@ -1193,14 +1419,15 @@ consola y los cambios aplican en caliente.)
 | `functions/src/backups.ts` | NUEVO 5.89 · core de las copias: ensambla el catálogo (1 lectura de variantes con collectionGroup, sin índices), valida el archivo con lista blanca y coerción, trocea por BYTES UTF-8 (≤512 KB/doc, acentos intactos), guarda meta+chunks en `catalogBackups`, rota 30 por tipo, restaura por MORPH (escribe primero, borra sobrantes al final, IDs originales preservados) con copia previa OBLIGATORIA antes de tocar nada |
 | `functions/package.json` | NUEVO EN LOTE 5.87 · dependencia pdfjs-dist (lector de PDF) |
 | `functions/package-lock.json` | NUEVO EN LOTE 5.87 · lock con pdfjs-dist (el build de Netlify lo instala) |
-| `src/tests/inventario-pdf.test.ts` | NUEVO 5.87 · 13 tests del parser (fixture real + casos límite) · 5.87b: +3 — PDF mínimo REAL extremo a extremo (pdfjs → parser), PDF truncado con error accionable y REGRESIÓN que extrae un PDF desde dentro del bundle esbuild de Netlify · 5.87c: +2 — el worker queda registrado con la forma EXACTA que pdfjs consulta y un PDF basura deja ver el motivo técnico (mensaje + log) · 5.87d: +1 — el mensaje de paquete ausente lleva la ORDEN exacta de arreglo |
+| `src/tests/inventario-pdf.test.ts` | NUEVO 5.87 · 13 tests del parser (fixture real + casos límite) · 5.87b: +3 — PDF mínimo REAL extremo a extremo (pdfjs → parser), PDF truncado con error accionable y REGRESIÓN que extrae un PDF desde dentro del bundle esbuild de Netlify · 5.87c: +2 — el worker queda registrado con la forma EXACTA que pdfjs consulta y un PDF basura deja ver el motivo técnico (mensaje + log) · 5.87d: +1 — el mensaje de paquete ausente lleva la ORDEN exacta de arreglo · 5.92: +11 — lista limpia REAL del dueño (72/72), sufijos FORROSINT-2…-7 y WT4RUNNE-2, fila en cero, exclusión mutua de formatos y casos límite |
+| `src/tests/fixtures/lista-limpia-items.sample.json` | NUEVO 5.92 · items REALES del PDF de accesorios del dueño (4 páginas, 399 items con coordenadas) para los tests del formato lista limpia |
 | `src/tests/fixtures/inventario-items.sample.json` | NUEVO 5.87 · items REALES del PDF del dueño para los tests |
 | `src/features/admin/pages/AdminCategoriesPage.tsx` | SUBCATEGORÍAS: lista en árbol, campo «Ubicación», guardas al eliminar · 5.81: candado «avisar + mover» al crear subcategoría en bahía con productos + marca ⚠ de productos ocultos · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/features/admin/pages/AdminPaymentsPage.tsx` | 5.80 · fuera de «Sin comprobante» los pedidos contra entrega (Efectivo/Punto de venta): se cobran al entregar y se procesan en Pedidos |
 | `src/features/admin/components/NewOrderAlert.tsx` | 5.80 · la alerta de pedidos nuevos también avisa los contra entrega («pago al recibir») |
 | `src/features/admin/pages/AdminSettingsPage.tsx` | Campo «Horario de los deliverys» en Operación · 5.79: formas de pago con interruptor · 5.80: LISTA de cuentas (varias por método), agregar/quitar, nombre para el cliente y SUBIR el QR como archivo (o enlace) · 5.82: chips «＋ Pago móvil / ＋ Transferencia / …» SIEMPRE visibles (agregar otra cuenta en un toque; fuera el botón del fondo) · 5.84: cuenta nueva nace SIN QR — ni la carga ni la vista previa inyectan el QR del repo (el de la otra cuenta) |
 | `src/features/admin/pages/AdminMetricsPage.tsx` | Gráfico 7 días (barras 0 px) + fuera la línea «≈ Bs.» + semana lun→dom |
-| `src/features/admin/services/admin.service.ts` | Guarda `parentId` + conteo de productos por categoría (protege el borrado) · 5.81: mover productos entre categorías en lotes + guardar categoría devuelve su id · 5.82: FIX — editar producto ya NO reescribe images (antes borraba las fotos extra al cambiar precio/stock) · 5.87: adminImportInventory (sube el PDF del POS a fn-importInventory) |
+| `src/features/admin/services/admin.service.ts` | Guarda `parentId` + conteo de productos por categoría (protege el borrado) · 5.81: mover productos entre categorías en lotes + guardar categoría devuelve su id · 5.82: FIX — editar producto ya NO reescribe images (antes borraba las fotos extra al cambiar precio/stock) · 5.87: adminImportInventory (sube el PDF del POS a fn-importInventory) · 5.92: adminImportInventory sin «omitir cero» + formato detectado en el resultado · 5.92c: adminDeleteProduct borra en UN lote atómico TODAS las variantes + la ficha — no queda nada colgando (la causa de las variantes huérfanas que abortaron la 1ª importación) |
 | `src/features/admin/services/backups.service.ts` | NUEVO 5.89 · capa de servicios de las copias: 4 llamadas a funciones + helpers puros (parseBackupFile valida el archivo subido ANTES de enviarlo, copiaFilename, fechaCorta, bytesLegibles) — los tipos son espejo del core del backend |
 | `src/features/admin/pages/AdminBackupsPage.tsx` | NUEVO 5.89 · página «Copias» del panel: descargar, guardar en la nube, lista con etiqueta Automática/Manual (fecha, conteos, KB), descargar copia de la nube y RESTAURAR con doble confirmación (resumen + escribir RESTAURAR) y advertencia en rojo |
 | `src/shared/lib/backend.ts` | 5.87b · los errores de funciones se registran en UNA línea plana (http + code + motivo): el paste de consola ya no muestra «Object» sin información · 5.87e: los errores crudos de Firestore («9 FAILED_PRECONDITION», p. ej. índice faltante) ya no se muestran como «No tienes acceso a esta área» — toast de reintento y motivo real en el modal de admin |
@@ -1208,21 +1435,21 @@ consola y los cambios aplican en caliente.)
 | `functions/src/orders.ts` | createOrder acepta las formas de pago — 5.80: 6 métodos y comprobante OPCIONAL en Efectivo/Punto de venta (nacen sin comprobante) — REQUIERE deploy de funciones |
 | `functions/src/lib/ctx.ts` | NUEVO 5.78d · sin credencial admin en local: aviso con paso a paso (antes 500 mudo en netlify dev) |
 | `src/features/auth/types/index.ts` | SpotUser: + cedula, address |
-| `src/features/auth/services/auth.service.ts` | Registro con cédula/dirección, saveCustomerData, changePassword |
-| `src/features/auth/store/auth.store.ts` | Acciones signUp (ampliada), saveMyData, changeMyPassword |
-| `src/features/auth/hooks/useAuth.ts` | Expone saveMyData y changeMyPassword |
+| `src/features/auth/services/auth.service.ts` | Registro con cédula/dirección, saveCustomerData, changePassword · 5.92g: saveCustomerData guarda TELÉFONO (acepta 04…/414…/+58…, guarda +58… con validación VE) + dirección; la cédula ya no se toca desde aquí |
+| `src/features/auth/store/auth.store.ts` | Acciones signUp (ampliada), saveMyData, changeMyPassword · 5.92g: saveMyData(phone, address) parchea user.phone con el E.164 sanitizado |
+| `src/features/auth/hooks/useAuth.ts` | Expone saveMyData y changeMyPassword · 5.92g: firma nueva saveMyData(phone, address) |
 | `src/features/auth/pages/RegisterPage.tsx` | Campos Cédula + Dirección completa |
-| `src/features/auth/pages/AccountPage.tsx` | «Mis datos de entrega» + «Seguridad» (cambiar clave, formulario accesible) |
+| `src/features/auth/pages/AccountPage.tsx` | «Mis datos de entrega» + «Seguridad» (cambiar clave, formulario accesible) · 5.92g: título «Actualización de mis Datos de entrega», formulario TELÉFONO + DIRECCIÓN (fuera el rótulo «Van prellenados en cada compra»), cédula de SOLO LECTURA en «Datos» (sigue prellenando el checkout) |
 | `src/features/cart/lib/cartLogic.ts` | NUEVO EN LOTE 5.81 · lógica pura del carrito (stock, topes, fusión) + `singleLineForProduct` (stepper de la tarjeta) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/features/cart/pages/CartPage.tsx` | NUEVO EN LOTE 5.87f · onError de fotos en los ítems del carrito (placeholder si la foto no carga) — el resto de la página igual que en tu repo · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/features/cart/tests/cartLogic.test.ts` | NUEVO EN LOTE 5.81 · 14 tests de la lógica del carrito (incluye el stepper de la tarjeta) |
-| `src/features/catalog/pages/ProductPage.tsx` | «Descripción» solo si existe + breadcrumb compatible con subcategorías · 5.81: galería con miniaturas CLICABLES (foto grande cambia al tocar) · 5.83: carrusel DESLIZABLE con puntos (Farmatodo) — pasar las fotos con el dedo dentro de la ficha, miniaturas sincronizadas (tocar una desliza hasta ella) · 5.87f: placeholder en carrusel y miniaturas cuando una foto falla · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
-| `src/features/catalog/components/ProductCard.tsx` | Chip «Últimas N» dentro de la foto (no tapa el precio) · 5.81: píldora «− qty +» estilo Farmatodo cuando el producto ya está en el carrito · 5.82: «+» y píldora COMPACTOS (36 px) + chip arriba-izquierda · 5.83: la tarjeta vuelve a mostrar SOLO la portada, fija y sin puntos (el carrusel vive en la ficha) · 5.85: chip ABAJO-izquierda + más transparencia (50 %) · stepper que se RETRAE al círculo con el número y vuelve al tocarlo (Farmatodo), todo a 32 px con el «+»/número al 80 % del círculo · 5.87f: placeholder si la portada no carga · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
+| `src/features/catalog/pages/ProductPage.tsx` | «Descripción» solo si existe + breadcrumb compatible con subcategorías · 5.81: galería con miniaturas CLICABLES (foto grande cambia al tocar) · 5.83: carrusel DESLIZABLE con puntos (Farmatodo) — pasar las fotos con el dedo dentro de la ficha, miniaturas sincronizadas (tocar una desliza hasta ella) · 5.87f: placeholder en carrusel y miniaturas cuando una foto falla · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento) · 5.92f: el botón del carrito dice «Agotado» cuando la variante elegida no tiene existencias (antes «Sin stock»)|
+| `src/features/catalog/components/ProductCard.tsx` | Chip «Últimas N» dentro de la foto (no tapa el precio) · 5.81: píldora «− qty +» estilo Farmatodo cuando el producto ya está en el carrito · 5.82: «+» y píldora COMPACTOS (36 px) + chip arriba-izquierda · 5.83: la tarjeta vuelve a mostrar SOLO la portada, fija y sin puntos (el carrusel vive en la ficha) · 5.85: chip ABAJO-izquierda + más transparencia (50 %) · stepper que se RETRAE al círculo con el número y vuelve al tocarlo (Farmatodo), todo a 32 px con el «+»/número al 80 % del círculo · 5.87f: placeholder si la portada no carga · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento) · 5.92f: el chip de producto sin existencias dice «Agotado» (antes «Sin stock»)|
 | `src/features/catalog/components/CategoryCard.tsx` | NUEVO 5.77 · Tarjeta de subcategoría (foto opcional) · 5.78: sin contador de productos · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
 | `src/features/catalog/pages/HomePage.tsx` | Horario de deliverys leído de Ajustes + bahías = solo categorías principales |
-| `src/features/catalog/pages/CatalogPage.tsx` | Tarjetas de subcategorías antes de los productos (5.77) · 5.78c: cada categoría filtra SOLO sus productos directos · 5.81: bahía con subcategorías muestra ÚNICAMENTE las subcategorías (sin productos, sin consultas en vano) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
+| `src/features/catalog/pages/CatalogPage.tsx` | Tarjetas de subcategorías antes de los productos (5.77) · 5.78c: cada categoría filtra SOLO sus productos directos · 5.81: bahía con subcategorías muestra ÚNICAMENTE las subcategorías (sin productos, sin consultas en vano) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento) · 5.92f: fuera el contador «N+ productos · N en la categoría» del subtítulo y la consulta de conteo que lo alimentaba (una lectura de Firestore menos por visita)|
 | `src/features/catalog/components/SearchBar.tsx` | Filtros: fila de categorías principales (los chips repetidos de subcats salieron en 5.77) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
-| `src/features/catalog/services/catalog.service.ts` | Filtrado por categoría + árbol normalizado (`in` queda como soporte genérico) |
+| `src/features/catalog/services/catalog.service.ts` | Filtrado por categoría + árbol normalizado (`in` queda como soporte genérico) · 5.92e: el cursor de paginación normaliza createdAt con aMillis (acepta Timestamp de Firestore O número — jamás NaN) + cursor por SNAPSHOT del documento (desempate implícito, sin índices nuevos; fixes «duplicate key» y «Too many arguments provided to startAfter()») |
 | `src/features/catalog/hooks/useCatalog.ts` | Conteo por categoría (getCountFromServer, cache 5 min + bus en vivo) · 5.81: listado con apagador (bahías con subcategorías no consultan productos) |
 | `src/features/catalog/types/index.ts` | Filtro `categoryIds` (soporte genérico de varios ids, sin uso en la tienda) |
 | `src/features/checkout/pages/CheckoutPage.tsx` | Autofill cédula/dirección + Copiar (RIF solo números) · 5.79: tarjetas de formas activas, formulario por método, QR en pantalla, ícono de copiar · 5.80: chips por CUENTA (multicuenta), contra entrega sin comprobante ni formulario · 5.86: el QR es TOCABLE — se abre AMPLIADO (modal accesible) para escanearlo desde la app del banco |
@@ -1240,6 +1467,7 @@ consola y los cambios aplican en caliente.)
 | `src/shared/lib/format.ts` | rifToDigits + cleanAmountBs |
 | `src/shared/lib/paymentMethods.ts` | Lógica pura de formas de pago — 5.80: multicuenta (activeAccountsOf sin deduplicar, accountKey/accountChipLabel/newAccountId), reglas contra entrega · 5.84: qrForAccount SOLO devuelve el QR propio de la cuenta (nada de respaldo al repo: un segundo Pago Móvil ya no hereda el QR del primero) |
 | `src/shared/lib/clipboard.ts` | copyText con respaldo (WebView viejo) |
+| `src/shared/lib/tiempos.ts` | NUEVO 5.92e · aMillis (normaliza fechas de Firestore: número, Timestamp, Date o JSON plano — jamás NaN) + dedupePorId (grilla sin repetidos, conserva orden y 1ª aparición) |
 | `src/shared/services/settings.service.ts` | deliveryHours + caché compartida (1 lectura por carga) · 5.79/5.80: lee TODAS las cuentas (activas e inactivas, varias por método) |
 | `src/tests/copy-helpers.test.ts` | Tests nuevos de rifToDigits/cleanAmountBs |
 | `src/shared/lib/imgFallback.ts` | NUEVO 5.87f · alFallarFoto: onError de las fotos de producto — si la foto no carga muestra el placeholder UNA vez (dataset impide el bucle si el propio placeholder falla) |
@@ -1249,12 +1477,88 @@ consola y los cambios aplican en caliente.)
 | `src/tests/marcas-cliente.test.ts` | NUEVO 5.90.3 · guardián de marcas de terceros: recorre src/ + public/ + index.html (archivos textuales) y FALLA si encuentra una marca prohibida (lista extensible; hoy: farmatodo) en textos, aria-labels o comentarios — el dueño pidió que el cliente jamás la lea; se excluye a sí mismo (su lista) |
 | `functions/src/__tests__/notifications-flow.test.ts` | RECUPERADO EN LOTE 5.90 (faltaba en el lote desde las rondas del push — ahora entra sí o sí porque cambió) · E2E con emulador del flujo de avisos: 10 fases (creación→pago→despacho→entrega→cancelación, replays sin duplicar, staff jamás destinatario, inventario consistente, secuencia exacta de 10 pushes) · 5.90: asserts del HISTORIAL in-app en cada fase — el doc users/{uid}/notifs con el MISMO texto del push, cliente SIN tokens acumula historial (el punto de la ronda), replay no duplica doc, secuencia del historial = secuencia de pushes, staff sin historial y FASE 8 de rotación (35+1 → quedan exactamente 30, se drenan las 6 más viejas) |
 | `functions/src/__tests__/backups-core.test.ts` | NUEVO 5.89 · 13 tests del lado servidor (lógica pura sin Firestore): validateBackupFile (lista blanca, coerción, repetidos, huérfanos, topes) + chunk/join UTF-8 (round-trip exacto con acentos, el corte nunca parte un carácter) + planRotación 30/30 + normalizeTs |
+| `functions/src/__tests__/import-inventario.test.ts` | NUEVO 5.92b · 6 tests del guardián de variantes huérfanas (lógica pura, sin Firestore): filtrarPidsVivos deja SOLO productos vivos en los mapas code/sku→producto — la regresión del «No document to update» que detuvo la 1ª importación real del dueño (nada se escribió: lote atómico) |
 | `src/tests/category-tree.test.ts` | NUEVO · 10 tests del árbol de categorías |
+| `src/tests/tiempos.test.ts` | NUEVO 5.92e · 11 tests: aMillis (número, Timestamp del SDK con toMillis, JSON {seconds,nanoseconds} con redondeo, Date, string, basura → 0 y la REGRESIÓN del cursor con Timestamp real) + dedupePorId (páginas solapadas con los ids reales de la consola del dueño, orden, vacío) |
 | `src/tests/payment-methods.test.ts` | Tests de formas de pago — 5.80: 39 tests (multicuenta, contra entrega, chips, ids) · 5.84: QR individual por cuenta (sin QR propio = sin QR) |
 | `netlify/functions/fn-recomputeStock.ts` | Reparación one-shot del stockTotal (URL con clave) |
 
 ## Verificado antes de entregar
 
+- **5.92g — «Actualización de mis Datos de entrega» (Mi Cuenta, pedido del
+  dueño)**: el formulario ahora edita SOLO el número de teléfono y la dirección
+  completas; la cédula pasa a solo lectura en la tarjeta «Datos» (la del
+  registro sigue prellenando el checkout — contacto y «Cédula del pagador» del
+  pago móvil — sin cambios de comportamiento) y fuera el rótulo «Van prellenados
+  en cada compra». El teléfono se acepta en cualquier formato venezolano, se
+  guarda E.164 (+58…) igual que en el registro y la UI lo muestra local (04…).
+  Reglas de Firestore sin cambios (phoneE164 ya estaba en la lista blanca).
+  `tsc` ×3 limpio, **167/167 frontend · 27/27 backend**, build verde con
+  precache 114 INTACTO. Lote: 96 archivos (4 re-copiados), verificar-lote 1:1.
+- **5.92f — «Agotado» en vez de «Sin stock» + fuera el «12+ productos»
+  (textos de la tienda, pedido del dueño)**: los 3 puntos cara al cliente que
+  decían «Sin stock» (chip de la tarjeta, StockBadge de la ficha y botón «Al
+  carrito») ahora dicen «Agotado»; el subtítulo del catálogo ya no muestra
+  «N+ productos · N en la categoría» y se retiró la consulta de conteo que lo
+  alimentaba (useCategoryCount) — una lectura de Firestore menos por visita.
+  Sin cambios de datos ni de backend. `tsc` ×2 limpio, **167/167 tests del
+  frontend**, build verde con precache INTACTO en 114. Lote: 96 archivos
+  (4 re-copiados, 1 NUEVO en lote: PriceTag.tsx), verificar-lote 1:1 EXACTO.
+- **5.92e — el aviso «duplicate key» de la consola (paginación del catálogo)**:
+  causa raíz confirmada en código: los 72 productos importados en UN lote
+  comparten el MISMO createdAt y quedó grabado como Timestamp de Firestore
+  (serverTimestamp); el cursor del catálogo esperaba número → NaN → sin
+  startAfter → la página 2 repetía la página 1 («Encountered two children with
+  the same key» ×12 y «Cargar más» infinito). ARREGLO: aMillis normaliza
+  número/Timestamp/Date/JSON en encodeCursor y mapProduct (jamás NaN), la
+  grilla deduplica por id (dedupePorId) y el importador graba
+  createdAt = Date.now() desde ahora. Probado con 11 tests NUEVOS de tiempos
+  (incluida la regresión con Timestamp real y los ids reales de la consola del
+  dueño). NO hay que reimportar: los 72 productos ya existentes se leen bien
+  con el mapper normalizado. `tsc` ×2 limpio, **167/167 tests del frontend**
+  (156 + 11), **27/27 del backend**, build verde con precache INTACTO en 114.
+  Lote: 95 archivos (2 NUEVOS), verificar-lote 1:1 EXACTO.
+- **5.92e-bis — «Too many arguments provided to startAfter()»**: el arreglo del
+  cursor (aMillis) destapó el bug LATENTE de fondo: la consulta pasaba 2 valores
+  (createdAt + id) a startAfter() con UN solo orderBy — Firestore lo rechaza de
+  plano. ARREGLO DEFINITIVO: clausulaCursor resuelve el documento del cursor con
+  getDoc (1 lectura por clic de «Cargar más») y arma startAfter(snapshot) — el
+  patrón oficial de Firestore, que desempata empates de createdAt con el nombre
+  del documento (imprescindible: los 72 productos comparten el mismo createdAt).
+  Respaldo: si el doc fue borrado entre páginas, cae a startAfter(createdAt) con
+  aridad válida y la grilla deduplica. CERO índices nuevos. `tsc` ×2 limpio,
+  **167/167 frontend**, build verde precache 114 INTACTO.
+- **5.92d — VACIAR el catálogo (partir de cero, sin rastros viejos)**: probado
+  COMPLETO contra el emulador de Firestore con datos de prueba: conteo exacto
+  (2 productos · 4 variantes · 1 huérfana detectada), responder otra cosa = NO
+  borra nada, responder VACIAR = primero copia de seguridad JSON válida
+  (formato spot24-catalog-backup, restaurable desde el panel) → borrado en
+  lotes → verificación 0/0 con tu categoría intacta; y el vestidor completo
+  con tu PDF real: vaciar + importar en UNA corrida dejó el catálogo con
+  EXACTAMENTE los 72 productos (72 variantes, 0 huérfanas) y quedó registro
+  doble en la auditoría (vaciar_catalogo + importar_inventario). Probados
+  además: stdin vacío (cancela sin colgarse) y catálogo ya en cero («no hay
+  nada que vaciar»). El repo de producción NO cambió en esta ronda (todo vive
+  en el script local): tsc ×3, 27/27 backend, 156/156 frontend y build
+  precache 114 INTACTO re-corridos por protocolo.
+- **5.92c — Eliminar borra el producto completo (variantes + ficha, lote
+  atómico)**: `tsc` limpio, **156/156 tests del frontend**, build verde con
+  precache INTACTO en 114; solo cambia `admin.service.ts` (sin funciones
+  nuevas ni reglas: el borrado ya está permitido para admin).
+- **5.92b — blindaje «No document to update» del importador**: `tsc` ×3
+  limpio; **27/27 tests del backend** (21 previos + 6 nuevos del guardián
+  de variantes huérfanas) y **156/156 del frontend**; build verde con
+  precache INTACTO en 114; y el script local reempaquetado con el core
+  corregido y probado con tu PDF real: mismo formato detectado, 72 filas,
+  7 avisos y la fila en cero en la muestra.
+- **5.92 — el importador entiende tu lista de accesorios**: `tsc` ×3
+  limpio; **156/156 tests** del frontend (145 previos + 11 nuevos: el PDF
+  real de la lista entero con 72/72 filas y precio SIN impuesto, los
+  sufijos FORROSINT-2…-7 y WT4RUNNE-2, la fila en cero, el salto de
+  sufijos ocupados y la regresión del reporte del POS) y **21/21 del
+  backend**; build verde con precache INTACTO en 114; y el PDF real
+  re-extraído y parseado con el código final: formato detectado
+  «lista-limpia», 72 filas, 7 avisos de renombrado.
 - `tsc` ×2 limpio (PWA y adaptador de funciones de Netlify) + `tsc` de
   `functions/` limpio.
 - **113/113 tests** del frontend en verde (52 de rondas previas + 39 de formas
@@ -1401,6 +1705,17 @@ consola y los cambios aplican en caliente.)
   114, grep -ric farmatodo sobre dist/ = CERO apariciones. La palabra solo
   queda en la lista del guardián y en estos documentos privados (LEEME/
   worklog), que jamás viajan al navegador.
+- **5.91 — SEO + tarjeta de WhatsApp (pedido del dueño tras evaluación)**:
+  index.html gana canónico + Open Graph + Twitter card + JSON-LD
+  AutoPartsStore; public/ gana robots.txt, sitemap.xml y og-cover.jpg
+  (fachada real 1200×630, 143 KB, recorte sesgado que conserva autos y
+  mural). Precache INTACTO en 114 (jpg/txt/xml no entran a los globs del
+  SW — costo para el service worker: cero). Verificación: tsc ×3, tests
+  145/145, tests de functions 21/21, build PWA v1.3.0 precache 114,
+  sitemap XML validado, JSON-LD parseado OK, guardián de marcas verde
+  (robots.txt pasa por su escáner). Sin cambios TS/backend → reglas y E2E
+  no aplican. Dominio propio: pospuesto a pedido del dueño — al comprarlo
+  se cambian 6 URLs y se reenvía el sitemap.
 - Build PWA completo verde (precache 110): `sw.js` y
   `firebase-messaging-sw.js` intactos (tags de stock/despacho/pagos
   y badge +25 % verificados byte a byte), regla imgbb presente en el SW.

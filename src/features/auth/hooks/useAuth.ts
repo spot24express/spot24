@@ -46,7 +46,7 @@ export function useAuth() {
     signUp,
     signOut,
     resetPassword,
-    /** 5.75: «Mis datos» (cédula + dirección) y cambio de contraseña. */
+    /** 5.92g: datos de entrega (teléfono + dirección) y cambio de contraseña. */
     saveMyData,
     changeMyPassword,
   };

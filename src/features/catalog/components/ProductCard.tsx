@@ -35,7 +35,10 @@ interface ProductCardProps {
  *     tope. Con varias líneas (variantes elegidas en la ficha) vuelve el
  *     «+» → ficha.
  *   · 5.85 · todo un paso más pequeño (36 → 32 px) y el chip «Últimas N» /
- *     «Sin stock» pasó a ABAJO-izquierda con más transparencia (85 → 50 %).
+ *     «Agotado» pasó a ABAJO-izquierda con más transparencia (85 → 50 %).
+ *   · 5.92f (pedido del dueño): el chip de producto sin existencias dice
+ *     «Agotado» (antes «Sin stock»). Mismo criterio en la ficha (StockBadge
+ *     y botón del carrito) para que la tienda hable un solo idioma.
  */
 
 /** Tiempo que la cápsula queda abierta tras el último toque (como en la app de referencia). */
@@ -162,7 +165,7 @@ export function ProductCard({ product }: ProductCardProps) {
               product.stockTotal <= 0 ? 'border-line text-muted' : 'border-signal text-signal'
             }`}
           >
-            {product.stockTotal <= 0 ? 'Sin stock' : `Últimas ${product.stockTotal}`}
+            {product.stockTotal <= 0 ? 'Agotado' : `Últimas ${product.stockTotal}`}
           </span>
         )}
       </div>

@@ -543,11 +543,12 @@ function ProductModal({
 }
 
 /**
- * 5.87 · Importar inventario (PDF del POS): el dueño sube el reporte
- * «Inventario disponible», elige la categoría donde caerán los productos
- * NUEVOS y el servidor crea lo que falte y actualiza stock+precio de lo que
- * ya existe. El mapeo es fijo: Codigo→código · Descripcion→nombre ·
- * Costo→precio · Existencia→stock.
+ * 5.87/5.92 · Importar inventario (PDF): el dueño sube el reporte del POS
+ * o una «lista limpia» con doble precio; el servidor DETECTA el formato,
+ * crea lo que falte — aun con existencia/precio 0 (los actualiza la
+ * próxima importación) — y actualiza stock+precio de lo que ya existe.
+ * Mapeo fijo: código ← Codigo/Código · nombre ← Descripcion/Descripción ·
+ * precio ← Costo (POS) o Precio USD SIN impuesto (lista) · stock ← Existencia.
  */
 function ImportarInventarioModal({
   open, onClose, onImported,
@@ -559,7 +560,6 @@ function ImportarInventarioModal({
   const [categorias, setCategorias] = useState<CategoryDef[]>([]);
   const [catId, setCatId] = useState('');
   const [archivo, setArchivo] = useState<File | null>(null);
-  const [omitirCero, setOmitirCero] = useState(false);
   const [busy, setBusy] = useState(false);
   const [resultado, setResultado] = useState<ImportInventarioResult | null>(null);
   // 5.87b · Motivo REAL del servidor en el último intento fallido: los
@@ -594,7 +594,7 @@ function ImportarInventarioModal({
         r.onerror = () => reject(new Error('No se pudo leer el archivo.'));
         r.readAsDataURL(archivo);
       });
-      const res = await adminImportInventory(pdfBase64, catId, omitirCero);
+      const res = await adminImportInventory(pdfBase64, catId);
       setResultado(res);
       toast.success(`Importación lista: ${res.creados} nuevos · ${res.actualizados} actualizados.`);
       onImported();
@@ -613,9 +613,11 @@ function ImportarInventarioModal({
     <Modal open={open} onClose={onClose} title="Importar inventario (PDF)">
       <div className="space-y-4">
         <p className="text-sm text-muted">
-          Sube el reporte «Inventario disponible» de tu sistema. Lo que no exista se
-          CREA y lo que ya existe se ACTUALIZA (stock y precio): nombre ← Descripcion,
-          código ← Codigo, precio ← Costo, stock ← Existencia.
+          Sube tu PDF de inventario: sirve el reporte «Inventario disponible» del POS y también
+          listas con doble precio (sin/con impuesto — se usa el SIN impuesto). Lo que no exista se
+          CREA (aun con existencia o precio 0: la próxima importación los actualiza) y lo que ya
+          existe se ACTUALIZA (stock y precio). Los códigos repetidos de la lista quedan con
+          sufijo -2, -3… para no perder ningún producto.
         </p>
         <Select label="Categoría donde caerán los productos NUEVOS" value={catId} onChange={(e) => setCatId(e.target.value)} required>
           <option value="">Selecciona…</option>
@@ -649,20 +651,6 @@ function ImportarInventarioModal({
             )}
           </div>
         </div>
-        <label className="flex cursor-pointer items-start gap-3 rounded-brand border-2 border-line bg-ink p-3 text-sm text-paper">
-          <input
-            type="checkbox"
-            checked={omitirCero}
-            onChange={(e) => setOmitirCero(e.target.checked)}
-            className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-signal)]"
-          />
-          <span>
-            Omitir los productos con existencia 0
-            <span className="block text-xs text-muted">
-              Útil si tu reporte trae muchos en cero: no se crean y los que ya existen no se tocan.
-            </span>
-          </span>
-        </label>
         {errorServidor && (
           <div role="alert" className="rounded-brand border-2 border-line bg-ink p-3 text-sm">
             <p className="font-semibold text-paper">El servidor no pudo importar</p>
@@ -674,7 +662,9 @@ function ImportarInventarioModal({
             <p className="font-semibold text-paper">
               {resultado.filas} filas leídas · <span className="text-signal">{resultado.creados} creados</span> ·{' '}
               {resultado.actualizados} actualizados
-              {resultado.omitidosCero > 0 && ` · ${resultado.omitidosCero} en cero omitidos`}
+            </p>
+            <p className="mt-1 text-xs text-muted">
+              Formato detectado: {resultado.formato === 'pos' ? 'reporte «Inventario disponible» del POS' : 'lista con doble precio (usado: sin impuesto)'}.
             </p>
             {resultado.problemas.length > 0 && (
               <ul className="mt-2 list-inside list-disc space-y-1 text-xs text-muted">

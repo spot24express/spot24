@@ -38,7 +38,8 @@ export function StockBadge({ stock, lowThreshold = 5 }: StockBadgeProps) {
   if (stock <= 0) {
     return (
       <span className="inline-flex items-center rounded-brand border-2 border-line px-2.5 py-1 spot-label text-muted">
-        Sin stock
+        {/* 5.92f (pedido del dueño): «Agotado» unifica el texto con la tarjeta. */}
+        Agotado
       </span>
     );
   }

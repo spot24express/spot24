@@ -11,6 +11,7 @@ import {
 import { loadFirebase } from '@/shared/lib/firebase';
 import { logger } from '@/shared/lib/logger';
 import { normalizeCategoryList } from '@/shared/lib/categoryTree';
+import { aMillis } from '@/shared/lib/tiempos';
 import type { CatalogQuery, Product } from '../types';
 import type { Page } from '@/shared/types';
 import type { CategoryDef } from '@/shared/constants/categories';
@@ -20,8 +21,13 @@ const PAGE_SIZE_MAX = 48;
 
 /* ────────────────────────── Firestore helpers ────────────────────────── */
 
+// Ronda 5.92e: createdAt puede llegar como Timestamp de Firestore (serverTimestamp,
+// usado por el importador de inventario y por el panel) o como número (Date.now()).
+// Antes se castaba a number y con Timestamp el cursor encodaba NaN → decodeCursor
+// devolvía null → la página 2 iba SIN startAfter y repetía la página 1 (llaves
+// duplicadas de React y «Cargar más» infinito). aMillis normaliza ambos formatos.
 function encodeCursor(docSnap: QueryDocumentSnapshot<DocumentData>): string {
-  return btoa(`${docSnap.get('createdAt') as number}|${docSnap.id}`);
+  return btoa(`${aMillis(docSnap.get('createdAt'))}|${docSnap.id}`);
 }
 
 function decodeCursor(cursor: string): { createdAt: number; id: string } | null {
@@ -35,7 +41,28 @@ function decodeCursor(cursor: string): { createdAt: number; id: string } | null 
   }
 }
 
-function buildProductsQuery(q: CatalogQuery, base: Query<DocumentData>): Query<DocumentData> {
+/**
+ * Cursor de la página siguiente (ronda 5.92e). Patrones:
+ *  · SNAPSHOT (preferido): startAfter(docSnapshot) incluye el __name__ como
+ *    desempate implícito de Firestore — imprescindible cuando varios productos
+ *    comparten el MISMO createdAt (la importación crea los 72 en un lote).
+ *  · VALOR (respaldo si el doc del cursor fue borrado entre páginas):
+ *    startAfter(createdAt) — 1 valor = 1 orderBy, aridad válida.
+ * NUNCA startAfter(valor, id) con un solo orderBy: «Too many arguments
+ * provided to startAfter()» (el bug que el fix de aMillis destapó: antes el
+ * cursor era NaN→null y esta línea ni se ejecutaba).
+ */
+async function clausulaCursor(fb: NonNullable<Awaited<ReturnType<typeof loadFirebase>>>, c: { createdAt: number; id: string }) {
+  const ds = await getDoc(doc(fb.db, PRODUCTS, c.id));
+  if (ds.exists()) return startAfter(ds);
+  return startAfter(c.createdAt);
+}
+
+async function buildProductsQuery(
+  q: CatalogQuery,
+  base: Query<DocumentData>,
+  fb: NonNullable<Awaited<ReturnType<typeof loadFirebase>>>,
+): Promise<Query<DocumentData>> {
   const clauses: Parameters<typeof query>[1][] = [];
   // categoryIds (varios ids con `in`) queda como soporte GENÉRICO de la API:
   // desde 5.78c la tienda NO lo usa — cada categoría filtra solo lo suyo
@@ -49,7 +76,8 @@ function buildProductsQuery(q: CatalogQuery, base: Query<DocumentData>): Query<D
   clauses.push(orderBy('createdAt', 'desc'));
   if (q.cursor) {
     const c = decodeCursor(q.cursor);
-    if (c) clauses.push(startAfter(c.createdAt, c.id));
+    // 5.92e: cursor por snapshot (desempate por documento implícito) — ver clausulaCursor.
+    if (c) clauses.push(await clausulaCursor(fb, c));
   }
   clauses.push(fbLimit(Math.min(q.pageSize, PAGE_SIZE_MAX)));
   return query(base, ...clauses);
@@ -69,8 +97,9 @@ function mapProduct(id: string, data: DocumentData): Product {
     stockTotal: Number(data.stockTotal ?? 0),
     variantCount: Number(data.variantCount ?? 0),
     active: Boolean(data.active),
-    createdAt: Number(data.createdAt ?? 0),
-    updatedAt: Number(data.updatedAt ?? 0),
+    // 5.92e: acepta número epoch-ms Y Timestamp de Firestore (jamás NaN).
+    createdAt: aMillis(data.createdAt),
+    updatedAt: aMillis(data.updatedAt),
   };
 }
 
@@ -135,7 +164,7 @@ export async function listProducts(q: CatalogQuery): Promise<Page<Product>> {
   const fb = await loadFirebase();
   if (!fb) return { items: [], cursor: null, hasMore: false };
   const base = collection(fb.db, PRODUCTS);
-  const snap = await getDocs(buildProductsQuery({ ...q, pageSize }, base));
+  const snap = await getDocs(await buildProductsQuery({ ...q, pageSize }, base, fb));
   const docs = snap.docs;
   // El catálogo público solo muestra activos (se filtra en código para no exigir
   // índices compuestos nuevos; la paginación por cursor no se ve afectada).

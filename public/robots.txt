@@ -1,0 +1,15 @@
+# SPOT 24 — permisos y mapa para buscadores (5.91)
+# Deja entrar a todos los buscadores y les enseña lo público.
+# Lo privado (panel, carrito, pedidos, pagos) queda fuera de Google.
+
+User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /carrito
+Disallow: /checkout
+Disallow: /pedidos
+Disallow: /pedido/
+Disallow: /notificaciones
+Disallow: /cuenta/recuperar
+
+Sitemap: https://spot24express.netlify.app/sitemap.xml

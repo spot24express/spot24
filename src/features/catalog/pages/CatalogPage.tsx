@@ -4,7 +4,8 @@ import { SpeedDivider } from '@/shared/components/brand/Logo';
 import { ProductGridSkeleton } from '@/shared/components/ui/Skeleton';
 import { EmptyState, ErrorState } from '@/shared/components/ui/States';
 import { Button } from '@/shared/components/ui/Button';
-import { useCategories, useCategoryCount, useProductList } from '../hooks/useCatalog';
+import { useCategories, useProductList } from '../hooks/useCatalog';
+import { dedupePorId } from '@/shared/lib/tiempos';
 import { branchRootId, hasSubcategories, isTopLevel, subcategoriesOf } from '@/shared/lib/categoryTree';
 import { CategoryCard, SubcategoryCard } from '../components/CategoryCard';
 import { ProductCard } from '../components/ProductCard';
@@ -29,7 +30,9 @@ export default function CatalogPage() {
   // muestra SOLO las tarjetas de subcategorías — ni productos ni vacío. Solo
   // una categoría SIN subcategorías muestra sus productos directamente.
   const catHasSubcats = Boolean(cat && categories && hasSubcategories(categories, cat));
-  const { data: count } = useCategoryCount(catHasSubcats ? undefined : (cat ?? undefined));
+  // 5.92f (pedido del dueño): fuera el contador «N+ productos · N en la categoría»
+  // del subtítulo. Con él se retira también la consulta de conteo
+  // (useCategoryCount): una lectura de Firestore menos en cada visita al catálogo.
   const filters = {
     categoryId: cat ?? undefined,
     inStockOnly: inStock,
@@ -69,7 +72,10 @@ export default function CatalogPage() {
     setParams(next, { replace: true });
   };
 
-  const items = data?.pages.flatMap((pg) => pg.items) ?? [];
+  // 5.92e · dedupe por id: cinturón de seguridad de la paginación infinita —
+  // aunque una página se repita (cursor defectuoso), ninguna tarjeta se
+  // renderiza dos veces (adiós «duplicate key» de React).
+  const items = dedupePorId(data?.pages.flatMap((pg) => pg.items) ?? []);
 
   // Sin filtros: muestra también la grilla de categorías arriba.
   const showCategoryGrid = !cat && !q && !inStock && !maxPrice;
@@ -85,13 +91,15 @@ export default function CatalogPage() {
                 ? `Búsqueda: ${q}`
                 : 'Catálogo'}
           </h1>
-          <p className="spot-subtitle mt-1">
-            {catHasSubcats
-              ? 'Elige una subcategoría: verás solo los productos que están dentro de ella.'
-              : data && !isFetching
-                ? `${items.length}${hasNextPage ? '+' : ''} productos${typeof count === 'number' && cat ? ` · ${count} en la categoría` : ''}`
-                : 'Cargando pit stop…'}
-          </p>
+          {/* 5.92f (pedido del dueño): el subtítulo solo acompaña mientras carga
+              o en bahías con subcategorías; ya NO muestra «N+ productos». */}
+          {catHasSubcats ? (
+            <p className="spot-subtitle mt-1">
+              Elige una subcategoría: verás solo los productos que están dentro de ella.
+            </p>
+          ) : !data ? (
+            <p className="spot-subtitle mt-1">Cargando pit stop…</p>
+          ) : null}
         </div>
         <SearchBar compact />
       </div>

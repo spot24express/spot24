@@ -220,3 +220,195 @@ export function parseInventario(paginas: InvItem[][]): ParseInventarioResult {
   }
   return { filas, problemas };
 }
+
+/* ── 5.92 · Formato «lista limpia» (la segunda lista del dueño) ──
+ *
+ * El dueño también importa listas aparte del POS («ACCESORIOS — LISTA
+ * LIMPIA», generadas fuera del sistema): tabla con cabecera en VARIOS
+ * renglones (Código | Descripción | Existencia (unidades) | «Precio USD
+ * sin»+«impuesto» | «Precio USD con»+«impuesto»), precios con «$» y
+ * códigos alfanuméricos que pueden empezar con LETRA (CE0501, DM1202,
+ * WT4RUNNE). Probado extremo a extremo con SU PDF real (72/72 filas).
+ *
+ * Diferencias con el POS que este parser tolera:
+ * · Cabecera multi-renglón: se detecta la fila ancla que trae «Código»+
+ *   «Descripción» y los 5 anclas se buscan en una VENTANA de ±10 px.
+ * · Límites de columna: punto medio entre el FIN de la etiqueta anterior
+ *   y el INICIO de la siguiente (los precios van alineados a la derecha:
+ *   con el medio-por-inicios del POS el «$90.00» sin impuesto caería en
+ *   la columna del precio CON impuesto).
+ * · «$» y «und.» en las celdas de precio y existencia.
+ * · Códigos repetidos: la lista trae productos DISTINTOS que comparten
+ *   código (el sistema origen corta los códigos a 8-9 letras: FORROSINT
+ *   ×7). Decisión del dueño (Opción A): en vez de perder filas, la
+ *   repetida queda con sufijo secuencial (FORROSINT-2, FORROSINT-3…)
+ *   y aviso visible en el resultado de la importación.
+ * · El precio que manda es el SIN impuesto (decisión del dueño): la
+ *   columna «con impuesto» se ignora.
+ */
+
+/** Anclas del formato lista limpia (etiqueta, longitud máxima del item). */
+const ANCLAS_LISTA: Array<{ re: RegExp; maxLen: number }> = [
+  { re: /^C[oó]digo$/i, maxLen: 20 },
+  { re: /^Descripci[oó]n$/i, maxLen: 20 },
+  { re: /Existencia/i, maxLen: 40 },
+  { re: /Precio USD sin/i, maxLen: 20 },
+  { re: /Precio USD con/i, maxLen: 20 },
+];
+
+/** Códigos de la lista limpia: dígito o LETRA inicial («CE0501», «317»). */
+const RE_CODIGO_LISTA = /^[A-Z0-9][A-Z0-9./-]{1,}$/;
+
+/** Primer número de un texto («4 und.» → 4 · «$90.00» → 90). */
+function primerNumero(t: string): number {
+  const m = t.match(/(\d[\d.,]*)/);
+  return m ? numeroVe(m[1]!) : NaN;
+}
+
+/**
+ * Parsea el formato «lista limpia». Misma salida que parseInventario
+ * (filas + problemas) para que la importación no distinga formatos.
+ */
+export function parseListaLimpia(paginas: InvItem[][]): ParseInventarioResult {
+  const filas: FilaInventario[] = [];
+  const problemas: string[] = [];
+  const porCodigo = new Map<string, FilaInventario>();
+  let limites: number[] | null = null;
+  let ultimo = -1;
+
+  const celda = (items: InvItem[]): string => items.map((i) => i.s).join(' ').replace(/\s+/g, ' ').trim();
+
+  for (const items of paginas) {
+    const filasPagina = filasDeItems(items);
+    const esCabecera = new Set<number>();
+
+    // 1) Detección de cabecera (multi-renglón): fila ancla = la que trae
+    //    «Código» y «Descripción»; ventana ±10 px para las etiquetas
+    //    partidas («Precio USD sin» arriba, «impuesto» abajo).
+    for (let fi = 0; fi < filasPagina.length; fi++) {
+      const fila = filasPagina[fi]!;
+      if (!fila.some((i) => /^C[oó]digo$/i.test(i.s) && i.s.length <= 20)) continue;
+      if (!fila.some((i) => /^Descripci[oó]n$/i.test(i.s) && i.s.length <= 20)) continue;
+      const yAncla = fila[0]!.y;
+      const zona: InvItem[] = [...fila];
+      filasPagina.forEach((f, idx) => {
+        if (idx !== fi && Math.abs(f[0]!.y - yAncla) <= 10) {
+          zona.push(...f);
+          esCabecera.add(idx);
+        }
+      });
+      const xs: Array<{ inicio: number; fin: number } | undefined> = ANCLAS_LISTA.map(() => undefined);
+      for (const it of zona) {
+        ANCLAS_LISTA.forEach((ancla, i) => {
+          if (xs[i] === undefined && ancla.re.test(it.s) && it.s.length <= ancla.maxLen) {
+            xs[i] = { inicio: it.x, fin: it.x + (it.w > 0 ? it.w : it.s.length * 5.5) };
+          }
+        });
+      }
+      if (xs.some((v) => v === undefined)) continue;
+      limites = [];
+      for (let i = 0; i < xs.length - 1; i++) {
+        limites.push((xs[i]!.fin + xs[i + 1]!.inicio) / 2);
+      }
+      limites.push(Number.POSITIVE_INFINITY);
+      esCabecera.add(fi);
+    }
+    if (!limites) continue;
+
+    // 2) Filas de datos.
+    for (let fi = 0; fi < filasPagina.length; fi++) {
+      if (esCabecera.has(fi)) continue;
+      const fila = filasPagina[fi]!;
+      const celdas: InvItem[][] = Array.from({ length: ANCLAS_LISTA.length }, () => []);
+      for (const it of fila) {
+        let col = ANCLAS_LISTA.length - 1;
+        for (let i = 0; i < limites.length; i++) {
+          if (it.x < limites[i]!) {
+            col = i;
+            break;
+          }
+        }
+        celdas[col]!.push(it);
+      }
+
+      const codigo = celda(celdas[0]!).replace(/\s+/g, '').toUpperCase();
+      const desc = celda(celdas[1]!);
+      if (!codigo) {
+        // Renglón envuelto de descripción (sin código a la izquierda).
+        if (ultimo >= 0 && desc && !desc.startsWith('Precios en USD')) {
+          const actual = filas[ultimo]!;
+          if (actual.descripcion.length < MAX_NOMBRE) {
+            actual.descripcion = `${actual.descripcion} ${desc}`.slice(0, MAX_NOMBRE).replace(/\s+/g, ' ').trim();
+          }
+        }
+        continue;
+      }
+      // Membrete/nota/nº de página se descartan en silencio (igual que el
+      // POS): códigos imposibles (> 40 chars) o con aspecto de texto.
+      if (codigo.length > MAX_CODIGO || !RE_CODIGO_LISTA.test(codigo)) continue;
+
+      const existencia = primerNumero(celda(celdas[2]!));
+      // El precio que manda: el SIN impuesto (col 3); el «con impuesto»
+      // (col 4) se ignora por decisión del dueño.
+      const precioSin = primerNumero(celda(celdas[3]!));
+      if (!Number.isFinite(existencia) || !Number.isFinite(precioSin)) {
+        problemas.push(`${codigo}: existencia o precio sin impuesto ilegibles, se omitió.`);
+        ultimo = -1;
+        continue;
+      }
+      if (desc.length < 3) {
+        problemas.push(`${codigo}: sin descripción legible, se omitió.`);
+        ultimo = -1;
+        continue;
+      }
+
+      // Opción A del dueño: los códigos repetidos NO se pierden — quedan
+      // con sufijo secuencial (-2, -3…) hasta uno libre, con aviso.
+      let codigoFinal = codigo.slice(0, MAX_CODIGO);
+      if (porCodigo.has(codigoFinal)) {
+        let n = 2;
+        codigoFinal = `${codigo.slice(0, MAX_CODIGO - 2)}-2`;
+        while (porCodigo.has(codigoFinal)) {
+          n += 1;
+          codigoFinal = `${codigo.slice(0, MAX_CODIGO - 1 - String(n).length)}-${n}`;
+        }
+        problemas.push(`${codigo}: código repetido en la lista, esta fila quedó con el código ${codigoFinal}.`);
+      }
+
+      const nueva: FilaInventario = {
+        codigo: codigoFinal,
+        descripcion: desc.slice(0, MAX_NOMBRE),
+        existencia: Math.max(0, Math.round(existencia)),
+        costo: Math.round(precioSin * 100) / 100,
+      };
+      filas.push(nueva);
+      porCodigo.set(codigoFinal, nueva);
+      ultimo = filas.length - 1;
+    }
+  }
+  return { filas, problemas };
+}
+
+/* ── 5.92 · Detección automática de formato ── */
+
+export type FormatoInventario = 'pos' | 'lista-limpia';
+
+export interface ParseInventarioConFormato extends ParseInventarioResult {
+  /** Formato detectado: «pos» = reporte del POS · «lista-limpia» = doble precio. */
+  formato: FormatoInventario;
+}
+
+/**
+ * Prueba primero el reporte del POS (cabecera exacta de 7 columnas) y si
+ * no reconoce nada, el formato «lista limpia». Los formatos no se confunden
+ * entre sí: cada cabecera es excluyente de la otra.
+ */
+export function parseInventarioAuto(paginas: InvItem[][]): ParseInventarioConFormato {
+  const pos = parseInventario(paginas);
+  if (pos.filas.length) return { ...pos, formato: 'pos' };
+  const lista = parseListaLimpia(paginas);
+  if (lista.filas.length) return { ...lista, formato: 'lista-limpia' };
+  // Ninguno reconoció filas: se devuelve el del POS con sus problemas
+  // (es el formato original y sus diagnósticos son más informativos).
+  return { ...pos, formato: 'pos' };
+}

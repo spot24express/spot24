@@ -16,13 +16,14 @@ import { createRequire } from 'node:module';
 import { build as esbuildBuild } from 'esbuild';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  filasDeItems, numeroVe, parseInventario,
+  filasDeItems, numeroVe, parseInventario, parseInventarioAuto, parseListaLimpia,
   type InvItem,
 } from '../../functions/src/lib/inventarioPdf';
 import {
   cargarWorkerPdfjs, extraerItemsPdf, mensajePaqueteAusente,
 } from '../../functions/src/lib/extraerPdf';
 import muestraReal from './fixtures/inventario-items.sample.json';
+import listaLimpiaReal from './fixtures/lista-limpia-items.sample.json';
 
 const paginas = muestraReal as unknown as InvItem[][];
 
@@ -345,4 +346,148 @@ describe('extraerItemsPdf · PDF mínimo real → pdfjs → parser (5.87b)', () 
       expect(mensajePaqueteAusente(new Error('otro fallo cualquiera'))).toBeNull();
     },
   );
+});
+
+/* ── 5.92 · Formato «lista limpia» y detección automática ── */
+
+const paginasLista = listaLimpiaReal as unknown as InvItem[][];
+
+describe('parseInventarioAuto con el PDF real de la lista limpia del dueño (5.92)', () => {
+  const auto = parseInventarioAuto(paginasLista);
+
+  it('detecta el formato lista-limpia y extrae las 72 filas del PDF real', () => {
+    expect(auto.formato).toBe('lista-limpia');
+    expect(auto.filas).toHaveLength(72);
+  });
+
+  it('usa el precio SIN impuesto (decisión del dueño)', () => {
+    const porCodigo = new Map(auto.filas.map((f) => [f.codigo, f]));
+    expect(porCodigo.get('10500060A')!.costo).toBe(90); // con impuesto sería 104.40
+    expect(porCodigo.get('10500060A')!.existencia).toBe(4);
+    expect(porCodigo.get('LLAVERO2K')!.costo).toBe(2.4);
+    expect(porCodigo.get('WTWK2-11-')!.costo).toBe(313.2);
+    expect(porCodigo.get('CE0716')!.descripcion).toBe('CEPILLO 28" HELLA SOFT WIPER MARCO METAL');
+  });
+
+  it('crea TAMBIÉN la fila en cero (existencia 0 y precio 0, pedido del dueño)', () => {
+    const enCero = auto.filas.find((f) => f.codigo === '339700493');
+    expect(enCero).toBeDefined();
+    expect(enCero!.existencia).toBe(0);
+    expect(enCero!.costo).toBe(0);
+  });
+
+  it('códigos repetidos de la lista → sufijo secuencial, sin perder filas (Opción A)', () => {
+    const codigos = auto.filas.map((f) => f.codigo);
+    // FORROSINT ×7 en la lista → FORROSINT, FORROSINT-2 … FORROSINT-7.
+    expect(codigos.filter((c) => c === 'FORROSINT')).toHaveLength(1);
+    for (let n = 2; n <= 7; n++) {
+      expect(codigos).toContain(`FORROSINT-${n}`);
+    }
+    // WT4RUNNE ×2 → WT4RUNNE y WT4RUNNE-2.
+    expect(codigos).toContain('WT4RUNNE');
+    expect(codigos).toContain('WT4RUNNE-2');
+    // Cada sufijo conserva SU descripción (son productos distintos).
+    const porCodigo = new Map(auto.filas.map((f) => [f.codigo, f]));
+    expect(porCodigo.get('FORROSINT')!.descripcion).toContain('NEG/NAR');
+    expect(porCodigo.get('FORROSINT-4')!.descripcion).toContain('CHEVROLET');
+    expect(porCodigo.get('FORROSINT-6')!.descripcion).toContain('MOMO NEG/NEG');
+    expect(porCodigo.get('WT4RUNNE-2')!.descripcion).toContain('4RUNNER');
+  });
+
+  it('los únicos avisos son los 7 renombrados (membrete descartado en silencio)', () => {
+    expect(auto.problemas).toHaveLength(7);
+    auto.problemas.forEach((p) => expect(p).toMatch(/código repetido en la lista, esta fila quedó con el código/));
+  });
+});
+
+describe('parseInventarioAuto · regresión del formato POS (5.92 no lo rompe)', () => {
+  it('el reporte del POS sigue detectándose como «pos» con las mismas filas', () => {
+    const auto = parseInventarioAuto(paginas);
+    expect(auto.formato).toBe('pos');
+    expect(auto.filas.map((f) => f.codigo)).toEqual([
+      '021400059245', '021400059252', '021400086319', '021400086630', '0613',
+    ]);
+  });
+
+  it('la lista limpia NO se parsea como POS y el POS NO como lista limpia', () => {
+    // Cabeceras excluyentes: el fixture del POS no trae «Precio USD sin» y
+    // el de la lista no trae «Costo Total» — cada uno solo matchea el suyo.
+    expect(parseInventario(paginasLista).filas).toHaveLength(0);
+    expect(parseListaLimpia(paginas).filas).toHaveLength(0);
+  });
+});
+
+describe('parseListaLimpia · casos límite (sintéticos con el layout real)', () => {
+  // Coordenadas REALES de la lista limpia (fixture del PDF del dueño):
+  // cabecera partida en dos renglones y precios alineados a la derecha.
+  const cabeceraLista: InvItem[] = [
+    { s: 'Código', x: 47.9, y: 484.6, w: 38 },
+    { s: 'Descripción', x: 155.6, y: 484.6, w: 65 },
+    { s: 'Existencia (unidades)', x: 532.6, y: 484.6, w: 106 },
+    { s: 'Precio USD sin', x: 651.6, y: 489.1, w: 71 },
+    { s: 'Precio USD con', x: 736.7, y: 489.1, w: 65 },
+  ];
+  const productoLista = (
+    y: number, codigo: string, desc: string, exist: string, sin: string, con: string,
+  ): InvItem[] => [
+    { s: codigo, x: 47.9, y, w: 43 },
+    { s: desc, x: 155.6, y, w: 125 },
+    { s: exist, x: 532.6, y, w: 24 },
+    { s: sin, x: 696.1, y, w: 26 },
+    { s: con, x: 775.6, y, w: 26 },
+  ];
+
+  it('sufijo secuencial que SALTA códigos ya ocupados por filas reales', () => {
+    // La lista trae FORROSINT, luego un producto real FORROSINT-2 y LUEGO
+    // otro FORROSINT repetido: el repetido no puede pisar FORROSINT-2
+    // (producto distinto ya importado) → gana FORROSINT-3.
+    const { filas, problemas } = parseListaLimpia([
+      [
+        ...cabeceraLista,
+        ...productoLista(461.7, 'FORROSINT', 'FORRO VOLANTE SINTETICO NEG/NAR', '2 und.', '$6.47', '$7.50'),
+        ...productoLista(441.7, 'FORROSINT-2', 'FORRO SINTETICO GM CHEVROLET', '1 und.', '$5.60', '$6.50'),
+        ...productoLista(421.7, 'FORROSINT', 'FORRO VOLANTE SINTETICO GM MOMO', '4 und.', '$10.34', '$12.00'),
+      ],
+    ]);
+    expect(filas.map((f) => f.codigo)).toEqual(['FORROSINT', 'FORROSINT-2', 'FORROSINT-3']);
+    expect(problemas).toHaveLength(1);
+    expect(problemas[0]).toContain('quedó con el código FORROSINT-3');
+  });
+
+  it('renglón envuelto de descripción se anexa al producto anterior', () => {
+    const { filas, problemas } = parseListaLimpia([
+      [
+        ...cabeceraLista,
+        ...productoLista(461.7, 'VF2080', 'FILTRO CABINA K&N; TUNDRA', '1 und.', '$58.50', '$67.86'),
+        { s: 'LC250-300 / FOR', x: 155.6, y: 441.7, w: 60 }, // continuación de la descripción
+      ],
+    ]);
+    expect(problemas).toEqual([]);
+    expect(filas).toHaveLength(1);
+    expect(filas[0]!.descripcion).toBe('FILTRO CABINA K&N; TUNDRA LC250-300 / FOR');
+  });
+
+  it('fila ilegible (sin precio sin impuesto) → problema y se omite', () => {
+    const sinPrecio = productoLista(461.7, 'HC0101', 'CLAXON HAMMER PLATA 12V', '3 und.', '', '$12.00')
+      .filter((i) => i.s !== '');
+    const { filas, problemas } = parseListaLimpia([[...cabeceraLista, ...sinPrecio]]);
+    expect(filas).toHaveLength(0);
+    expect(problemas).toEqual(['HC0101: existencia o precio sin impuesto ilegibles, se omitió.']);
+  });
+
+  it('membrete, nota y «Página N» se descartan en silencio', () => {
+    const ruido: InvItem[] = [
+      { s: 'Auto Servicio Montaña Fresca — precios revisados 21/10/2026', x: 36.9, y: 19.8, w: 219.4 },
+      { s: 'Precios en USD del reporte original. Existencias en unidades', x: 42.9, y: 522.4, w: 480 },
+      { s: 'Página 1', x: 774.7, y: 19.8, w: 30.3 },
+      { s: 'ACCESORIOS — LISTA LIMPIA', x: 306.7, y: 538.4, w: 228.5 },
+    ];
+    const { filas, problemas } = parseListaLimpia([
+      [...ruido, ...cabeceraLista, ...productoLista(461.7, '317', 'PULITURA INSTANTANEA TURBO TX PIS', '12 und.', '$8.62', '$10.00')],
+    ]);
+    expect(problemas).toEqual([]);
+    expect(filas).toEqual([
+      { codigo: '317', descripcion: 'PULITURA INSTANTANEA TURBO TX PIS', existencia: 12, costo: 8.62 },
+    ]);
+  });
 });

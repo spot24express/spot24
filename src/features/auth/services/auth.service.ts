@@ -29,7 +29,7 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { logger } from '@/shared/lib/logger';
 import { AppError } from '@/shared/lib/errors';
-import { sanitizeText, sanitizeDigits, sanitizeMultiline, isValidEmail } from '@/shared/lib/validation';
+import { sanitizeText, sanitizeDigits, sanitizeMultiline, isValidEmail, isValidPhoneVE, normalizePhoneVE } from '@/shared/lib/validation';
 import type { SpotUser } from '../types';
 
 /* ── Mensajes de error genéricos: el detalle técnico solo a logs (6.9) ── */
@@ -82,8 +82,10 @@ async function fetchProfile(user: User): Promise<SpotUser> {
         phone = stored.trim();
       }
       // Perfil extendido (5.75): cédula (solo dígitos) y dirección completa.
-      // Cuentas anteriores a 5.75 vienen sin estos campos → quedan '' y la
-      // propia pantalla «Mis datos» de Mi Cuenta invita a completarlos.
+      // 5.92g: la cédula ya NO se corrige en Mi Cuenta (decisión del dueño) —
+      // la del registro sigue prellenando cada compra; las cuentas antiguas
+      // sin cédula la escriben en el checkout. La dirección sí se actualiza
+      // en «Actualización de mis Datos de entrega».
       const storedCedula = snap.data()['cedula'];
       if (typeof storedCedula === 'string' && storedCedula.trim() !== '') {
         cedula = storedCedula.trim();
@@ -188,22 +190,30 @@ export async function sendReset(email: string): Promise<void> {
 }
 
 /**
- * Guarda cédula y dirección del PROPIO usuario en users/{uid} (ronda 5.75,
- * «Mis datos» en Mi Cuenta). Reglas: lista blanca de update ampliada a
- * ['name','phoneE164','cedula','address'] — nada más puede tocar el cliente.
- * Devuelve los valores ya sanitizados para parchear el store sin relectura.
+ * Guarda TELÉFONO y dirección del PROPIO usuario en users/{uid} (5.75 «Mis
+ * datos»; 5.92g por pedido del dueño: SOLO el número de teléfono y la
+ * dirección completa son editables en Mi Cuenta — la cédula ya no se toca
+ * aquí: la que quedó del registro sigue prellenando cada compra en el
+ * checkout, contacto y «Cédula del pagador» del pago móvil).
+ * El teléfono se acepta en cualquier formato venezolano (0414…, 414…,
+ * +58414…) y se guarda en users/{uid}.phoneE164 como E.164 (+58…), la misma
+ * convención del registro; la UI siempre lo muestra en formato local.
+ * Reglas: la lista blanca de update ya incluía phoneE164 — Firestore sin
+ * cambios. Devuelve los valores ya sanitizados para parchear el store sin
+ * relectura.
  */
-export async function saveCustomerData(cedula: string, address: string): Promise<{ cedula: string; address: string }> {
+export async function saveCustomerData(phone: string, address: string): Promise<{ phone: string; address: string }> {
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic', 'Firebase no configurado');
   const user = fb.auth.currentUser;
   if (!user) throw new AppError('unauthenticated', 'Inicia sesión para guardar tus datos.');
-  const ced = sanitizeDigits(cedula, 8);
+  const local = normalizePhoneVE(phone);
+  if (!isValidPhoneVE(local)) throw new AppError('generic', 'Teléfono inválido. Usa un móvil venezolano: 04141234567.');
+  const e164 = `+58${local.startsWith('0') ? local.slice(1) : local}`;
   const addr = sanitizeMultiline(address, 200);
-  if (ced.length < 4) throw new AppError('generic', 'La cédula necesita al menos 4 dígitos.');
   if (addr.length < 8) throw new AppError('generic', 'La dirección necesita urbanización, calle y casa/apto.');
-  await setDoc(doc(fb.db, 'users', user.uid), { cedula: ced, address: addr }, { merge: true });
-  return { cedula: ced, address: addr };
+  await setDoc(doc(fb.db, 'users', user.uid), { phoneE164: e164, address: addr }, { merge: true });
+  return { phone: e164, address: addr };
 }
 
 /**

@@ -12,7 +12,7 @@ import {
   hasRegisteredToken,
   isPushSupported,
 } from '@/features/delivery/services/notifications.service';
-import { normalizePhoneVE } from '@/shared/lib/validation';
+import { isValidPhoneVE, normalizePhoneVE } from '@/shared/lib/validation';
 
 /**
  * Cuenta: datos del perfil, notificaciones push y cierre de sesión.
@@ -39,6 +39,12 @@ import { normalizePhoneVE } from '@/shared/lib/validation';
  * fuerza. Decisión de producto: NO existe «Desactivar» (el push solo
  * informa el estado del pedido; bloquear desde el navegador basta y el
  * token muerto se limpia solo en el siguiente envío).
+ *
+ * 5.92g — «Actualización de mis Datos de entrega» (pedido del dueño): SOLO
+ * el número de teléfono y la dirección completa son editables aquí. La
+ * cédula se muestra como dato de solo lectura en «Datos» y sigue prellenando
+ * cada compra en el checkout (contacto y «Cédula del pagador» del pago
+ * móvil). Fuera el rótulo «Van prellenados en cada compra».
  */
 /** Etiqueta del panel según rol (fallback para roles futuros). */
 const PANEL_TITLES: Record<string, string> = {
@@ -56,8 +62,11 @@ export default function AccountPage() {
   // null = comprobando soporte (el botón se pinta igual: comportamiento de siempre).
   const [supported, setSupported] = useState<boolean | null>(null);
 
-  // 5.75 · «Mis datos»: cédula + dirección del perfil, editables aquí.
-  const [data, setData] = useState({ cedula: '', address: '' });
+  // 5.92g · Datos de entrega: teléfono + dirección del perfil, editables aquí
+  // (decisión del dueño: la cédula ya NO se edita — la del registro sigue
+  // prellenando cada compra). El teléfono se muestra en formato local
+  // (04243036024); el +58 es interno y lo añade el servicio al guardar.
+  const [data, setData] = useState({ phone: '', address: '' });
   const [dataErrors, setDataErrors] = useState<Record<string, string | null>>({});
   const [savingData, setSavingData] = useState(false);
   // 5.75 · Cambio de contraseña en sesión.
@@ -69,7 +78,7 @@ export default function AccountPage() {
   // Tras guardar, el store se parchea con los valores sanitizados: el
   // formulario queda exactamente con lo que quedó escrito en Firestore.
   useEffect(() => {
-    if (user) setData({ cedula: user.cedula ?? '', address: user.address ?? '' });
+    if (user) setData({ phone: user.phone ? normalizePhoneVE(user.phone) : '', address: user.address ?? '' });
   }, [user]);
 
   useEffect(() => {
@@ -92,18 +101,17 @@ export default function AccountPage() {
 
   if (!user) return null;
 
-  /** Guarda cédula + dirección (validación idéntica al registro y al servicio). */
+  /** Guarda teléfono + dirección (validación idéntica al registro y al servicio). */
   const onSaveData = async () => {
     const e: Record<string, string | null> = {};
-    const ced = data.cedula.replace(/\D/g, '');
-    if (ced.length < 4 || ced.length > 8) e['cedula'] = 'Cédula: solo números (4 a 8 dígitos).';
+    if (!isValidPhoneVE(data.phone)) e['phone'] = 'Teléfono móvil venezolano: 04141234567.';
     if (data.address.trim().length < 8) e['address'] = 'Dirección: urbanización, calle y casa o apartamento.';
     setDataErrors(e);
     if (Object.values(e).some(Boolean)) return;
     setSavingData(true);
     try {
-      await saveMyData(data.cedula, data.address);
-      toast.success('Datos guardados. Tu próxima compra va prellenada.');
+      await saveMyData(data.phone, data.address);
+      toast.success('Datos de entrega actualizados.');
     } catch (err) {
       toast.error(userMessage(err));
     } finally {
@@ -168,37 +176,40 @@ export default function AccountPage() {
               <dd className="text-paper">{user.email ?? '—'}</dd>
             </div>
             <div>
-              <dt className="spot-label">Teléfono</dt>
-              {/* Siempre formato local (04243036024): el +58 es interno, nunca se muestra. */}
-              <dd className="text-paper">{user.phone ? normalizePhoneVE(user.phone) : '—'}</dd>
+              <dt className="spot-label">Cédula</dt>
+              {/* 5.92g: solo lectura (decisión del dueño). La del registro sigue
+                  prellenando el checkout en cada compra; ya no se edita aquí. */}
+              <dd className="text-paper">{user.cedula || '—'}</dd>
             </div>
           </dl>
           <p className="mt-4 text-sm text-muted">
-            Coordinamos la entrega por llamada o WhatsApp al número de tu pedido.
-            Si cambias de número, actualízalo al registrar tu próxima compra.
+            Coordinamos la entrega por llamada o WhatsApp al número guardado en
+            tu perfil: actualízalo en «Actualización de mis Datos de entrega».
           </p>
         </section>
 
-        {/* MIS DATOS DE ENTREGA (5.75): cédula + dirección editables. Lo que
-            se guarda aquí prellena el checkout (contacto, dirección y la
-            «Cédula del pagador» del pago móvil). */}
+        {/* ACTUALIZACIÓN DE MIS DATOS DE ENTREGA (5.92g, pedido del dueño):
+            SOLO teléfono y dirección completas se editan aquí — la cédula ya
+            no. La cédula guardada en el registro sigue prellenando el checkout
+            (contacto y «Cédula del pagador» del pago móvil) sin tocarla. */}
         <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
           <h2 className="font-display text-lg font-bold italic uppercase text-paper">
-            Mis datos de entrega
+            Actualización de mis Datos de entrega
           </h2>
           <p className="mt-1 text-sm text-muted">
-            Van prellenados en cada compra. Corrígelos aquí si cambiaron.
+            Si cambiaron tu teléfono o tu dirección, actualízalos aquí.
           </p>
           <div className="mt-4 grid gap-4">
             <Input
-              label="Cédula"
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="12345678"
-              value={data.cedula}
-              onChange={(e) => setData((d) => ({ ...d, cedula: e.target.value.replace(/\D/g, '').slice(0, 8) }))}
-              error={dataErrors['cedula']}
-              hint="Solo números, 4 a 8 dígitos."
+              label="Número de teléfono"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              placeholder="04243036024"
+              value={data.phone}
+              onChange={(e) => setData((d) => ({ ...d, phone: e.target.value.replace(/\D/g, '').slice(0, 11) }))}
+              error={dataErrors['phone']}
+              hint="Móvil venezolano: 0412, 0414, 0416, 0422, 0424 o 0426."
             />
             <Textarea
               label="Dirección completa"
@@ -211,7 +222,7 @@ export default function AccountPage() {
               hint="Urbanización, calle y casa o apartamento."
             />
             <Button loading={savingData} onClick={() => void onSaveData()} className="justify-self-start">
-              Guardar mis datos
+              Guardar cambios
             </Button>
           </div>
         </section>

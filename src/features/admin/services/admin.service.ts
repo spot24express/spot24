@@ -173,32 +173,31 @@ export async function adminAdjustStock(
 /* ── 5.87 · Importar inventario desde el PDF del POS ── */
 
 export interface ImportInventarioResult {
-  /** Filas reconocidas en el reporte (antes del filtro de ceros). */
+  /** Filas reconocidas en el PDF. */
   filas: number;
   /** Productos NUEVOS creados (código no existía). */
   creados: number;
   /** Productos existentes con stock y precio actualizados. */
   actualizados: number;
-  /** Filas con existencia 0 saltadas (solo con «omitir cero»). */
-  omitidosCero: number;
-  /** Filas descartadas con motivo (ilegibles, sin descripción…). */
+  /** 5.92 · Formato detectado: «pos» (Inventario disponible) o «lista-limpia» (doble precio). */
+  formato: 'pos' | 'lista-limpia';
+  /** Filas descartadas con motivo (ilegibles, códigos repetidos renombrados…). */
   problemas: string[];
 }
 
 /**
- * Sube el reporte «Inventario disponible» del POS (base64) a
- * fn-importInventory: crea los productos que falten (en la categoría
- * elegida) y actualiza stock + precio de los existentes.
+ * Sube el PDF de inventario (base64) a fn-importInventory: detecta el
+ * formato (reporte del POS o lista limpia con doble precio), crea los
+ * productos que falten — aun con existencia/precio 0, así los actualiza
+ * la próxima importación — y actualiza stock + precio de los existentes.
  */
 export async function adminImportInventory(
   pdfBase64: string,
   categoryId: string,
-  omitirCero: boolean,
 ): Promise<ImportInventarioResult> {
   return callFunction<ImportInventarioResult>('fn-importInventory', {
     pdfBase64,
     categoryId,
-    omitirCero,
   });
 }
 
@@ -216,11 +215,24 @@ export async function adminSetProductImages(productId: string, images: string[])
   await updateDoc(doc(fb.db, 'products', productId), { images: clean, updatedAt: Date.now() });
 }
 
-/** Elimina un producto (solo admin, con confirmación en el panel). */
+/**
+ * Elimina un producto (solo admin, con confirmación en el panel).
+ * 5.92c · Borrado COMPLETO en UN lote atómico: TODAS las variantes + la
+ * ficha se borran juntos — si algo falla no se borra nada. Antes solo se
+ * borraba la ficha y las variantes quedaban colgando en la base (Firestore
+ * no borra subcolecciones en cascada): esa basura tomaba al importador por
+ * sorpresa y abortó la 1ª importación real con «No document to update».
+ * Un producto solo tiene variantes como subcolección (verificado), así que
+ * con esto no queda nada huérfano.
+ */
 export async function adminDeleteProduct(productId: string): Promise<void> {
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
-  await deleteDoc(doc(fb.db, 'products', productId));
+  const varsSnap = await getDocs(collection(fb.db, 'products', productId, 'variants'));
+  const batch = writeBatch(fb.db);
+  varsSnap.forEach((v) => batch.delete(v.ref));
+  batch.delete(doc(fb.db, 'products', productId));
+  await batch.commit();
 }
 
 /* ── Pedidos (colas de pagos y despacho) ── */

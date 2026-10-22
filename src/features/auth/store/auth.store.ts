@@ -22,9 +22,11 @@ interface AuthState {
   ) => Promise<SpotUser>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
-  /** «Mis datos» (5.75): guarda cédula + dirección del propio usuario y
-   *  parchea el store con los valores sanitizados (sin relectura Firestore). */
-  saveMyData: (cedula: string, address: string) => Promise<void>;
+  /** Datos de entrega (5.92g): guarda teléfono + dirección del propio
+   *  usuario y parchea el store con los valores sanitizados (sin relectura
+   *  Firestore). La cédula ya no se edita aquí (decisión del dueño): la del
+   *  registro sigue prellenando cada compra en el checkout. */
+  saveMyData: (phone: string, address: string) => Promise<void>;
   /** Cambio de contraseña en sesión (5.75). */
   changeMyPassword: (currentPassword: string, newPassword: string) => Promise<void>;
   setUser: (u: SpotUser | null) => void;
@@ -57,8 +59,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     await authService.sendReset(email);
   },
 
-  saveMyData: async (cedula, address) => {
-    const clean = await authService.saveCustomerData(cedula, address);
+  saveMyData: async (phone, address) => {
+    const clean = await authService.saveCustomerData(phone, address);
     set((s) => (s.user ? { user: { ...s.user, ...clean } } : {}));
   },
 

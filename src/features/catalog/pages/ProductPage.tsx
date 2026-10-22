@@ -324,8 +324,9 @@ export default function ProductPage() {
                 +
               </button>
             </div>
+            {/* 5.92f (pedido del dueño): «Agotado» como en la tarjeta. */}
             <Button size="lg" disabled={!canAdd} onClick={onAdd}>
-              {variant && variant.stock <= 0 ? 'Sin stock' : 'Al carrito'}
+              {variant && variant.stock <= 0 ? 'Agotado' : 'Al carrito'}
             </Button>
           </div>
 
