@@ -1,5 +1,25 @@
 /** Contratos del módulo catálogo (colección products + subcolección variants). */
 
+/**
+ * 5.98 · Reseña de cliente (punto G — solo reseñas, sin cupones).
+ * Vive DENTRO del array `reviews` del doc del producto (sin colecciones
+ * nuevas). `visible` la controla el admin desde el panel (moderación).
+ */
+export interface ProductReview {
+  /** uid del cliente autor (1 reseña por cliente/producto). */
+  uid: string;
+  /** Nombre visible del cliente (primer nombre del perfil). */
+  name: string;
+  /** 1–5 estrellas. */
+  rating: number;
+  /** Opinión corta (3–400 caracteres, ya saneada). */
+  text: string;
+  /** Momento de creación (epoch-ms). Junto con uid identifica la reseña. */
+  at: number;
+  /** false = oculta por moderación (no cuenta en rating ni se muestra). */
+  visible: boolean;
+}
+
 export interface ProductVariant {
   id: string;
   /** Denominación legible: "5W-30 · 4 L", "12x80 mm", "24 pack" */
@@ -31,6 +51,15 @@ export interface Product {
   active: boolean;
   createdAt: number;
   updatedAt: number;
+  /** 5.98 (punto C) · Unidades entregadas acumuladas desde el arranque
+   *  (fn-updateOrderStatus suma al marcar Entregado). Empieza SIN campo
+   *  (0 para la tienda): los docs sin el campo no aparecen en la consulta
+   *  orderBy('vendidosTotal','desc') → «Los más pedidos» nace oculto. */
+  vendidosTotal?: number;
+  /** 5.98 (punto G) · Promedio de reseñas visibles (1 decimal, 1–5). */
+  ratingAvg?: number;
+  /** 5.98 (punto G) · Cantidad de reseñas visibles. */
+  ratingCount?: number;
 }
 
 export interface ProductWithVariants extends Product {

@@ -12,6 +12,9 @@ import { loadFirebase } from '@/shared/lib/firebase';
 import { logger } from '@/shared/lib/logger';
 import { normalizeCategoryList } from '@/shared/lib/categoryTree';
 import { aMillis } from '@/shared/lib/tiempos';
+import {
+  anclaDe, pasaFiltros, pasaTodosLosTokens, terminosDeCodigo, tokensDe,
+} from '../lib/busqueda';
 import type { CatalogQuery, Product } from '../types';
 import type { Page } from '@/shared/types';
 import type { CategoryDef } from '@/shared/constants/categories';
@@ -100,6 +103,11 @@ function mapProduct(id: string, data: DocumentData): Product {
     // 5.92e: acepta número epoch-ms Y Timestamp de Firestore (jamás NaN).
     createdAt: aMillis(data.createdAt),
     updatedAt: aMillis(data.updatedAt),
+    // 5.98 · Vitrina que vende: unidades entregadas (punto C) y rating de
+    // reseñas visibles (punto G). Campos opcionales: productos sin ellos = 0.
+    vendidosTotal: data['vendidosTotal'] !== undefined ? Number(data['vendidosTotal']) : undefined,
+    ratingAvg: data['ratingAvg'] !== undefined ? Number(data['ratingAvg']) : undefined,
+    ratingCount: data['ratingCount'] !== undefined ? Number(data['ratingCount']) : undefined,
   };
 }
 
@@ -157,18 +165,76 @@ export async function countByCategory(categoryId: string, extraIds: string[] = [
   return snap.data().count;
 }
 
-/** Página por cursor (default 12, máximo 48). */
+/**
+ * 5.95 · Búsqueda por CÓDIGO (prefijo): «ES800033», «es-800033» o «es800».
+ * Consulta de rango sobre `code` SIN orderBy (índice automático de un campo;
+ * un orderBy en otro campo exigiría un índice compuesto que no existe — el
+ * orden se resuelve aquí). Si el término parece código y hay coincidencias,
+ * ES el resultado: búsqueda precisa de los trabajadores. Respeta los filtros
+ * activos (categoría, stock, precio) filtrando en código.
+ */
+const TOPE_CODIGO = 24;
+async function buscarPorCodigo(
+  fb: NonNullable<Awaited<ReturnType<typeof loadFirebase>>>,
+  term: string,
+  filtros: CatalogQuery,
+  pageSize: number,
+): Promise<Product[]> {
+  for (const t of terminosDeCodigo(term)) {
+    try {
+      const snap = await getDocs(query(
+        collection(fb.db, PRODUCTS),
+        where('code', '>=', t),
+        where('code', '<=', `${t}\uf8ff`),
+        fbLimit(TOPE_CODIGO),
+      ));
+      const items = snap.docs
+        .map((d) => mapProduct(d.id, d.data()))
+        .filter((p) => p.active && pasaFiltros(p, filtros))
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, pageSize);
+      if (items.length) return items;
+    } catch (e) {
+      // Caída al camino por tokens: jamás debe romper la búsqueda normal.
+      logger.warn('búsqueda por código falló', e);
+    }
+  }
+  return [];
+}
+
+/**
+ * Página por cursor (default 12, máximo 48).
+ * 5.95 · Con término de búsqueda: 1º CÓDIGO (prefijo — si hay coincidencias,
+ * página final sin cursor); si no, NOMBRE con el token más largo como ancla
+ * y el resto de las palabras exigidas en código (paginación intacta).
+ */
 export async function listProducts(q: CatalogQuery): Promise<Page<Product>> {
   const pageSize = Math.min(Math.max(q.pageSize || 12, 1), PAGE_SIZE_MAX);
 
   const fb = await loadFirebase();
   if (!fb) return { items: [], cursor: null, hasMore: false };
+
+  if (q.q) {
+    const porCodigo = await buscarPorCodigo(fb, q.q, q, pageSize);
+    if (porCodigo.length) return { items: porCodigo, cursor: null, hasMore: false };
+  }
+
+  const tokens = q.q ? tokensDe(q.q) : [];
+  const ancla = q.q ? anclaDe(q.q) : null;
+  // Término sin ancla posible (todas las palabras < 3 letras y sin parecerse
+  // a un código): mismo resultado que antes — página vacía, no un listado suelto.
+  if (q.q && !ancla) return { items: [], cursor: null, hasMore: false };
+
   const base = collection(fb.db, PRODUCTS);
-  const snap = await getDocs(await buildProductsQuery({ ...q, pageSize }, base, fb));
+  const snap = await getDocs(await buildProductsQuery({ ...q, pageSize, q: ancla ?? undefined }, base, fb));
   const docs = snap.docs;
   // El catálogo público solo muestra activos (se filtra en código para no exigir
   // índices compuestos nuevos; la paginación por cursor no se ve afectada).
-  const items = docs.map((d) => mapProduct(d.id, d.data())).filter((p) => p.active);
+  let items = docs.map((d) => mapProduct(d.id, d.data())).filter((p) => p.active);
+  // Varias palabras: además del ancla (garantizada por el índice), exigen las
+  // demás dentro de la página leída. El cursor sigue sobre los docs crudos:
+  // sin huecos, sin repeticiones.
+  if (tokens.length > 1) items = items.filter((p) => pasaTodosLosTokens(p, tokens));
   const last = docs[docs.length - 1];
   return {
     items,
@@ -236,6 +302,26 @@ export function subscribeProduct(
     cancelled = true;
     unsub?.();
   };
+}
+
+/**
+ * 5.98 (punto C) · «Los más pedidos»: consulta orderBy('vendidosTotal','desc')
+ * SIN where (índice automático de un campo — sin índices compuestos nuevos).
+ * Los docs SIN el campo quedan FUERA del resultado de Firestore: con cero
+ * ventas la consulta devuelve vacío y el Home oculta la sección (arranque
+ * desde cero, decisión del dueño — sin histórico precargado).
+ * El filtro de activos va en código (mismo criterio del resto del catálogo).
+ */
+export async function listTopSellers(max = 8): Promise<Product[]> {
+  const fb = await loadFirebase();
+  if (!fb) return [];
+  const snap = await getDocs(
+    query(collection(fb.db, PRODUCTS), orderBy('vendidosTotal', 'desc'), fbLimit(max + 8)),
+  );
+  return snap.docs
+    .map((d) => mapProduct(d.id, d.data()))
+    .filter((p) => p.active && (p.vendidosTotal ?? 0) > 0)
+    .slice(0, max);
 }
 
 /** Productos relacionados: misma categoría, máx. 4, sin límites libres. */

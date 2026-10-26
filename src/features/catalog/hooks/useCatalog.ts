@@ -4,8 +4,8 @@ import {
   type QueryClient,
 } from '@tanstack/react-query';
 import {
-  countByCategory, getProductBySlug, getRelated,
-  getVariants, listCategories, listProducts, normalizeSearchTerm,
+  countByCategory, getProductBySlug, getRelated, getVariants, listCategories,
+  listProducts, listTopSellers, normalizeSearchTerm,
   subscribeCatalogPulse, subscribeCategoryChanges,
 } from '../services/catalog.service';
 import { listActivePromos, subscribeActivePromos } from '../services/promos.service';
@@ -125,6 +125,21 @@ export function usePromos() {
   return useQuery({
     queryKey: ['promos', 'active'] as const,
     queryFn: listActivePromos,
+    staleTime: staleTimeMin,
+  });
+}
+
+/**
+ * 5.98 (punto C) · «Los más pedidos»: top por unidades entregadas.
+ * Con cero ventas la consulta viene vacía → el Home OCULTA la sección
+ * (arranque desde cero, sin histórico — decisión del dueño). El bus en vivo
+ * refresca al instante cuando el admin edita o cuando entra un producto nuevo.
+ */
+export function useTopSellers(max = 8) {
+  useCatalogLive();
+  return useQuery({
+    queryKey: ['catalog', 'top-sellers', max] as const,
+    queryFn: () => listTopSellers(max),
     staleTime: staleTimeMin,
   });
 }

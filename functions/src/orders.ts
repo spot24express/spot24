@@ -32,7 +32,7 @@ import { enforceRateLimit, tryRateLimit } from './lib/ratelimit';
 import { assessRisk, MAX_ORDERS_PER_HOUR } from './lib/fraud';
 import { canTransition } from './domain/order-state';
 import { ORDER_NOTIFICATIONS, STOCK_NOTIFICATIONS } from './lib/notifications';
-import { extractItems } from './lib/items';
+import { extractItems, finiteNum, isSafeDocId } from './lib/items';
 
 void encryptField;
 void hashReference;
@@ -214,7 +214,9 @@ export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
         .get();
       const nowMs = Date.now();
       const expired = staleSnap.docs.filter(
-        (d) => Number(d.data()?.['expiresAt'] ?? 0) < nowMs,
+        // 5.93: finiteNum — un expiresAt corrupto (NaN) no debía colar:
+        // NaN < nowMs es false y la reserva «no vencía» nunca.
+        (d) => finiteNum(d.data()?.['expiresAt']) < nowMs,
       );
       for (const stale of expired) {
         await db().runTransaction(async (tx) => {
@@ -222,7 +224,7 @@ export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
           // tanto por createOrder/cancelOrder de otra petición.
           const fresh = await tx.get(stale.ref);
           if (!fresh.exists || fresh.data()?.['status'] !== 'activa') return;
-          if (Number(fresh.data()?.['expiresAt'] ?? 0) >= nowMs) return;
+          if (finiteNum(fresh.data()?.['expiresAt']) >= nowMs) return;
           const held = (fresh.data()?.['items'] ?? []) as Array<{
             productId: string;
             variantId: string;
@@ -238,7 +240,9 @@ export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
             if (vsnap.exists) {
               unreserve.push({
                 ref: vref,
-                newReserved: Math.max(0, Number(vsnap.data()?.['stockReserved'] ?? 0) - Number(item.qty ?? 0)),
+                // 5.93: finiteNum — stockReserved NaN llegaba a tx.update y
+                // revienta la tx con error sin código (500 opaco).
+                newReserved: Math.max(0, finiteNum(vsnap.data()?.['stockReserved']) - finiteNum(item.qty)),
               });
             }
           }
@@ -292,7 +296,9 @@ export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
         const productId = sanitizeStr(it.productId, 120);
         const variantId = sanitizeStr(it.variantId, 140);
         const qty = Number(sanitizeDigits(String(it.qty ?? ''), 3));
-        if (!productId || !variantId || !qty) {
+        // 5.93: isSafeDocId — un id con '/' construía una ruta inválida y
+        // Firestore lanzaba «Invalid document reference» SIN código → 500.
+        if (!productId || !variantId || !qty || !isSafeDocId(productId) || !isSafeDocId(variantId)) {
           throw new HttpsError('invalid-argument', 'Ítem inválido.');
         }
         if (qty < 1 || qty > MAX_QTY_PER_LINE) {
@@ -312,8 +318,11 @@ export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
         const variantRef = db().doc(`products/${line.productId}/variants/${line.variantId}`);
         const vsnap = await tx.get(variantRef);
         if (!vsnap.exists) throw new HttpsError('out-of-range', 'Variante inexistente.');
-        const stock = Number(vsnap.data()?.['stock'] ?? 0);
-        const reserved = Number(vsnap.data()?.['stockReserved'] ?? 0);
+        // 5.93: finiteNum — stock NaN → 0: falla honesta «Sin stock
+        // suficiente» (400); stockReserved NaN → 0: la escritura de abajo
+        // SANA el campo (quedará exactamente el hold nuevo). Nunca NaN a tx.
+        const stock = finiteNum(vsnap.data()?.['stock']);
+        const reserved = finiteNum(vsnap.data()?.['stockReserved']);
         // Disponible EXCLUYENDO el hold propio anterior: fue puesto por ESTA
         // re-reserva (mismo uid) y lo estamos reemplazando, así que no
         // compite contra la nueva cantidad. Sin esto, re-entrar al checkout
@@ -333,7 +342,7 @@ export async function coreReserveStock(ctx: CoreCtx): Promise<unknown> {
         if (vsnap.exists) {
           writes.push({
             ref: held.ref,
-            newReserved: Math.max(0, Number(vsnap.data()?.['stockReserved'] ?? 0) - held.qty),
+            newReserved: Math.max(0, finiteNum(vsnap.data()?.['stockReserved']) - held.qty),
           });
         }
       }
@@ -417,7 +426,12 @@ function validateLines(data: QuoteReq | undefined): ValidLine[] {
     const productId = sanitizeStr(it.productId, 120);
     const variantId = sanitizeStr(it.variantId, 140);
     const qty = Number(sanitizeDigits(String(it.qty ?? ''), 3));
-    if (!productId || !variantId || qty < 1 || qty > MAX_QTY_PER_LINE) {
+    // 5.93: isSafeDocId — id con '/' → «Invalid document reference» sin
+    // código → 500. Aquí se corta como 400 para quote y create a la vez.
+    if (
+      !productId || !variantId || qty < 1 || qty > MAX_QTY_PER_LINE ||
+      !isSafeDocId(productId) || !isSafeDocId(variantId)
+    ) {
       throw new HttpsError('invalid-argument', 'Ítem inválido.');
     }
     return { productId, variantId, qty };
@@ -434,7 +448,9 @@ async function validateQuoteReq(data: QuoteReq | undefined): Promise<{ zoneId: s
     return { zoneId: null, lines: validateLines(data) };
   }
   const zoneId = sanitizeStr(data?.zoneId, 80);
-  if (!zoneId) throw new HttpsError('invalid-argument', 'Zona requerida.');
+  // 5.93: la zona se lee como doc(zones/{zoneId}) — id con ruta inválida →
+  // 500 opaco. 400 accionable.
+  if (!zoneId || !isSafeDocId(zoneId)) throw new HttpsError('invalid-argument', 'Zona requerida.');
   return { zoneId, lines: validateLines(data) };
 }
 
@@ -667,7 +683,9 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
     let reservation: admin.firestore.DocumentSnapshot | null = null;
     if (req.reservationId) {
       const rsnap = await db().collection('reservations').doc(req.reservationId).get();
-      if (!rsnap.exists || rsnap.data()?.['uid'] !== uid || rsnap.data()?.['status'] !== 'activa' || Number(rsnap.data()?.['expiresAt'] ?? 0) < Date.now()) {
+      // 5.93: finiteNum en expiresAt — NaN colaba la reserva como vigente y
+      // luego NaN llegaba al doc de la orden (escritura rechazada → 500).
+      if (!rsnap.exists || rsnap.data()?.['uid'] !== uid || rsnap.data()?.['status'] !== 'activa' || finiteNum(rsnap.data()?.['expiresAt']) < Date.now()) {
         throw new HttpsError('failed-precondition', 'Reserva vencida. Confirma de nuevo.');
       }
       reservation = rsnap;
@@ -802,7 +820,7 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       riskFlags: risk.flags,
       needsReview: risk.needsReview,
       reservationId: req.reservationId ?? null,
-      reservationExpiresAt: reservation ? Number(reservation.data()?.['expiresAt'] ?? 0) : null,
+      reservationExpiresAt: reservation ? finiteNum(reservation.data()?.['expiresAt']) : null,
       claimRole: typeof token['role'] === 'string' ? token['role'] : 'customer',
       createdAt: now,
       updatedAt: now,
@@ -859,8 +877,10 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
           const vref = db().doc(`products/${l.productId}/variants/${l.variantId}`);
           const vsnap = await tx.get(vref);
           if (!vsnap.exists) throw new HttpsError('out-of-range', 'Variante inexistente.');
-          const stock = Number(vsnap.data()?.['stock'] ?? 0);
-          const reserved = Number(vsnap.data()?.['stockReserved'] ?? 0);
+          // 5.93: finiteNum — NaN corrupto se colaba por la comparación y
+          // mataba la tx al escribir (500 opaco).
+          const stock = finiteNum(vsnap.data()?.['stock']);
+          const reserved = finiteNum(vsnap.data()?.['stockReserved']);
           if (l.qty > stock - reserved) {
             throw new HttpsError('out-of-range', 'Sin stock suficiente.');
           }
@@ -905,14 +925,15 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
             saleQty: 0,
             holdQty: 0,
           };
-          cur.holdQty += Number(item.qty ?? 0);
+          cur.holdQty += finiteNum(item.qty);
           perVariant.set(key, cur);
         }
         for (const v of perVariant.values()) {
           const vsnap = await tx.get(v.ref);
           if (!vsnap.exists) throw new HttpsError('out-of-range', 'Variante inexistente.');
-          const stock = Number(vsnap.data()?.['stock'] ?? 0);
-          const reserved = Number(vsnap.data()?.['stockReserved'] ?? 0);
+          // 5.93: finiteNum — mismo blindaje que el flujo sin reserva.
+          const stock = finiteNum(vsnap.data()?.['stock']);
+          const reserved = finiteNum(vsnap.data()?.['stockReserved']);
           // Disponible EXCLUYENDO el hold de ESTA reserva: el hold fue puesto
           // por reserveStock para ESTA compra, así que no compite contra ella.
           // (stock - reserved + holdQty): sin esto, una reserva propia de 3
@@ -1062,7 +1083,13 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
       variantId: sanitizeStr(it.variantId, 140),
       qty: Number(sanitizeDigits(String(it.qty ?? ''), 3)),
     }));
-    if (lines.some((l) => !l.productId || !l.variantId || l.qty < 1 || l.qty > MAX_QTY_PER_LINE)) {
+    if (
+      lines.some(
+        (l) =>
+          !l.productId || !l.variantId || l.qty < 1 || l.qty > MAX_QTY_PER_LINE ||
+          !isSafeDocId(l.productId) || !isSafeDocId(l.variantId),
+      )
+    ) {
       throw new HttpsError('invalid-argument', 'Ítem inválido.');
     }
     if (lines.length > MAX_LINES) throw new HttpsError('invalid-argument', 'Demasiadas líneas.');
@@ -1121,7 +1148,9 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
     address.zoneId = '';
     address.zoneName = 'Retiro en tienda';
     address.details = address.details || 'Retiro en tienda';
-  } else if (!address.zoneId || address.city.length < 2 || address.details.length < 8) {
+  } else if (!address.zoneId || !isSafeDocId(address.zoneId) || address.city.length < 2 || address.details.length < 8) {
+    // 5.93: isSafeDocId — la zona se lee como doc(zones/{zoneId}) en
+    // computeTotals; id con ruta inválida → 500 opaco. 400 accionable.
     throw new HttpsError('invalid-argument', 'Dirección incompleta.');
   }
 
@@ -1138,7 +1167,13 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
   }
 
   const notes = sanitizeStr(data.notes, 300);
-  const reservationId = data.reservationId ? sanitizeStr(data.reservationId, 120) || null : null;
+  const reservationIdRaw = data.reservationId ? sanitizeStr(data.reservationId, 120) || null : null;
+  // 5.93: la reserva se lee como doc(reservations/{id}) — id con '/' u otra
+  // ruta inválida → error sin código → 500 opaco. 400 accionable.
+  if (reservationIdRaw && !isSafeDocId(reservationIdRaw)) {
+    throw new HttpsError('invalid-argument', 'Reserva inválida.');
+  }
+  const reservationId = reservationIdRaw;
 
   // FLUJO ESTRICTO (5i-k): el comprobante es OBLIGATORIO en las formas
   // electrónicas. Contra entrega (efectivo/punto_venta, 5.80) lo acepta
@@ -1211,7 +1246,8 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
             if (vsnap.exists) {
               unreserve.push({
                 ref: vref,
-                newReserved: Math.max(0, Number(vsnap.data()?.['stockReserved'] ?? 0) - item.qty),
+                // 5.93: finiteNum — mismo blindaje que reserveStock.
+                newReserved: Math.max(0, finiteNum(vsnap.data()?.['stockReserved']) - finiteNum(item.qty)),
               });
             }
           }
@@ -1223,7 +1259,7 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
             const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
             const vsnap = await tx.get(vref);
             if (vsnap.exists) {
-              restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty, qty: line.qty });
+              restock.push({ ref: vref, newStock: finiteNum(vsnap.data()?.['stock']) + line.qty, qty: line.qty });
             }
           }
         }
@@ -1232,7 +1268,7 @@ export async function coreCancelOrder(ctx: CoreCtx): Promise<unknown> {
           const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
           const vsnap = await tx.get(vref);
           if (vsnap.exists) {
-            restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty, qty: line.qty });
+            restock.push({ ref: vref, newStock: finiteNum(vsnap.data()?.['stock']) + line.qty, qty: line.qty });
           }
         }
       }

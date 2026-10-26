@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import type { Product } from '../types';
 import { trackEvent } from '@/shared/lib/analytics';
 import { formatBs, usdToBs } from '@/shared/lib/format';
-import { cleanProductName } from '@/shared/lib/display';
+import { cleanProductName, etiquetaStock } from '@/shared/lib/display';
 import { alFallarFoto } from '@/shared/lib/imgFallback';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import { getVariants } from '../services/catalog.service';
@@ -12,6 +12,30 @@ import { validateAdd, singleLineForProduct } from '@/features/cart/lib/cartLogic
 import { MAX_QTY_PER_LINE } from '@/features/cart/types';
 import { toast } from '@/shared/lib/toast';
 import { logger } from '@/shared/lib/logger';
+import { BotonCompartir } from '@/shared/components/ui/BotonCompartir';
+import { TITULAR } from '@/features/legal/datos';
+
+/** Estrella rellena (14 px) para el rating de la tarjeta. */
+export function StarIcon({ className = '' }: { className?: string }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}>
+      <path d="M12 2.6l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.4l-5.8 3.1 1.1-6.5L2.6 9.4l6.5-.9L12 2.6z" />
+    </svg>
+  );
+}
+
+/** 5.98 (punto G) · Fila de rating: solo con reseñas visibles (ratingCount > 0).
+ *  Promedio a 1 decimal + cantidad, como en las apps de referencia. */
+export function RatingLine({ avg, count, compact = false }: { avg: number; count: number; compact?: boolean }) {
+  if (!count || count <= 0 || avg <= 0) return null;
+  return (
+    <span className={`inline-flex items-center gap-1 ${compact ? 'text-[11px]' : 'text-xs'} font-semibold text-signal`}>
+      <StarIcon />
+      {avg.toFixed(1)}
+      <span className="text-muted">({count})</span>
+    </span>
+  );
+}
 
 interface ProductCardProps {
   product: Product;
@@ -39,6 +63,9 @@ interface ProductCardProps {
  *   · 5.92f (pedido del dueño): el chip de producto sin existencias dice
  *     «Agotado» (antes «Sin stock»). Mismo criterio en la ficha (StockBadge
  *     y botón del carrito) para que la tienda hable un solo idioma.
+ *   · 5.104 (pedido del dueño): con UNA sola pieza el chip dice
+ *     «Última disponible» (antes «Últimas 1»); texto compartido con la
+ *     ficha vía etiquetaStock() (display.ts).
  */
 
 /** Tiempo que la cápsula queda abierta tras el último toque (como en la app de referencia). */
@@ -138,7 +165,10 @@ export function ProductCard({ product }: ProductCardProps) {
   };
 
   return (
-    <article className="group relative flex flex-col overflow-hidden rounded-brand-lg border-2 border-line bg-surface-1 transition-colors hover:border-signal focus-within:border-signal">
+    // 5.108b (pedido del dueño) · h-full: dentro de los carruseles el envoltorio
+    // estira a la tarjeta más alta de la hilera y esta la ocupa completa —
+    // TODAS las tarjetas de la hilera quedan con la misma altura.
+    <article className="group relative flex h-full flex-col overflow-hidden rounded-brand-lg border-2 border-line bg-surface-1 transition-colors hover:border-signal focus-within:border-signal">
       {/* 5.83 · SOLO la PORTADA en la tarjeta (como en la app de referencia): el carrusel
           con todas las fotos vive en la ficha del producto. Tocar la foto
           abre la ficha. Con una sola foto, misma tarjeta de siempre. */}
@@ -165,9 +195,24 @@ export function ProductCard({ product }: ProductCardProps) {
               product.stockTotal <= 0 ? 'border-line text-muted' : 'border-signal text-signal'
             }`}
           >
-            {product.stockTotal <= 0 ? 'Agotado' : `Últimas ${product.stockTotal}`}
+            {/* 5.104 · texto unificado con la ficha: 1 pieza → «Última disponible» */}
+            {etiquetaStock(product.stockTotal)}
           </span>
         )}
+        {/* 5.108 (pedido del dueño) · COMPARTIR desde la tarjeta: píldora
+            discreta arriba-izquierda (la opuesta al «+» que vive arriba-
+            derecha; el chip de stock usa abajo-izquierda). Abre el panel
+            nativo del teléfono y, en PC, copia el enlace de la ficha. */}
+        <BotonCompartir
+          titulo={product.name}
+          texto={`Mira esta pieza en SPOT 24: ${displayName}`}
+          url={`${TITULAR.sitio}catalogo/${product.slug}`}
+          tipo="producto"
+          itemId={product.id}
+          ariaLabel={`Compartir ${product.name}`}
+          iconSize={16}
+          className="absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-full border-2 border-line bg-ink/50 text-paper backdrop-blur transition-colors hover:border-signal hover:text-signal"
+        />
       </div>
 
       {/* 5.85 · stepper de la app de referencia que se RETRAE: círculo «+» → cápsula «− qty +»
@@ -251,10 +296,19 @@ export function ProductCard({ product }: ProductCardProps) {
         {/* Marca SIEMPRE arriba, sola: si el admin incluyó la marca dentro del
             nombre del producto, cleanProductName la recorta para no repetirla. */}
         <p className="spot-label">{product.brand}</p>
-        <h3 className="font-display text-base font-bold italic uppercase leading-tight text-paper line-clamp-2">
+        {/* 5.108b · min-h-10 reserva SIEMPRE el alto de 2 líneas (2 × 20 px):
+            nombre de 1 línea deja el espacio en blanco y la tarjeta no se
+            encoge (lo visto en Recién llegados). line-clamp-2 sigue cortando
+            los nombres que excedan 2 líneas. */}
+        <h3 className="min-h-10 font-display text-base font-bold italic uppercase leading-tight text-paper line-clamp-2">
           {displayName}
         </h3>
-        <p className="font-display text-xl font-extrabold italic leading-tight text-signal">
+        {/* 5.98 · Solo con reseñas visibles: la tarjeta de siempre, con una fila
+            fina de rating encima del precio cuando ya hay opiniones. */}
+        <RatingLine avg={product.ratingAvg ?? 0} count={product.ratingCount ?? 0} compact />
+        {/* 5.108b · mt-auto fija el precio ABAJO en todas las tarjetas: aunque
+            una tenga rating y la otra no, los precios quedan alineados. */}
+        <p className="mt-auto font-display text-xl font-extrabold italic leading-tight text-signal">
           {bs !== null ? formatBs(bs) : 'Bs. —'}
         </p>
       </Link>

@@ -50,7 +50,13 @@ service cloud.firestore {
       function productValid(d) {
         return d.keys().hasAll(['name', 'brand', 'slug', 'categoryId', 'active'])
           && str(d.name, 2, 120)
-          && str(d.brand, 1, 60)
+          /* 5.99 · brand con mínimo 0: el importador del POS crea productos
+             SIN marca (brand: '') — era la norma desde la 5.87 — y la regla
+             vieja (mínimo 1) hacía que CUALQUIER escritura del panel sobre
+             esos productos (moverlos a una subcategoría, reordenar fotos,
+             editar) fallara con permission-denied y error genérico. El tope
+             de 60 y el tipo string se conservan igual. */
+          && str(d.brand, 0, 60)
           && str(d.slug, 2, 140)
           && str(d.categoryId, 2, 60)
           && d.active is bool

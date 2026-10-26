@@ -1,6 +1,6 @@
 /**
  * SPOT 24 · Analítica sin datos personales (sección 8.4)
- * Eventos: view_item, add_to_cart, begin_checkout, purchase.
+ * Eventos: view_item, add_to_cart, begin_checkout, purchase, share (5.108).
  * Nunca se envían teléfonos, direcciones, referencias ni identificadores
  * distintos de los IDs internos de producto/orden.
  */
@@ -9,7 +9,10 @@ type AnalyticsEvent =
   | { name: 'view_item'; params: { itemId: string; itemCategory: string; valueUsd?: number } }
   | { name: 'add_to_cart'; params: { itemId: string; itemCategory: string; quantity: number } }
   | { name: 'begin_checkout'; params: { valueUsd: number; items: number } }
-  | { name: 'purchase'; params: { orderId: string; valueUsd: number; items: number; method: string } };
+  | { name: 'purchase'; params: { orderId: string; valueUsd: number; items: number; method: string } }
+  // 5.108 · Compartir app/producto (compartir.ts). method: 'panel_nativo'
+  // (Web Share API del teléfono) o 'copiar_enlace' (PC).
+  | { name: 'share'; params: { method: string; contentType: 'app' | 'producto'; itemId?: string } };
 
 let analyticsPromise: Promise<null | import('firebase/analytics').Analytics> | null = null;
 
@@ -58,6 +61,14 @@ export async function trackEvent(event: AnalyticsEvent): Promise<void> {
           currency: 'USD',
           num_items: params.items,
           payment_method: params.method,
+        });
+        break;
+      case 'share':
+        // Evento recomendado de GA4: method / content_type / content_id.
+        logEvent(ga, 'share', {
+          method: params.method,
+          content_type: params.contentType,
+          content_id: params.itemId || undefined,
         });
         break;
     }

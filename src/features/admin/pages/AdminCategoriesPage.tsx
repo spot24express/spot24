@@ -251,6 +251,26 @@ function CategoryModal({
       toast.error('Ponle un nombre a la categoría.');
       return;
     }
+    // 5.99 · GUARDA ANTI-DUPLICADOS: no se permite crear (ni renombrar hacia)
+    // una categoría que ya exista con el mismo nombre en el mismo lugar
+    // (mismo padre, o ambas principales). Sin esta guarda, cada reintento de
+    // «crear subcategoría» tras un error creaba OTRA igual (pasó de verdad:
+    // 4 «Lubricantes» idénticas en producción).
+    const nombre = form.name.trim().toLowerCase();
+    const duplicada = categories.find(
+      (c) =>
+        c.id !== form.id &&
+        c.name.trim().toLowerCase() === nombre &&
+        (c.parentId ?? '') === (form.parentId || ''),
+    );
+    if (duplicada) {
+      toast.error(
+        form.parentId
+          ? `Ya existe «${duplicada.name}» dentro de esa categoría. Elige otro nombre o usa la que ya está creada.`
+          : `Ya existe una categoría principal llamada «${duplicada.name}». Elige otro nombre.`,
+      );
+      return;
+    }
     setBusy(true);
     try {
       // 5.81 · CANDADO «avisar + mover»: si esta categoría va a vivir DENTRO de

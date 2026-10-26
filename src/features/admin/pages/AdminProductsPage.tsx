@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from '@/shared/lib/toast';
 import { ListSkeleton } from '@/shared/components/ui/Skeleton';
 import { ErrorState } from '@/shared/components/ui/States';
@@ -9,9 +9,16 @@ import { Modal } from '@/shared/components/ui/Modal';
 import {
   adminListProducts, adminSaveProduct, adminDeleteProduct,
   adminGetVariants, adminSetProductImages, adminImportInventory,
+  adminCountAllProducts,
   type ImportInventarioResult,
 } from '../services/admin.service';
+import { filtrarProductosAdmin } from '../lib/listaAdmin';
+import {
+  alternarRama, crearDocumentoPdf, nombreArchivoInventario,
+  prepararInventario, ramaCompleta, usd as usdFmt,
+} from '../lib/exportarInventario';
 import { adminUploadImage } from '../services/imageUpload.service';
+import { ResenasAdmin } from '../components/ResenasAdmin';
 import type { Product, ProductVariant } from '@/features/catalog/types';
 import { listCategories } from '@/features/catalog/services/catalog.service';
 import { sortAdminCategoryList } from '@/shared/lib/categoryTree';
@@ -33,10 +40,25 @@ export default function AdminProductsPage() {
   const [creating, setCreating] = useState(false);
   // 5.87 · importar inventario desde el PDF del POS.
   const [importing, setImporting] = useState(false);
+  // 5.105 · exportar el inventario a PDF (completo o por categorías).
+  const [exporting, setExporting] = useState(false);
+  // 5.96 · cantidad TOTAL de productos (colección completa, activos e
+  // inactivos). La búsqueda no la cambia: «M encontrados de N».
+  const [total, setTotal] = useState<number | null>(null);
+
+  const refreshTotal = () => {
+    void adminCountAllProducts()
+      .then(setTotal)
+      .catch(() => setTotal(null));
+  };
 
   const load = () => {
     setLoading(true);
-    void adminListProducts(search)
+    // 5.102 · adminListProducts ya NO recibe el término: lee la colección
+    // COMPLETA (por páginas) y la búsqueda filtra en local — antes cada tecla
+    // re-leía Firestore y el tope de 300 dejaba fuera a casi la mitad del
+    // catálogo (los MOOG no aparecían para editarlos).
+    void adminListProducts()
       .then((p) => {
         setProducts(p);
         setError(false);
@@ -45,7 +67,19 @@ export default function AdminProductsPage() {
       .finally(() => setLoading(false));
   };
 
-  useEffect(load, [search]);
+  // La lista completa se lee al montar y tras guardar/borrar/importar.
+  // La búsqueda NO relanza la lectura: filtra en local (visibles).
+  useEffect(load, []);
+  // El total se lee una vez al montar y se refresca cuando los datos cambian
+  // (guardar, importar, eliminar) — no en cada tecla de la búsqueda.
+  useEffect(refreshTotal, []);
+
+  // 5.102 · Visibles = filtro LOCAL del texto de búsqueda sobre la lista
+  // completa (mismo criterio de siempre: nombre, marca o código).
+  const visibles = useMemo(
+    () => filtrarProductosAdmin(products, search),
+    [products, search],
+  );
 
   const remove = async (p: Product) => {
     if (!window.confirm(`¿Eliminar «${p.name}»? Esta acción no se puede deshacer.`)) return;
@@ -53,6 +87,7 @@ export default function AdminProductsPage() {
       await adminDeleteProduct(p.id);
       toast.success('Producto eliminado.');
       load();
+      refreshTotal();
     } catch (e) {
       toast.error(userMessage(e));
     }
@@ -66,17 +101,36 @@ export default function AdminProductsPage() {
           <p className="spot-subtitle mt-1">Catálogo con precio y stock directos.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {/* 5.105 · Exportar inventario: PDF carta horizontal, todas o solo
+              las categorías que el dueño marque. Se genera en el momento con
+              la lista ya cargada (guardar → exportar = dato nuevo). */}
+          <Button variant="secondary" onClick={() => setExporting(true)}>Exportar PDF</Button>
           <Button variant="secondary" onClick={() => setImporting(true)}>Importar PDF</Button>
           <Button onClick={() => setCreating(true)}>Nuevo producto</Button>
         </div>
       </div>
 
-      <Input
-        label="Buscar por nombre, marca o código"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        className="max-w-md"
-      />
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <Input
+          label="Buscar por nombre, marca o código"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="max-w-md"
+        />
+        {/* 5.96 · Contador pedido por el dueño: total real de la colección
+            (agregación de servidor); con búsqueda activa, encontrados vs total.
+            5.102 · si la lista cargada difiere del total (solo posible al tope
+            de seguridad de 3000), se muestra honesto: «M en lista de N». */}
+        {!loading && !error && (
+          <p className="spot-label text-muted" aria-live="polite">
+            {search.trim()
+              ? `${visibles.length} encontrados de ${total ?? '…'}`
+              : products.length === (total ?? products.length)
+                ? `${total ?? products.length} productos en total`
+                : `${products.length} en lista de ${total ?? '…'}`}
+          </p>
+        )}
+      </div>
 
       <div className="mt-6">
         {error ? (
@@ -85,7 +139,7 @@ export default function AdminProductsPage() {
           <ListSkeleton rows={5} />
         ) : (
           <ul className="space-y-3">
-            {products.map((p) => (
+            {visibles.map((p) => (
               <li key={p.id} className="flex flex-wrap items-center justify-between gap-4 rounded-brand-lg border-2 border-line bg-surface-1 p-4">
                 <div className="flex min-w-0 items-center gap-4">
                   <img src={p.images[0] ?? '/img/products/lubricantes.svg'} alt="" className="h-14 w-14 rounded-brand border border-line object-cover" loading="lazy" onError={alFallarFoto} />
@@ -119,7 +173,14 @@ export default function AdminProductsPage() {
         onClose={() => setImporting(false)}
         onImported={() => {
           load();
+          refreshTotal();
         }}
+      />
+
+      <ExportarInventarioModal
+        open={exporting}
+        onClose={() => setExporting(false)}
+        products={products}
       />
 
       <ProductModal
@@ -140,6 +201,7 @@ export default function AdminProductsPage() {
           setEditing(null);
           setCreating(false);
           load();
+          refreshTotal();
         }}
       />
     </div>
@@ -244,8 +306,12 @@ function ProductModal({
       toast.error('El nombre del producto necesita al menos 2 letras.');
       return;
     }
-    if (form.brand.trim().length < 1) {
-      toast.error('Escribe la marca del producto.');
+    // 5.99 · Marca OPCIONAL: el importador del POS crea productos sin marca
+    // (brand: "") y las reglas ya lo permiten. Antes este bloque obligaba a
+    // inventar una marca para poder guardar cualquier ajuste de un producto
+    // importado (precio, stock, fotos…).
+    if (form.brand.trim().length > 60) {
+      toast.error('La marca no puede pasar de 60 caracteres.');
       return;
     }
     if (!form.categoryId) {
@@ -262,8 +328,12 @@ function ProductModal({
       toast.error('El stock no puede pasar de 100.000.');
       return;
     }
-    // SKU interno e invisible: derivado de marca+nombre, cumple las reglas (3-40 caracteres).
-    const autoSku = `${form.brand}${form.name}`.replace(/[^A-Za-z0-9]/g, '').slice(0, 8).toUpperCase() || 'SP24';
+    // SKU interno e invisible: derivado de marca+nombre, cumple las reglas
+    // (3-40 caracteres). 5.99 · con marca opcional, un nombre demasiado corto
+    // podía dejar el derivado en 1-2 letras (las reglas de variantes exigen
+    // 3+): si queda corto se rellena con el prefijo SP del proyecto.
+    const autoSkuBase = `${form.brand}${form.name}`.replace(/[^A-Za-z0-9]/g, '').slice(0, 8).toUpperCase();
+    const autoSku = autoSkuBase.length >= 3 ? autoSkuBase : `SP${autoSkuBase || '24'}`.slice(0, 8);
     setBusy(true);
     try {
       const savedId = await adminSaveProduct({
@@ -367,7 +437,7 @@ function ProductModal({
       <div className="space-y-4">
         <div className="grid gap-4 sm:grid-cols-2">
           <Input label="Nombre" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} required />
-          <Input label="Marca" value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} required />
+          <Input label="Marca (opcional)" value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} />
           <Input
             label="Código"
             value={form.code}
@@ -531,6 +601,10 @@ function ProductModal({
           </div>
         </div>
 
+        {/* 5.98 (G) · MODERACIÓN DE RESEÑAS: solo en productos ya creados y
+            solo si ya tienen reseñas (ocultar/mostrar/eliminar + rating). */}
+        {product && <ResenasAdmin productId={product.id} />}
+
         <div className="flex gap-3 pt-2">
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
           <Button className="flex-1" loading={busy} disabled={!metaReady} onClick={() => void save()}>
@@ -685,6 +759,192 @@ function ImportarInventarioModal({
           </Button>
           <Button loading={busy} disabled={!archivo || !catId} onClick={() => void importar()}>
             Importar
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * 5.105 · Exportar inventario a PDF (CARTA horizontal): árbol de categorías
+ * (todas o las que el dueño marque — pulsar una principal marca/quita su
+ * rama entera), con o sin inactivos. Una fila por producto con código,
+ * nombre, marca, categoría/sub, estado, precio USD, stock, descripción y
+ * enlace de foto clickeable; subtotal por categoría. Se genera EN EL
+ * MOMENTO con la lista que el panel ya tiene: guardar → exportar = dato
+ * nuevo (jsPDF se descarga aparte, solo al exportar).
+ */
+/** Conjunto nuevo con el id alternado (marcado ↔ desmarcado). */
+function alternarId(marcados: ReadonlySet<string>, id: string): Set<string> {
+  const out = new Set(marcados);
+  if (out.has(id)) out.delete(id);
+  else out.add(id);
+  return out;
+}
+
+function ExportarInventarioModal({
+  open, onClose, products,
+}: {
+  open: boolean;
+  onClose: () => void;
+  products: Product[];
+}) {
+  const [categorias, setCategorias] = useState<CategoryDef[]>([]);
+  const [marcadas, setMarcadas] = useState<Set<string>>(new Set());
+  const [incluirInactivos, setIncluirInactivos] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  // Al abrir: árbol vigente (respaldo local si Firestore falla) y TODO marcado.
+  useEffect(() => {
+    if (!open) return;
+    void listCategories()
+      .then((c) => {
+        const orden = sortAdminCategoryList(c);
+        setCategorias(orden);
+        setMarcadas(new Set(orden.map((x) => x.id)));
+      })
+      .catch(() => {
+        setCategorias([]);
+        setMarcadas(new Set());
+      });
+  }, [open]);
+
+  // Resumen EN VIVO con el mismo preparador del PDF: lo que ves es lo que sale.
+  const resumen = useMemo(
+    () => prepararInventario(products, categorias, marcadas, incluirInactivos),
+    [products, categorias, marcadas, incluirInactivos],
+  );
+
+  // Productos por categoryId (contador junto a cada casilla).
+  const conteo = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of products) m.set(p.categoryId, (m.get(p.categoryId) ?? 0) + 1);
+    return m;
+  }, [products]);
+
+  const generar = async (): Promise<void> => {
+    if (busy) return;
+    if (resumen.totalProductos === 0) {
+      toast.error('No hay productos con esa selección de categorías.');
+      return;
+    }
+    setBusy(true);
+    try {
+      const doc = await crearDocumentoPdf(resumen);
+      doc.save(nombreArchivoInventario(new Date()));
+      toast.success(`PDF listo: ${resumen.totalProductos} productos.`);
+      onClose();
+    } catch (e) {
+      toast.error(userMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const productosDeRama = (principalId: string): number => {
+    let n = conteo.get(principalId) ?? 0;
+    for (const c of categorias) {
+      if (c.parentId === principalId) n += conteo.get(c.id) ?? 0;
+    }
+    return n;
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="Exportar inventario (PDF)" wide>
+      <div className="space-y-4">
+        <p className="text-sm text-muted">
+          PDF tamaño carta horizontal: una fila por producto con código, nombre, marca,
+          categoría/sub, estado, precio USD, stock, descripción y enlace de foto clickeable,
+          agrupado por categoría con su subtotal. Sale SIEMPRE con los datos de este momento
+          (si editaste algo, ya está incluido).
+        </p>
+
+        <div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="spot-label">Categorías a incluir</p>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                className="text-xs font-semibold text-signal hover:underline"
+                onClick={() => setMarcadas(new Set(categorias.map((c) => c.id)))}
+              >
+                Todas
+              </button>
+              <button
+                type="button"
+                className="text-xs font-semibold text-muted hover:underline"
+                onClick={() => setMarcadas(new Set())}
+              >
+                Ninguna
+              </button>
+            </div>
+          </div>
+          <ul className="max-h-64 space-y-1.5 overflow-y-auto rounded-brand border-2 border-line bg-ink p-3">
+            {categorias.map((c) => {
+              const esPrincipal = !c.parentId;
+              const contado = esPrincipal
+                ? productosDeRama(c.id)
+                : (conteo.get(c.id) ?? 0);
+              return (
+                <li key={c.id} className={esPrincipal ? '' : 'pl-6'}>
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-paper">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 accent-signal"
+                      checked={esPrincipal
+                        ? ramaCompleta(categorias, marcadas, c.id)
+                        : marcadas.has(c.id)}
+                      onChange={() => {
+                        setMarcadas((prev) => esPrincipal
+                          ? alternarRama(categorias, prev, c.id)
+                          : alternarId(prev, c.id));
+                      }}
+                    />
+                    <span className={esPrincipal ? 'font-semibold' : ''}>
+                      {esPrincipal ? c.name : `↳ ${c.name}`}
+                      <span className="ml-1 text-xs text-muted">
+                        ({contado} {contado === 1 ? 'prod.' : 'prods.'})
+                      </span>
+                    </span>
+                  </label>
+                </li>
+              );
+            })}
+            {categorias.length === 0 && (
+              <li className="text-sm text-muted">No se pudieron leer las categorías.</li>
+            )}
+          </ul>
+        </div>
+
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-paper">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-signal"
+            checked={incluirInactivos}
+            onChange={(e) => setIncluirInactivos(e.target.checked)}
+          />
+          Incluir también los INACTIVOS (la tabla marca el estado de cada uno)
+        </label>
+
+        <div className="rounded-brand border-2 border-line bg-ink p-3 text-sm">
+          <p className="font-semibold text-paper" aria-live="polite">
+            {resumen.totalProductos} producto(s) · stock {resumen.stockTotal}
+            {' '}· valor {usdFmt(resumen.valorUsdTotal)}
+          </p>
+          <p className="mt-1 text-xs text-muted">
+            El archivo se descarga como inventario-spot24-FECHA.pdf.
+          </p>
+        </div>
+
+        <div className="flex justify-end gap-3 pt-2">
+          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+          <Button
+            loading={busy}
+            disabled={marcadas.size === 0 || resumen.totalProductos === 0}
+            onClick={() => void generar()}
+          >
+            Generar PDF
           </Button>
         </div>
       </div>

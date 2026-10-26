@@ -93,6 +93,40 @@ function searchTermsDe(nombre: string, marca: string): string[] {
 }
 
 /**
+ * 5.95 · Epoch-ms desde número / Timestamp de Firestore (toMillis) /
+ * {seconds,nanoseconds} pelado / Date. Todo lo desconocido → 0 (jamás NaN).
+ * Gemela de aMillis del frontend (src/shared/lib/tiempos.ts).
+ */
+export function aMillisDe(v: unknown): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (v instanceof Date) {
+    const t = v.getTime();
+    return Number.isFinite(t) ? t : 0;
+  }
+  if (typeof v === 'string') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  }
+  if (v && typeof v === 'object') {
+    const o = v as { toMillis?: unknown; seconds?: unknown; nanoseconds?: unknown };
+    if (typeof o.toMillis === 'function') {
+      try {
+        const t = (o.toMillis as () => number).call(o);
+        return Number.isFinite(t) ? t : 0;
+      } catch {
+        return 0;
+      }
+    }
+    const s = Number(o.seconds);
+    if (Number.isFinite(s)) {
+      const ns = Number(o.nanoseconds ?? 0);
+      return Math.round(s * 1000 + (Number.isFinite(ns) ? ns : 0) / 1e6);
+    }
+  }
+  return 0;
+}
+
+/**
  * 5.92b · Deja en los mapas code→productId y sku→productId SOLO los
  * productos que siguen existiendo. Una variante huérfana (el panel borra el
  * producto con deleteDoc y la subcolección sobrevive — Firestore NO borra
@@ -281,6 +315,15 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
   for (const [pid, plan] of cambiosPorProducto) {
     const pref = db().doc(`products/${pid}`);
     const varsSnap = await pref.collection('variants').get();
+    // 5.95 · Normaliza el createdAt de productos viejos: si vive como Timestamp
+    // de Firestore (panel con serverTimestamp o importador pre-5.92e) se
+    // reescribe como número epoch-ms. Sin esto, el orden de TIPOS de Firestore
+    // (números < Timestamps en DESC) entierra los importados al final del
+    // catálogo y fuera de la lista del panel. Re-importando las listas (el
+    // reporte del POS) queda TODO el catálogo con fechas uniformes.
+    const pSnap = await pref.get();
+    const creadoMs = pSnap.exists ? aMillisDe(pSnap.data()?.['createdAt']) : 0;
+    const yaEsNumero = typeof pSnap.data()?.['createdAt'] === 'number';
     const variantes = new Map<string, VarianteDatos>();
     varsSnap.docs.forEach((d) => {
       const data = d.data();
@@ -335,6 +378,9 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
       }
     }
     enLote((b) => b.update(pref, {
+      // 5.95: solo se reescribe si NO era ya un número (Timestamp/otro) y el
+      // valor normalizado es real (0 = nada fiable → no se toca).
+      ...(creadoMs && !yaEsNumero ? { createdAt: creadoMs } : {}),
       stockTotal,
       basePriceUsd,
       updatedAt: ahora,

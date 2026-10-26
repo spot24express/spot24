@@ -30,6 +30,9 @@ const AdminMetricsPage = lazy(() => import('@/features/admin/pages/AdminMetricsP
 const AdminSettingsPage = lazy(() => import('@/features/admin/pages/AdminSettingsPage'));
 const AdminBackupsPage = lazy(() => import('@/features/admin/pages/AdminBackupsPage'));
 const NotificationsPage = lazy(() => import('@/features/orders/pages/NotificationsPage'));
+/* 5.106 · Páginas legales: chunk propio cada una (code splitting por ruta, igual que arriba). */
+const TerminosPage = lazy(() => import('@/features/legal/pages/TerminosPage'));
+const PrivacidadPage = lazy(() => import('@/features/legal/pages/PrivacidadPage'));
 
 function Lazy({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<RouteSkeleton />}>{children}</Suspense>;
@@ -81,6 +84,9 @@ export const router = createBrowserRouter([
       { path: 'pedidos', element: <GuardAuth><Lazy><MyOrdersPage /></Lazy></GuardAuth> },
       { path: 'notificaciones', element: <GuardAuth><Lazy><NotificationsPage /></Lazy></GuardAuth> },
       { path: 'pedido/:orderId', element: <GuardAuth><Lazy><OrderDetailPage /></Lazy></GuardAuth> },
+      /* 5.106 · Legales: públicas, sin guardia (el dueño las pidió accesibles desde el footer). */
+      { path: 'terminos', element: <Lazy><TerminosPage /></Lazy> },
+      { path: 'privacidad', element: <Lazy><PrivacidadPage /></Lazy> },
       {
         path: 'admin',
         element: <GuardPanel><Lazy><AdminLayout /></Lazy></GuardPanel>,

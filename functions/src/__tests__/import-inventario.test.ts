@@ -14,7 +14,7 @@
  * van con emulador).
  */
 import { describe, expect, it } from 'vitest';
-import { filtrarPidsVivos } from '../importInventory';
+import { filtrarPidsVivos, aMillisDe } from '../importInventory';
 
 describe('filtrarPidsVivos (blindaje NOT_FOUND de variantes huérfanas)', () => {
   it('quita del mapa por code la referencia a un producto borrado y la cuenta', () => {
@@ -76,5 +76,47 @@ describe('filtrarPidsVivos (blindaje NOT_FOUND de variantes huérfanas)', () => 
     const omitidas = filtrarPidsVivos(porCode, new Map(), new Set());
     expect(omitidas).toBe(1);
     expect(porCode.size).toBe(0);
+  });
+});
+
+/**
+ * 5.95 · Normalización de createdAt en el camino UPDATE del importador: los
+ * productos viejos (panel con serverTimestamp, importador pre-5.92e) viven con
+ * Timestamp de Firestore mientras los importados nuevos viven con número.
+ * En el orden de tipos de Firestore (números < Timestamps) un orderBy DESC
+ * manda los números AL FINAL: el panel con tope 60 dejaba a los importados
+ * fuera de la lista. El importador ahora reescribe createdAt como número
+ * cuando re-importa la lista vieja; aMillisDe es la conversión pura.
+ */
+describe('aMillisDe (5.95 · createdAt Timestamp → número epoch-ms)', () => {
+  const MS = 1729600000123;
+
+  it('número finito pasa tal cual; NaN e Infinity → 0', () => {
+    expect(aMillisDe(MS)).toBe(MS);
+    expect(aMillisDe(Number.NaN)).toBe(0);
+    expect(aMillisDe(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+
+  it('Timestamp de Firestore (toMillis) y pelado {seconds, nanoseconds}', () => {
+    expect(aMillisDe({ toMillis: () => MS })).toBe(MS);
+    expect(aMillisDe({ seconds: 1729600000, nanoseconds: 123000000 })).toBe(MS);
+  });
+
+  it('toMillis que lanza no revienta (→ 0)', () => {
+    expect(aMillisDe({ toMillis: () => { throw new Error('x'); } })).toBe(0);
+  });
+
+  it('Date y string numérica', () => {
+    expect(aMillisDe(new Date(MS))).toBe(MS);
+    expect(aMillisDe(String(MS))).toBe(MS);
+  });
+
+  it('basura → 0 (jamás NaN: cero se descarta, no se escribe)', () => {
+    expect(aMillisDe({})).toBe(0);
+    expect(aMillisDe({ seconds: 'x' })).toBe(0);
+    expect(aMillisDe(null)).toBe(0);
+    expect(aMillisDe(undefined)).toBe(0);
+    expect(aMillisDe(true)).toBe(0);
+    expect(aMillisDe('')).toBe(0);
   });
 });

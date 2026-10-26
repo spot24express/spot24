@@ -68,11 +68,17 @@ function errorResponse(e: unknown): Response {
   const rawCode = (e as { code?: unknown }).code;
   // Normalización: gRPC numérico → nombre canónico; string canónico → tal
   // cual; sin código → internal (error JS no controlado por nosotros).
+  // Ronda 5.93 · DEFENSA EN PROFUNDIDAD: los errores del Admin SDK de Auth
+  // viajan con código string 'auth/…' (expired/revoked/invalid…), que no
+  // está en STATUS_BY_CODE → antes caían en `?? 500`. Todo 'auth/*' es un
+  // problema de SESIÓN, nunca un 500: se mapea a unauthenticated (401).
   const code =
     typeof rawCode === 'number' && NAME_BY_GRPC[rawCode]
       ? NAME_BY_GRPC[rawCode]
       : typeof rawCode === 'string' && rawCode
-        ? rawCode
+        ? rawCode.startsWith('auth/')
+          ? 'unauthenticated'
+          : rawCode
         : 'internal';
   // Con código (nuestro HttpsError o un Firestore crudo) el mensaje SÍ viaja:
   // Firestore incluye datos accionables (p. ej. el link para crear un índice).
@@ -99,8 +105,28 @@ async function buildCtx(req: Request): Promise<CoreCtx> {
   if (authHeader.startsWith('Bearer ')) {
     const idToken = authHeader.slice(7).trim();
     if (idToken) {
-      const decoded = await admin.auth(getAdminApp()).verifyIdToken(idToken, true);
-      auth = { uid: decoded.uid, token: decoded as DecodedIdToken };
+      // Ronda 5.93 · CAUSA RAÍZ del 500 de fn-reserveStock: verifyIdToken
+      // lanza FirebaseAuthError con código string 'auth/id-token-expired'
+      // (o revoked/invalid/user-not-found al respetar revocación con
+      // checkRevoked=true) y ese código NO estaba en STATUS_BY_CODE →
+      // `?? 500`: una sesión vencida mataba la llamada como «internal»
+      // opaco. Es un problema de sesión → 401 accionable, nunca 500.
+      try {
+        const decoded = await admin.auth(getAdminApp()).verifyIdToken(idToken, true);
+        auth = { uid: decoded.uid, token: decoded as DecodedIdToken };
+      } catch (e) {
+        const raw = (e as { code?: unknown }).code;
+        const authCode = typeof raw === 'string' ? raw : 'sin-código';
+        // SOLO el código (nunca el token ni el uid): el log de Netlify dice
+        // POR QUÉ se rechazó, que era lo que el 500 no contaba.
+        console.warn('[auth] token rechazado:', authCode);
+        throw new HttpsError(
+          'unauthenticated',
+          authCode === 'auth/id-token-expired'
+            ? 'Tu sesión expiró. Recarga la app y confirma de nuevo.'
+            : 'Sesión no válida. Recarga la app para continuar.',
+        );
+      }
     }
   }
 

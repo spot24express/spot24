@@ -295,7 +295,94 @@
 > `src/features/auth/services/auth.service.ts`,
 > `src/features/auth/store/auth.store.ts` y
 > `src/features/auth/hooks/useAuth.ts`. **El lote sigue en 96 archivos.**
+>
+> **Ronda 5.91b añadida al mismo lote — Search Console (crecimiento):** entra
+> el archivo de verificación de Google `public/googlea7423837b95abad3.html`
+> (NUEVO en el lote), servido en la raíz del sitio para activar
+> https://search.google.com/search-console. Es un estático de 53 bytes con el
+> contenido EXACTO que Google exige — no toca código, ni datos, ni reglas.
+> Como el service worker precachea los .html, el precache pasa de 114 a 115
+> (+53 bytes, inofensivo). **El lote queda en 97 archivos.**
+>
+> **Ronda 5.91c añadida al mismo lote — CI de GitHub en verde:** el push de
+> 5.89/5.90 dejó el job «Web» del CI en rojo por 2 ERRORES de ESLint en
+> `functions/src/lib/extraerPdf.ts` (la regla `triple-slash-reference`
+> rechaza las referencias `/// <reference path>` a los .d.ts propios de
+> pdfjs — que son VOLUNTARIAS: obligan a todos los tsconfig y a VSC a ver
+> declaraciones que pdfjs-dist no publica; sin ellas, TS2307). FIX:
+> excepción quirúrgica SOLO para ese archivo en `eslint.config.js`
+> (NUEVO en el lote) — el código de extraerPdf.ts no se toca. Los 10
+> warnings restantes no bloquean (logging deliberado + avisos de dev).
+> **El lote queda en 98 archivos.**
+>
+> **Ronda 5.93 añadida al mismo lote — AUTOPSIA del 500 de fn-reserveStock:**
+> ese 500 que apareció UNA vez en producción ya tiene dueño. La autopsia del
+> código encontró 3 caminos que producían un 500 «internal» OPACO (error sin
+> código, imposible de diagnosticar con logs) y los 3 quedan cerrados:
+> 1. **Sesión vencida o revocada** (la causa más probable del 500 real): el
+>    token de sesión dura 1 hora; si llegaba vencido (pestaña abierta rato,
+>    reloj del teléfono descuadrado, sesión revocada por cambio de clave),
+>    la verificación del token lanzaba un error con código `auth/…` que NO
+>    estaba en la tabla de códigos → caía como 500. Ahora: **401 con
+>    mensaje claro** («Tu sesión expiró. Recarga la app») y el log de
+>    Netlify dice la causa exacta (`[auth] token rechazado: auth/…`).
+> 2. **Id con ruta inválida**: un productId/variantId/zona/reserva con `/`
+>    construía una ruta de Firestore inválida → error sin código → 500.
+>    Ahora se corta ANTES con 400 accionable («Ítem inválido»).
+> 3. **Stock corrupto (NaN)**: un stock/stockReserved no numérico se colaba
+>    por las comparaciones y llegaba a la escritura de la transacción →
+>    Firestore la rechazaba con error sin código → 500. Ahora el corrupto
+>    se coacciona a 0: stock = falla honesta «Sin stock suficiente»;
+>    stockReserved = la propia escritura SANA el campo.
+> El blindaje cubre reserveStock, quoteTotals, createOrder, cancelOrder y
+> el repuesto del rechazo de pago (mismo patrón en los 5). **10 tests
+> nuevos** (items-guard.test.ts) congelan el contrato: ids válidos/inválidos
+> y NaN→0. **El lote queda en 102 archivos** (con este LEEME, 103). Nota
+> honesta de inventario: `functions/src/lib/http-ctx.ts`, `items.ts` y
+> `payments.ts` ya vivían en el lote desde rondas anteriores pero no
+> aparecían en la tabla — ahora sí, con su fila completa.
+> **Despliegue: entra solo con el push** (Netlify recompila las funciones).
+> NO hace falta firebase deploy, NO toca reglas, NO toca el dinero: la caja
+> fuerte del backend (transacciones, App Check, idempotencia) queda intacta.
 
+> **Ronda 5.95 añadida al mismo lote — LOS PRODUCTOS IMPORTADOS YA SE VEN Y SE BUSCAN:**
+> importaste los 78 MOOG y no salían ni en **Productos** del panel ni en la
+> búsqueda de la tienda. Causa real (encontrada en el código, no adivinada):
+> la fecha de creación de un producto vivía con DOS formatos distintos — los
+> productos creados a mano en el panel se guardan como Timestamp de Firestore
+> y los importados como número (convención 5.92e). Firestore, al ordenar por
+> fecha DESC, pone TODOS los Timestamps primero y los números después: con
+> tope de 60 productos en la lista del panel y ~72 viejos, los 78 MOOG
+> quedaban AL FINAL de la cola y NUNCA entraban a la lista (ni a la búsqueda
+> del panel, que revisaba esos mismos 60). Y la búsqueda de la tienda tampoco
+> los encontraba por código: los términos de búsqueda de un producto solo
+> guardan palabras del NOMBRE — el código vivía en otro campo.
+> Correcciones (todas sin tocar datos ni índices, entran con el push):
+> 1. **Productos del panel**: se leen TODOS (tope 300) y se ordenan en código
+>    con fecha normalizada — la lista completa, MOOG incluido, siempre.
+> 2. **Búsqueda de la tienda por CÓDIGO**: escribe «ES800033», «es-800033»
+>    o el arranque de un código («es800») y salen los que coinciden. La barra
+>    se ve IGUAL para el cliente — nada lo anuncia (tu pedido: solo los
+>    trabajadores y el admin la usan para esto).
+> 3. **Varias palabras**: «terminal aveo» ahora filtra de verdad (antes
+>    cualquier frase de 2+ palabras daba cero resultados).
+> 4. **De ahora en más**: el panel guarda la fecha como número (misma
+>    convención del importador) y si re-importas una lista vieja (el reporte
+>    del POS) sus productos quedan normalizados también — todo el catálogo
+>    ordena cronológico de verdad.
+> **5 tests nuevos** de búsqueda + **5 de fechas** (42 en functions,
+> 182 en la tienda). **El lote queda en 104 archivos** (con este LEEME, 105).
+> Despliegue: solo push. NO firebase deploy, NO reglas, NO toca el dinero.
+
+> **Ronda 5.96 añadida al mismo lote — CONTADOR DE PRODUCTOS en el panel:**
+> en **Productos** (donde creas y editas) ahora se ve, junto al buscador, la
+> **cantidad total de productos que tienes**: «N productos en total». Si
+> estás buscando, cambia a «M encontrados de N» para saber cuántos casaron.
+> Cuenta TODO: activos e inactivos, creados a mano e importados. Aplica igual
+> para **admin y gerencia** (los dos usan la misma pantalla — y la corrección
+> 5.95 también les sirve a los dos). El número sale de un conteo de servidor:
+> 1 lectura, no descarga productos, y vale aunque el catálogo siga creciendo.
+> **El lote sigue en 104 archivos** (2 ACTUALIZADOS, nada NUEVO).
 
 Todo en esta ronda. Nada de esto toca el dinero: la caja fuerte del backend
 (transacciones, App Check, idempotencia) queda intacta.
@@ -1036,8 +1123,30 @@ twitter:image, sitemap, JSON-LD), se reenvía el sitemap y todo queda igual
 
 ## Despliegue — pasos EN ESTE ORDEN
 
-1. **Copia los 96 archivos** sobre tu repo `C:\Users\Erick\spot24`,
+1. **Copia los 104 archivos** sobre tu repo `C:\Users\Erick\spot24`,
    respetando las carpetas (la estructura del lote es la del repo).
+   **5.95: NUEVOS en el lote** `src/features/catalog/lib/busqueda.ts` (libra
+   de búsqueda: código + varias palabras — créeale su carpeta `lib/`) y
+   `src/tests/busqueda-codigo.test.ts` (tests, no corren en producción).
+   **5.95: ACTUALIZA** `src/features/catalog/services/catalog.service.ts`,
+   `src/features/admin/services/admin.service.ts`,
+   `functions/src/importInventory.ts` y
+   `functions/src/__tests__/import-inventario.test.ts` (productos importados
+   visibles y buscables — entra solo con el push, sin firebase deploy).
+   **5.96: ACTUALIZA** `src/features/admin/services/admin.service.ts` y
+   `src/features/admin/pages/AdminProductsPage.tsx` (contador de productos
+   en el panel — entra solo con el push, sin firebase deploy).
+   **5.93: NUEVO en el lote** `functions/src/__tests__/items-guard.test.ts` —
+   tests de regresión de la autopsia del 500 (no corren en producción).
+   **5.93: ACTUALIZA** `functions/src/orders.ts`,
+   `functions/src/payments.ts`, `functions/src/lib/http-ctx.ts` y
+   `functions/src/lib/items.ts` (blindaje del 500 de fn-reserveStock —
+   entra solo con el push, sin firebase deploy).
+   **5.91c: NUEVO en el lote** `eslint.config.js` (raíz del repo) —
+   excepción de ESLint para que el CI de GitHub quede en verde.
+   **5.91b: NUEVO en el lote** `public/googlea7423837b95abad3.html` — archivo
+   de verificación de Google Search Console; cópialo tal cual (contenido
+   exacto exigido por Google).
    **5.92f: NUEVO en el lote** `src/shared/components/ui/PriceTag.tsx` —
    cópialo también (cambia por primera vez desde que existe el lote).
    **5.92g: ACTUALIZA** `src/features/auth/pages/AccountPage.tsx`,
@@ -1392,7 +1501,9 @@ consola y los cambios aplican en caliente.)
 | `public/robots.txt` | NUEVO 5.91 · permiso a buscadores: Allow / + fuera de Google el panel y lo transaccional (admin, carrito, checkout, pedidos, pedido/, notificaciones, recuperar) + apunta al sitemap |
 | `public/sitemap.xml` | NUEVO 5.91 · mapa de rutas públicas: / (1.0, daily), /catalogo (0.9, daily), /cuenta/registro y /cuenta/login · XML validado |
 | `public/og-cover.jpg` | NUEVO 5.91 · tarjeta de WhatsApp/redes: fachada real de noche (billboard «Tu parada segura», letrero encendido, mural del escudo) recortada a 1200×630 · 143 KB · NO precachea (jpg fuera de los globs del SW) |
+| `public/googlea7423837b95abad3.html` | NUEVO 5.91b · archivo de verificación de Google Search Console (contenido exacto exigido por Google, 53 bytes) · PRECACHEADO (html está en los globs del SW: precache 114 → 115) |
 | `vite.config.ts` | imgbb CacheFirst (300 imgs/30 días) + hmr dev |
+| `eslint.config.js` | NUEVO EN LOTE 5.91c · reglas de lint del repo · excepción quirúrgica: `triple-slash-reference` OFF solo para `functions/src/lib/extraerPdf.ts` (las referencias a los .d.ts de pdfjs son voluntarias — declaraciones ambientales que pdfjs-dist no publica; sin ellas VSC muestra TS2307) · los 10 warnings restantes no bloquean CI |
 | `package.json` | NUEVO EN LOTE 5.87d · pdfjs-dist TAMBIÉN en la RAÍZ del repo: netlify dev resuelve los paquetes desde aquí (functions/node_modules queda fuera de la cadena) |
 | `package-lock.json` | NUEVO EN LOTE 5.87d · lock de la raíz con pdfjs-dist 4.10.38 (misma versión que en functions/) |
 | `public/img/qr-pago-movil.jpg` | NUEVO 5.79 · Tu QR de pago (Suiche 7B) comprimido y precacheado |
@@ -1403,8 +1514,8 @@ consola y los cambios aplican en caliente.)
 | `src/features/admin/pages/AdminLayout.tsx` | NUEVO EN LOTE 5.89 · entrada de menú «Copias» (código 10, SOLO admin) |
 | `src/shared/components/ui/Modal.tsx` | NUEVO EN LOTE 5.88 · el modal se monta por PORTAL en document.body — anclado SIEMPRE a la pantalla aunque un ancestro tenga transform (cinturón del fix 5.88; beneficia a los 15 modals de la app: editor, importar PDF, QR ampliado, categorías, promos, zonas, usuarios, pagos, despacho, comprobante, cancelar) |
 | `src/shared/components/ui/PriceTag.tsx` | NUEVO EN LOTE 5.92f (cambia por primera vez y ahora viaja) · PriceTag: precio SOLO en Bs. con la tasa BCV en vivo · StockBadge: chip de stock de la ficha — 5.92f: dice «Agotado» sin existencias (antes «Sin stock») |
-| `src/features/admin/pages/AdminProductsPage.tsx` | FIX: modal no arrastra datos del producto anterior + «Descripción (opcional)» + selector de categoría en árbol (↳) · 5.78: aviso de categoría oculta/eliminada + candado de precio/stock · 5.81: LISTA de fotos (hasta 6, portada + quitar + reordenar) · 5.82: nota de que editar precio/stock NO toca las fotos · 5.87: botón «Importar PDF» + modal (categoría destino, archivo, omitir ceros, resumen) · 5.87b: si la importación falla, el modal muestra el MOTIVO REAL del servidor (nada de adivinar) · 5.87f: placeholder en lista y editor si la foto no carga · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento) · 5.92: modal sin casilla de ceros + formato detectado en el resumen + textos de los dos formatos admitidos |
-| `functions/src/importInventory.ts` | NUEVO 5.87 · core de la importación: empareja por código/SKU, crea lo que falta y actualiza stock+precio en lotes (admin/gerencia, con auditoría) · 5.87b: la lectura del PDF vive en lib/extraerPdf (fix del worker dentro del bundle) · 5.87e: lectura de variantes SIN where — NINGÚN índice que crear a mano (fuera el FAILED_PRECONDITION «COLLECTION_GROUP_ASC … sku») y emparejamiento de SKU en memoria · 5.92: detecta el formato SOLO (reporte del POS o lista con doble precio — usa el SIN impuesto) y la casilla «omitir cero» se RETIRÓ: los productos en cero también se crean/actualizan (pedido del dueño) · 5.92b: blindaje «No document to update» — los productos candidatos se validan por EXISTENCIA antes de planear (las variantes colgantes de productos borrados ya no abortan el lote; sus filas se crean como nuevas) y la variante inventada para un producto sin variantes va con set · 5.92e: createdAt = Date.now() (número, la convención de la app — serverTimestamp dejaba Timestamp y rompía el cursor de paginación del catálogo) |
+| `src/features/admin/pages/AdminProductsPage.tsx` | FIX: modal no arrastra datos del producto anterior + «Descripción (opcional)» + selector de categoría en árbol (↳) · 5.78: aviso de categoría oculta/eliminada + candado de precio/stock · 5.81: LISTA de fotos (hasta 6, portada + quitar + reordenar) · 5.82: nota de que editar precio/stock NO toca las fotos · 5.87: botón «Importar PDF» + modal (categoría destino, archivo, omitir ceros, resumen) · 5.87b: si la importación falla, el modal muestra el MOTIVO REAL del servidor (nada de adivinar) · 5.87f: placeholder en lista y editor si la foto no carga · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento) · 5.92: modal sin casilla de ceros + formato detectado en el resumen + textos de los dos formatos admitidos · 5.96: contador de productos junto al buscador — «N productos en total» y con búsqueda activa «M encontrados de N» (se refresca al guardar, importar o eliminar) |
+| `functions/src/importInventory.ts` | NUEVO 5.87 · core de la importación: empareja por código/SKU, crea lo que falta y actualiza stock+precio en lotes (admin/gerencia, con auditoría) · 5.87b: la lectura del PDF vive en lib/extraerPdf (fix del worker dentro del bundle) · 5.87e: lectura de variantes SIN where — NINGÚN índice que crear a mano (fuera el FAILED_PRECONDITION «COLLECTION_GROUP_ASC … sku») y emparejamiento de SKU en memoria · 5.92: detecta el formato SOLO (reporte del POS o lista con doble precio — usa el SIN impuesto) y la casilla «omitir cero» se RETIRÓ: los productos en cero también se crean/actualizan (pedido del dueño) · 5.92b: blindaje «No document to update» — los productos candidatos se validan por EXISTENCIA antes de planear (las variantes colgantes de productos borrados ya no abortan el lote; sus filas se crean como nuevas) y la variante inventada para un producto sin variantes va con set · 5.92e: createdAt = Date.now() (número, la convención de la app — serverTimestamp dejaba Timestamp y rompía el cursor de paginación del catálogo) · 5.95: al actualizar un producto viejo, si su createdAt es Timestamp se reescribe como número epoch-ms (aMillisDe) — re-importando las listas queda TODO el catálogo con fechas uniformes y el orden cronológico real |
 | `functions/src/lib/inventarioPdf.ts` | NUEVO 5.87 · parser PURO del reporte «Inventario disponible»: filas por coordenadas de columnas (código/desc/existencia/costo) + números VE — 13 tests con items reales del PDF del dueño · 5.92: +parseListaLimpia (cabecera multi-renglón, «$»/«und.», códigos con letra inicial, sufijos -2/-3… para códigos repetidos) y +parseInventarioAuto (detección automática de formato) |
 | `functions/src/lib/extraerPdf.ts` | NUEVO 5.87b · lectura del PDF con pdfjs + registro del worker en el escape hatch oficial (FIX del 400 «No se pudo leer el PDF»: el motor viaja DENTRO del paquete de Netlify) — tope 4 MB / 400 páginas · 5.87c: si el PDF falla, el motivo TÉCNICO llega al modal y al log de netlify dev (mensaje propio para contraseña / corrupto / página rota) + registro blindado del worker (namespace plano o .default) + destroy() del documento + referencia a la declaración pdfjs.d.ts · 5.87d: mensaje PROPIO si falta el paquete del lector (ERR_MODULE_NOT_FOUND → la orden: npm install en la raíz, NO dentro de functions/, y reiniciar netlify dev) |
 | `functions/src/lib/pdfjs.d.ts` | NUEVO 5.87c · declaración de tipos del lector de pdfjs DENTRO del repo — tu VSC dejará de marcar TS2307 «No se encuentra el módulo pdfjs-dist/legacy/build/pdf.mjs» (era solo el editor: la función sí funciona) |
@@ -1427,12 +1538,16 @@ consola y los cambios aplican en caliente.)
 | `src/features/admin/components/NewOrderAlert.tsx` | 5.80 · la alerta de pedidos nuevos también avisa los contra entrega («pago al recibir») |
 | `src/features/admin/pages/AdminSettingsPage.tsx` | Campo «Horario de los deliverys» en Operación · 5.79: formas de pago con interruptor · 5.80: LISTA de cuentas (varias por método), agregar/quitar, nombre para el cliente y SUBIR el QR como archivo (o enlace) · 5.82: chips «＋ Pago móvil / ＋ Transferencia / …» SIEMPRE visibles (agregar otra cuenta en un toque; fuera el botón del fondo) · 5.84: cuenta nueva nace SIN QR — ni la carga ni la vista previa inyectan el QR del repo (el de la otra cuenta) |
 | `src/features/admin/pages/AdminMetricsPage.tsx` | Gráfico 7 días (barras 0 px) + fuera la línea «≈ Bs.» + semana lun→dom |
-| `src/features/admin/services/admin.service.ts` | Guarda `parentId` + conteo de productos por categoría (protege el borrado) · 5.81: mover productos entre categorías en lotes + guardar categoría devuelve su id · 5.82: FIX — editar producto ya NO reescribe images (antes borraba las fotos extra al cambiar precio/stock) · 5.87: adminImportInventory (sube el PDF del POS a fn-importInventory) · 5.92: adminImportInventory sin «omitir cero» + formato detectado en el resultado · 5.92c: adminDeleteProduct borra en UN lote atómico TODAS las variantes + la ficha — no queda nada colgando (la causa de las variantes huérfanas que abortaron la 1ª importación) |
+| `src/features/admin/services/admin.service.ts` | Guarda `parentId` + conteo de productos por categoría (protege el borrado) · 5.81: mover productos entre categorías en lotes + guardar categoría devuelve su id · 5.82: FIX — editar producto ya NO reescribe images (antes borraba las fotos extra al cambiar precio/stock) · 5.87: adminImportInventory (sube el PDF del POS a fn-importInventory) · 5.92: adminImportInventory sin «omitir cero» + formato detectado en el resultado · 5.92c: adminDeleteProduct borra en UN lote atómico TODAS las variantes + la ficha — no queda nada colgando (la causa de las variantes huérfanas que abortaron la 1ª importación) · 5.95: adminListProducts SIN orderBy createdAt (el orden de tipos de Firestore mandaba los importados al final y el tope 60 los dejaba fuera) — lee hasta 300, ordena en código con aMillis y busca sobre TODOS; altas del panel con createdAt = Date.now() (número, misma convención del importador — fuera la mezcla de tipos) · 5.96: adminCountAllProducts — conteo EXACTO de la colección products (activos e inactivos) con getCountFromServer: 1 lectura de agregación, sin descargar documentos |
 | `src/features/admin/services/backups.service.ts` | NUEVO 5.89 · capa de servicios de las copias: 4 llamadas a funciones + helpers puros (parseBackupFile valida el archivo subido ANTES de enviarlo, copiaFilename, fechaCorta, bytesLegibles) — los tipos son espejo del core del backend |
 | `src/features/admin/pages/AdminBackupsPage.tsx` | NUEVO 5.89 · página «Copias» del panel: descargar, guardar en la nube, lista con etiqueta Automática/Manual (fecha, conteos, KB), descargar copia de la nube y RESTAURAR con doble confirmación (resumen + escribir RESTAURAR) y advertencia en rojo |
 | `src/shared/lib/backend.ts` | 5.87b · los errores de funciones se registran en UNA línea plana (http + code + motivo): el paste de consola ya no muestra «Object» sin información · 5.87e: los errores crudos de Firestore («9 FAILED_PRECONDITION», p. ej. índice faltante) ya no se muestran como «No tienes acceso a esta área» — toast de reintento y motivo real en el modal de admin |
 | `functions/src/admin.ts` | Métricas: semana fija lun→dom con cortes a medianoche VE |
-| `functions/src/orders.ts` | createOrder acepta las formas de pago — 5.80: 6 métodos y comprobante OPCIONAL en Efectivo/Punto de venta (nacen sin comprobante) — REQUIERE deploy de funciones |
+| `functions/src/orders.ts` | createOrder acepta las formas de pago — 5.80: 6 métodos y comprobante OPCIONAL en Efectivo/Punto de venta (nacen sin comprobante) — REQUIERE deploy de funciones · 5.93: blindaje del 500 — ids validados con isSafeDocId (400 «Ítem inválido» en vez de 500 opaco) y stock/stockReserved/expiresAt con finiteNum (nunca NaN a la transacción) en reserveStock, quote, create y cancel |
+| `functions/src/payments.ts` | Verificación de pagos y repuesto del stock al rechazar — 5.93: el repuesto lee stock con finiteNum (stock corrupto ya no revienta la transacción como 500 opaco) |
+| `functions/src/lib/http-ctx.ts` | Adaptador HTTP de Netlify (token Bearer + App Check + errores canónicos) · 5.93: CAUSA RAÍZ del 500 de fn-reserveStock — token vencido/revocado (auth/…) ahora es 401 con mensaje claro y el log dice la causa (`[auth] token rechazado: …`); defensa en profundidad: cualquier código `auth/*` mapea a unauthenticated |
+| `functions/src/lib/items.ts` | Contrato de líneas del carrito (extractItems acepta {items} y array pelado) · 5.93: helpers puros de la autopsia — isSafeDocId (ids que no revientan doc()) y finiteNum (nunca NaN hacia Firestore) |
+| `functions/src/__tests__/items-guard.test.ts` | NUEVO 5.93 · 10 tests de regresión de la autopsia: ids válidos/inválidos (incluye el caso exacto `/`), NaN→0 en todas sus formas y contrato de extractItems intacto |
 | `functions/src/lib/ctx.ts` | NUEVO 5.78d · sin credencial admin en local: aviso con paso a paso (antes 500 mudo en netlify dev) |
 | `src/features/auth/types/index.ts` | SpotUser: + cedula, address |
 | `src/features/auth/services/auth.service.ts` | Registro con cédula/dirección, saveCustomerData, changePassword · 5.92g: saveCustomerData guarda TELÉFONO (acepta 04…/414…/+58…, guarda +58… con validación VE) + dirección; la cédula ya no se toca desde aquí |
@@ -1449,7 +1564,8 @@ consola y los cambios aplican en caliente.)
 | `src/features/catalog/pages/HomePage.tsx` | Horario de deliverys leído de Ajustes + bahías = solo categorías principales |
 | `src/features/catalog/pages/CatalogPage.tsx` | Tarjetas de subcategorías antes de los productos (5.77) · 5.78c: cada categoría filtra SOLO sus productos directos · 5.81: bahía con subcategorías muestra ÚNICAMENTE las subcategorías (sin productos, sin consultas en vano) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento) · 5.92f: fuera el contador «N+ productos · N en la categoría» del subtítulo y la consulta de conteo que lo alimentaba (una lectura de Firestore menos por visita)|
 | `src/features/catalog/components/SearchBar.tsx` | Filtros: fila de categorías principales (los chips repetidos de subcats salieron en 5.77) · 5.90.3: referencias de marca de terceros retiradas del texto/comentarios (sin cambios de comportamiento)|
-| `src/features/catalog/services/catalog.service.ts` | Filtrado por categoría + árbol normalizado (`in` queda como soporte genérico) · 5.92e: el cursor de paginación normaliza createdAt con aMillis (acepta Timestamp de Firestore O número — jamás NaN) + cursor por SNAPSHOT del documento (desempate implícito, sin índices nuevos; fixes «duplicate key» y «Too many arguments provided to startAfter()») |
+| `src/features/catalog/services/catalog.service.ts` | Filtrado por categoría + árbol normalizado (`in` queda como soporte genérico) · 5.92e: el cursor de paginación normaliza createdAt con aMillis (acepta Timestamp de Firestore O número — jamás NaN) + cursor por SNAPSHOT del documento (desempate implícito, sin índices nuevos; fixes «duplicate key» y «Too many arguments provided to startAfter()») · 5.95: búsqueda de verdad — 1º por CÓDIGO con prefijo (`code >= T && code <= T+…`, índice automático de un campo, orden en código, respeta filtros) y si no por NOMBRE con el token más largo como ancla + resto de palabras filtrado en código (varias palabras ya no dan cero); sin índices nuevos |
+| `src/features/catalog/lib/busqueda.ts` | NUEVO 5.95 · libra PURA de búsqueda (sin Firebase, probada en vitest): tokensDe/anclaDe (ancla = palabra más larga 3+), pasaTodosLosTokens (AND de palabras sobre nombre+marca+código+términos+slug, sin acentos), terminosDeCodigo («es-800033» → ES-800033 y ES800033), pasaFiltros (categoría/stock/precio para los resultados por código) |
 | `src/features/catalog/hooks/useCatalog.ts` | Conteo por categoría (getCountFromServer, cache 5 min + bus en vivo) · 5.81: listado con apagador (bahías con subcategorías no consultan productos) |
 | `src/features/catalog/types/index.ts` | Filtro `categoryIds` (soporte genérico de varios ids, sin uso en la tienda) |
 | `src/features/checkout/pages/CheckoutPage.tsx` | Autofill cédula/dirección + Copiar (RIF solo números) · 5.79: tarjetas de formas activas, formulario por método, QR en pantalla, ícono de copiar · 5.80: chips por CUENTA (multicuenta), contra entrega sin comprobante ni formulario · 5.86: el QR es TOCABLE — se abre AMPLIADO (modal accesible) para escanearlo desde la app del banco |
@@ -1477,7 +1593,8 @@ consola y los cambios aplican en caliente.)
 | `src/tests/marcas-cliente.test.ts` | NUEVO 5.90.3 · guardián de marcas de terceros: recorre src/ + public/ + index.html (archivos textuales) y FALLA si encuentra una marca prohibida (lista extensible; hoy: farmatodo) en textos, aria-labels o comentarios — el dueño pidió que el cliente jamás la lea; se excluye a sí mismo (su lista) |
 | `functions/src/__tests__/notifications-flow.test.ts` | RECUPERADO EN LOTE 5.90 (faltaba en el lote desde las rondas del push — ahora entra sí o sí porque cambió) · E2E con emulador del flujo de avisos: 10 fases (creación→pago→despacho→entrega→cancelación, replays sin duplicar, staff jamás destinatario, inventario consistente, secuencia exacta de 10 pushes) · 5.90: asserts del HISTORIAL in-app en cada fase — el doc users/{uid}/notifs con el MISMO texto del push, cliente SIN tokens acumula historial (el punto de la ronda), replay no duplica doc, secuencia del historial = secuencia de pushes, staff sin historial y FASE 8 de rotación (35+1 → quedan exactamente 30, se drenan las 6 más viejas) |
 | `functions/src/__tests__/backups-core.test.ts` | NUEVO 5.89 · 13 tests del lado servidor (lógica pura sin Firestore): validateBackupFile (lista blanca, coerción, repetidos, huérfanos, topes) + chunk/join UTF-8 (round-trip exacto con acentos, el corte nunca parte un carácter) + planRotación 30/30 + normalizeTs |
-| `functions/src/__tests__/import-inventario.test.ts` | NUEVO 5.92b · 6 tests del guardián de variantes huérfanas (lógica pura, sin Firestore): filtrarPidsVivos deja SOLO productos vivos en los mapas code/sku→producto — la regresión del «No document to update» que detuvo la 1ª importación real del dueño (nada se escribió: lote atómico) |
+| `functions/src/__tests__/import-inventario.test.ts` | NUEVO 5.92b · 6 tests del guardián de variantes huérfanas (lógica pura, sin Firestore): filtrarPidsVivos deja SOLO productos vivos en los mapas code/sku→producto — la regresión del «No document to update» que detuvo la 1ª importación real del dueño (nada se escribió: lote atómico) · 5.95: +5 tests de aMillisDe (número/Date/string/Timestamp real y pelado → epoch-ms; NaN/Infinity/basura → 0) |
+| `src/tests/busqueda-codigo.test.ts` | NUEVO 5.95 · 15 tests de la búsqueda nueva: ancla = palabra más larga, varias palabras TODAS deben estar, código con/sin guion y prefijo corto (2 letras), filtros respetados en resultados por código |
 | `src/tests/category-tree.test.ts` | NUEVO · 10 tests del árbol de categorías |
 | `src/tests/tiempos.test.ts` | NUEVO 5.92e · 11 tests: aMillis (número, Timestamp del SDK con toMillis, JSON {seconds,nanoseconds} con redondeo, Date, string, basura → 0 y la REGRESIÓN del cursor con Timestamp real) + dedupePorId (páginas solapadas con los ids reales de la consola del dueño, orden, vacío) |
 | `src/tests/payment-methods.test.ts` | Tests de formas de pago — 5.80: 39 tests (multicuenta, contra entrega, chips, ids) · 5.84: QR individual por cuenta (sin QR propio = sin QR) |
@@ -1485,6 +1602,55 @@ consola y los cambios aplican en caliente.)
 
 ## Verificado antes de entregar
 
+- **5.96 — Contador de productos en el panel**: la página Productos (la usan
+  admin Y gerencia: misma pantalla, mismo servicio) muestra junto al buscador
+  «N productos en total» y con búsqueda activa «M encontrados de N». N =
+  colección completa (activos + inactivos, importados incluidos) vía
+  getCountFromServer: 1 lectura de agregación, sin descargar documentos y
+  válido aunque el catálogo pase del tope 300 del listado. Se refresca al
+  guardar, importar o eliminar (no en cada tecla). Verificación: typecheck ×3
+  (raíz + netlify + functions) OK, lint **0 errores** (10 warnings conocidos),
+  **42 tests functions** y **182/182 raíz**, build verde precache **115**.
+  Lote: sigue en **104 archivos** (2 ACTUALIZADOS), verificar-lote 1:1 EXACTO.
+- **5.95 — Productos importados visibles y buscables**: lista de Productos
+  del panel SIN orderBy createdAt (el orden de tipos de Firestore — Timestamps
+  del panel antes que números del importador — enterraba a los importados al
+  final y el tope 60 los dejaba fuera para siempre): lee hasta 300, ordena en
+  código con aMillis, búsqueda sobre TODOS. Tienda: búsqueda por CÓDIGO con
+  prefijo («es800» encuentra ES800033; índice automático de un campo, sin
+  orderBy — orden resuelto en código, respeta filtros) y varias palabras con
+  ancla = palabra más larga + filtro del resto en código (paginación intacta).
+  Panel guarda altas con createdAt número; el importador normaliza el
+  createdAt viejo (Timestamp → número) al re-importar listas. Sin cambios de
+  datos, sin índices nuevos, sin reglas. Verificación: typecheck ×3 (raíz +
+  netlify + functions) OK, lint **0 errores** (10 warnings conocidos),
+  **42 tests functions** (37 + 5 de aMillisDe) y **182/182 raíz** (167 + 15
+  de búsqueda), build verde precache **115**. Lote: **104 archivos** (2 NUEVOS:
+  busqueda.ts + busqueda-codigo.test.ts), verificar-lote 1:1 EXACTO.
+- **5.93 — AUTOPSIA del 500 de fn-reserveStock (3 caminos cerrados)**:
+  (1) token vencido/revocado → 401 accionable con log de causa
+  (`[auth] token rechazado: …`) — causa raíz del 500 real de producción;
+  (2) id con ruta inválida → 400 «Ítem inválido» ANTES de tocar Firestore;
+  (3) stock corrupto (NaN) → finiteNum (falla honesta o campo saneado).
+  Mismo blindaje en reserveStock, quoteTotals, createOrder, cancelOrder y
+  payments (repuesto del rechazo). Verificación: typecheck ×3 (raíz +
+  netlify + functions) OK, lint **0 errores** (10 warnings conocidos),
+  **37 tests functions** (27 + 10 nuevos de items-guard) y **167/167 raíz**,
+  build verde precache 115 (207 módulos, mismo número que el dueño).
+  Lote: **102 archivos** (1 NUEVO: items-guard.test.ts + 3 filas que ya
+  vivían en el lote sin fila en la tabla), verificar-lote 1:1 EXACTO.
+- **5.91c — CI de GitHub en verde (job «Web»)**: los 2 errores de ESLint de
+  `functions/src/lib/extraerPdf.ts` (triple-slash a los .d.ts de pdfjs,
+  voluntarios desde 5.87b) se silencian con excepción quirúrgica en
+  `eslint.config.js` — el archivo TS no se toca. Lint: **0 errores**
+  (10 warnings que no bloquean), typecheck ×2 OK, **167/167 tests**,
+  build verde precache 115. Functions sin cambios (su job ya estaba verde).
+  Lote: 98 archivos (1 NUEVO: eslint.config.js), verificar-lote 1:1 EXACTO.
+- **5.91b — Archivo de verificación de Search Console**: el dueño lo descargó
+  de la consola de Google y se copió BYTE-IDÉNTICO (`cmp`) a `public/` del
+  repo y del lote. Estático de 53 bytes, sin cambios de código ni de datos.
+  Build verde con precache 115 (+1 esperado por el .html de Google).
+  Lote: 97 archivos (1 NUEVO), verificar-lote 1:1 EXACTO.
 - **5.92g — «Actualización de mis Datos de entrega» (Mi Cuenta, pedido del
   dueño)**: el formulario ahora edita SOLO el número de teléfono y la dirección
   completas; la cédula pasa a solo lectura en la tarjeta «Datos» (la del

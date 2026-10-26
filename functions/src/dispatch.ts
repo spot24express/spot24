@@ -25,6 +25,7 @@ import admin from 'firebase-admin';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { getAdminApp, type CoreCtx } from './lib/ctx';
 import { canTransition, isOrderStatus } from './domain/order-state';
+import { qtyVendidosPorProducto } from './domain/vendidos';
 import { ORDER_NOTIFICATIONS } from './lib/notifications';
 import { writeAudit } from './payments';
 
@@ -53,6 +54,12 @@ function sanitizeStr(v: unknown, max: number): string {
   if (typeof v !== 'string') return '';
   return v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim().slice(0, max);
 }
+
+/**
+ * 5.98 (punto C) · Cantidades a sumar al contador vendidosTotal, por producto.
+ * Libra PURA en domain/vendidos.ts (testeable) — reexportada aquí por compat.
+ */
+export { qtyVendidosPorProducto } from './domain/vendidos';
 
 export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
@@ -104,7 +111,33 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
     patch['deliveredAt'] = Date.now();
   }
 
+  // 5.98 (punto C) · «Los más pedidos»: al ENTREGAR, cada línea suma sus
+  // unidades al contador vendidosTotal del producto. DENTRO de la misma
+  // transacción del cambio de estado: si algo falla, ni el estado ni los
+  // contadores cambian (todo o nada). «entregado» es terminal en la máquina
+  // de estados → el contador corre UNA sola vez por pedido; el replay
+  // idempotente de arriba ya devuelve antes de llegar aquí.
+  // · Líneas únicas por productId (2 variantes del mismo producto suman ambas).
+  // · qty saneada (entero 1..1000, defensivo).
+  // · Solo productos que SIGUEN existiendo: si una pieza fue borrada, la
+  //   entrega NO se bloquea (se salta su contador).
+  // · Sin tocar updatedAt del producto: el vigía de pulso no dispara lecturas.
+  const vendidos: { ref: admin.firestore.DocumentReference; qty: number }[] = [];
+  if (to === 'entregado') {
+    for (const [pid, qty] of qtyVendidosPorProducto(order['lines'])) {
+      vendidos.push({ ref: db().collection('products').doc(pid), qty });
+    }
+  }
+
   await db().runTransaction(async (tx) => {
+    for (const v of vendidos) {
+      const snap = await tx.get(v.ref);
+      if (snap.exists) {
+        tx.update(v.ref, {
+          vendidosTotal: admin.firestore.FieldValue.increment(v.qty),
+        });
+      }
+    }
     tx.update(ref, patch);
     tx.set(ref.collection('events').doc(), {
       status: to,

@@ -8,34 +8,86 @@
  */
 import {
   addDoc, collection, deleteDoc, doc, getDoc, getDocs, getCountFromServer, limit as fbLimit, orderBy,
-  onSnapshot, query, serverTimestamp, setDoc, where, updateDoc, writeBatch,
+  onSnapshot, query, serverTimestamp, setDoc, startAfter, where, updateDoc, writeBatch,
+  type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { normalizeCategoryList } from '@/shared/lib/categoryTree';
+import { aMillis } from '@/shared/lib/tiempos';
 import { callFunction } from '@/shared/lib/backend';
 import { AppError } from '@/shared/lib/errors';
-import type { Product, ProductVariant } from '@/features/catalog/types';
+import { logger } from '@/shared/lib/logger';
+import { ordenarProductosAdmin } from '../lib/listaAdmin';
+import type { Product, ProductReview, ProductVariant } from '@/features/catalog/types';
+import { camposRating } from '@/features/catalog/lib/vitrina';
 import type { CategoryDef } from '@/shared/constants/categories';
 import type { Zone } from '@/features/delivery/types';
 import type { Order, OrderStatus } from '@/features/orders/types';
 
 /* ── Productos ── */
 
-export async function adminListProducts(search: string): Promise<Product[]> {
+/* 5.102 · El panel lee la colección COMPLETA por páginas (tope de seguridad).
+ * Con 789 productos el tope de 300 de 5.95 dejaba fuera a casi la mitad —
+ * caso del dueño: los repuestos MOOG no salían para editarlos. */
+const ADMIN_LISTA_TOPE = 3000;
+const ADMIN_LISTA_PAGINA = 300;
+
+/**
+ * Lista del panel: TODOS los productos, sin recortes.
+ * · 5.95 · SIN orderBy('createdAt'): Firestore ordena por TIPO cuando el mismo
+ *   campo mezcla valores — Timestamp (panel con serverTimestamp) y número
+ *   (importador 5.92e). En DESC todos los Timestamps van PRIMERO: con tope de
+ *   60, los 78 MOOG importados quedaban FUERA de la lista para siempre. Sin
+ *   orderBy + orden en código con aMillis: se ven TODOS, importados incluidos.
+ * · 5.102 · El tope de 300 se quedó corto: con 789 productos la mayoría de los
+ *   MOOG volvía a quedar fuera del panel y de su búsqueda. Ahora se recorre la
+ *   colección entera por páginas de 300 con cursor por documento (startAfter
+ *   del último doc de cada página: orden interno __name__, sin índices nuevos)
+ *   hasta agotarla; tope de seguridad 3000 con aviso en el log. El orden y el
+ *   filtro de la búsqueda viven en features/admin/lib/listaAdmin (probables
+ *   sin Firestore); la búsqueda filtra EN LOCAL y ya no re-lee nada por tecla.
+ * Coste: 1 lectura por producto, solo al abrir el panel o tras guardar/borrar/
+ *   importar.
+ */
+export async function adminListProducts(): Promise<Product[]> {
   const fb = await loadFirebase();
   if (!fb) return [];
-  const snap = await getDocs(
-    query(collection(fb.db, 'products'), orderBy('createdAt', 'desc'), fbLimit(60)),
-  );
-  const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Product, 'id'>) }));
-  const term = search.trim().toLowerCase();
-  return items.filter(
-    (p) =>
-      !term ||
-      p.name.toLowerCase().includes(term) ||
-      p.brand.toLowerCase().includes(term) ||
-      (p.code ?? '').toLowerCase().includes(term),
-  );
+  const docs: QueryDocumentSnapshot[] = [];
+  let last: QueryDocumentSnapshot | null = null;
+  while (docs.length < ADMIN_LISTA_TOPE) {
+    let pageQ = query(collection(fb.db, 'products'), fbLimit(ADMIN_LISTA_PAGINA));
+    if (last) pageQ = query(pageQ, startAfter(last));
+    const snap = await getDocs(pageQ);
+    docs.push(...snap.docs);
+    if (snap.docs.length < ADMIN_LISTA_PAGINA) break;
+    last = snap.docs[snap.docs.length - 1] ?? null;
+  }
+  if (docs.length >= ADMIN_LISTA_TOPE) {
+    logger.warn(`listado del panel truncado al tope de ${ADMIN_LISTA_TOPE} productos`);
+  }
+  const items = docs.map((d) => {
+    const data = d.data() as Omit<Product, 'id'>;
+    return {
+      ...data,
+      id: d.id,
+      createdAt: aMillis(data.createdAt),
+      updatedAt: aMillis(data.updatedAt),
+    };
+  });
+  return ordenarProductosAdmin(items);
+}
+
+/**
+ * 5.96 · Conteo EXACTO de productos de la colección (activos e inactivos:
+ * los mismos que muestra este panel). Agregación de servidor: 1 lectura,
+ * no descarga documentos — desde 5.102 vale DOBLE: delata que el listado
+ * del panel ya no recorta (M encontrados == N sin búsqueda activa).
+ */
+export async function adminCountAllProducts(): Promise<number> {
+  const fb = await loadFirebase();
+  if (!fb) return 0;
+  const snap = await getCountFromServer(collection(fb.db, 'products'));
+  return snap.data().count;
 }
 
 export interface ProductDraftInput {
@@ -133,7 +185,11 @@ export async function adminSaveProduct(draft: ProductDraftInput): Promise<string
     batch.set(productRef, {
       ...payload,
       images: hasImage ? [imgUrl] : [`/img/products/${draft.categoryId}.svg`],
-      createdAt: serverTimestamp(),
+      // 5.95: número epoch-ms, MISMA convención que el importador. Antes iba
+      // serverTimestamp() (Timestamp de Firestore): al mezclar tipos en
+      // createdAt, el orden de tipos de Firestore (números < Timestamps) mal
+      // ubicaba los productos en el catálogo y en la lista del admin.
+      createdAt: now,
     });
   }
 
@@ -592,6 +648,70 @@ export async function adminDeletePromo(promoId: string): Promise<void> {
   const fb = await loadFirebase();
   if (!fb) throw new AppError('generic');
   await deleteDoc(doc(fb.db, 'promos', promoId));
+}
+
+/* ─────────────── 5.98 (G) · Moderación de reseñas de productos ───────────────
+ * Las reseñas viven DENTRO del doc del producto (array `reviews`, sin
+ * colecciones nuevas). El panel (admin/gerente, canEditCatalog en reglas)
+ * lee la lista COMPLETA (incluidas las ocultas) y por cada reseña puede
+ * ocultar/mostrar/eliminar. Tras cada cambio se recalculan ratingAvg y
+ * ratingCount SOLO con las visibles (libra compartida features/catalog/lib/vitrina). */
+
+function mapResena(r: Record<string, unknown>): ProductReview {
+  return {
+    uid: String(r['uid'] ?? ''),
+    name: String(r['name'] ?? 'Cliente').slice(0, 24),
+    rating: Math.min(5, Math.max(1, Math.floor(Number(r['rating'] ?? 0)))),
+    text: String(r['text'] ?? '').slice(0, 400),
+    at: Number(r['at'] ?? 0),
+    visible: r['visible'] !== false,
+  };
+}
+
+/** TODAS las reseñas del producto (visibles y ocultas), más nuevas primero. */
+export async function adminGetResenas(productId: string): Promise<ProductReview[]> {
+  const fb = await loadFirebase();
+  if (!fb || !productId) return [];
+  const snap = await getDoc(doc(fb.db, 'products', productId));
+  const raw = snap.exists() ? snap.data()['reviews'] : null;
+  if (!Array.isArray(raw)) return [];
+  return (raw as Array<Record<string, unknown>>)
+    .map(mapResena)
+    .filter((r) => r.uid && r.at > 0)
+    .sort((a, b) => b.at - a.at);
+}
+
+/** Reescribe el array de reseñas aplicando el cambio y recalcula el rating. */
+async function reescribirResenas(
+  productId: string,
+  mutar: (lista: ProductReview[]) => ProductReview[],
+): Promise<ProductReview[]> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  const ref = doc(fb.db, 'products', productId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) throw new AppError('generic', 'El producto ya no existe.');
+  const raw = Array.isArray(snap.data()['reviews']) ? (snap.data()['reviews'] as Array<Record<string, unknown>>) : [];
+  const lista = mutar((raw as Array<Record<string, unknown>>).map(mapResena).filter((r) => r.uid && r.at > 0));
+  await updateDoc(ref, { reviews: lista, ...camposRating(lista) });
+  return lista.sort((a, b) => b.at - a.at);
+}
+
+/** Ocultar / volver a mostrar una reseña (moderación sin borrar). */
+export async function adminSetResenaVisible(
+  productId: string,
+  uid: string,
+  at: number,
+  visible: boolean,
+): Promise<void> {
+  await reescribirResenas(productId, (lista) =>
+    lista.map((r) => (r.uid === uid && r.at === at ? { ...r, visible } : r)),
+  );
+}
+
+/** Elimina la reseña definitivamente (auditoría: mejor ocultar). */
+export async function adminDeleteResena(productId: string, uid: string, at: number): Promise<void> {
+  await reescribirResenas(productId, (lista) => lista.filter((r) => !(r.uid === uid && r.at === at)));
 }
 
 /* ───────────────────────── Tasa BCV (rates/bcv) ───────────────────────── */

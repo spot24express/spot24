@@ -12,6 +12,21 @@
  *   · Opcional: --reset-counter (counters/orders_seq → 0) y --ratelimit
  *     (borra counters/ratelimit_*)
  *
+ * 5.100 · REFERENCIAS MUERTAS + «LOS MÁS PEDIDOS»:
+ *   · Si una variante (o el producto entero) ya NO existe porque el dueño la
+ *     borró del panel después de la compra de prueba, el intento de update
+ *     moría con NOT_FOUND y — como TODO viaja en un lote atómico de Firestore
+ *     — el fallo de UNA ops cancelaba la purga COMPLETA (no se borraba nada).
+ *     Ahora esas referencias se detectan en el plan y se OMITEN con aviso
+ *     (mismo criterio que el importador 5.92b); el lote solo trae ops que
+ *     existen, y un 0→0 tampoco escribe nada.
+ *   · Si la orden quedó ENTREGADA, el contador de «Los más pedidos»
+ *     (vendidosTotal, 5.98) también se REBAJA en los productos afectados
+ *     (solo si el doc existe y tiene el campo): la purga deja el catálogo
+ *     como si la orden nunca hubiera existido — «empezar desde cero».
+ *     --keep-stock salta TODA escritura de producto (stock, stockTotal y
+ *     vendidosTotal).
+ *
  * REGLAS DE REPOSICIÓN DE STOCK (verificadas contra orders.ts/payments.ts):
  *   · Flujo FALLBACK (orden sin reservationId): createOrder descontó `stock`
  *     → se repone stock += qty SOLO si la orden NO está 'cancelado'
@@ -32,7 +47,8 @@
  *
  * OPCIONES:
  *   --yes            Ejecuta de verdad (sin esto todo es simulación)
- *   --keep-stock     No tocar stock/stockReserved de las variantes
+ *   --keep-stock     No tocar NINGÚN producto (stock/stockReserved/stockTotal
+ *                    y tampoco vendidosTotal)
  *   --reset-counter  Deja counters/orders_seq en 0 (el próximo código será …-0001)
  *   --ratelimit      Borra los docs temporales counters/ratelimit_*
  *
@@ -108,7 +124,7 @@ USOS:
 
 OPCIONES:
   --yes            ejecuta de verdad (sin esto todo es simulación)
-  --keep-stock     no tocar stock/stockReserved
+  --keep-stock     no tocar NINGÚN producto (stock/stockReserved/vendidosTotal)
   --reset-counter  counters/orders_seq → 0
   --ratelimit      borrar counters/ratelimit_*
 `.trimEnd();
@@ -215,9 +231,16 @@ async function main() {
   hr();
 
   if (!admin.apps.length) {
-    admin.initializeApp({ credential: admin.credential.cert(cred.sa) });
+    // FIREBASE_PROJECT_ID permite apuntar a otro proyecto (p. ej. el emulador
+    // en pruebas del laboratorio): con FIRESTORE_EMULATOR_HOST puesto, el SDK
+    // de Firestore enruta SOLO al emulador y producción queda intacta.
+    const projectId = process.env['FIREBASE_PROJECT_ID'] || cred.sa.project_id;
+    admin.initializeApp({ credential: admin.credential.cert(cred.sa), projectId });
   }
   const db = admin.firestore();
+  if (process.env['FIRESTORE_EMULATOR_HOST']) {
+    line(`⚠ EMULADOR: ${process.env['FIRESTORE_EMULATOR_HOST']} — esta corrida NO toca producción.`);
+  }
 
   /* ── Selección de la orden ── */
 
@@ -297,6 +320,22 @@ async function main() {
 
       const vref = db.doc(`products/${pid}/variants/${vid}`);
       const vsnap = await vref.get();
+
+      // 5.100 · Referencia muerta: el producto o la variante ya no existe
+      // (borrado del panel tras la compra de prueba). Se deja constancia en
+      // el plan y NO se genera escritura: un update sobre doc inexistente
+      // mata el lote atómico completo y la purga entera no ocurre (pasó de
+      // verdad: 5 NOT_FOUND con una CAJA PILAS borrada).
+      if (!vsnap.exists) {
+        stockPlan.push({
+          ref: vref, path: `products/${key}`, name: String(l?.['name'] ?? ''),
+          stock: 0, reserved: 0, newStock: 0, newReserved: 0,
+          falta: true, sinCambio: false, parentDelta: 0,
+          note: 'el producto o la variante ya no existe (borrado) → nada que ajustar',
+        });
+        continue;
+      }
+
       const stock = Number(vsnap.data()?.['stock'] ?? 0);
       const reserved = Number(vsnap.data()?.['stockReserved'] ?? 0);
 
@@ -316,7 +355,43 @@ async function main() {
       }
       const parentDelta = !isReservationFlow && !cancelled ? qty : 0;
       if (parentDelta > 0) productDeltas.set(pid, (productDeltas.get(pid) ?? 0) + parentDelta);
-      stockPlan.push({ ref: vref, path: `products/${key}`, name: String(l?.['name'] ?? ''), stock, reserved, newStock, newReserved, note, parentDelta });
+      const sinCambio = newStock === stock && newReserved === reserved && parentDelta === 0;
+      stockPlan.push({ ref: vref, path: `products/${key}`, name: String(l?.['name'] ?? ''), stock, reserved, newStock, newReserved, note, parentDelta, falta: false, sinCambio });
+    }
+  }
+
+  /* ── Plan «Los más pedidos» (5.100) ──
+     Una orden ENTREGADA sumó vendidosTotal en sus productos (5.98). La purga
+     lo rebaja para que el contador quede como si la orden nunca hubiera
+     existido. Solo toca productos que EXISTEN y ya tienen el campo: los
+     anteriores al contador no tienen nada que rebajar (y rebajar un campo
+     ausente lo crearía en negativo). Espejo exacto de qtyVendidosPorProducto
+     (functions/src/domain/vendidos.ts): suma por producto, tope 1000/línea. */
+  const entregada = String(order['status']) === 'entregado';
+  const vendidosPlan = [];
+  if (entregada && !opts.keepStock) {
+    const porProducto = new Map();
+    for (const l of linesSrc) {
+      const pid = String(l?.['productId'] ?? '');
+      const qty = Math.floor(Number(l?.['qty'] ?? 0));
+      if (!pid || !Number.isFinite(qty) || qty <= 0) continue;
+      porProducto.set(pid, (porProducto.get(pid) ?? 0) + Math.min(qty, 1000));
+    }
+    for (const [pid, qty] of porProducto) {
+      const pref = db.doc(`products/${pid}`);
+      const psnap = await pref.get();
+      const nombre = String(linesSrc.find((l) => String(l?.['productId'] ?? '') === pid)?.['name'] ?? '');
+      const base = { ref: pref, path: `products/${pid}`, name: nombre, qty };
+      if (!psnap.exists) {
+        vendidosPlan.push({ ...base, actual: 0, nuevo: 0, falta: true, note: 'el producto ya no existe (borrado) → nada que rebajar' });
+        continue;
+      }
+      const actual = Number(psnap.data()?.['vendidosTotal'] ?? 0);
+      if (!Number.isFinite(actual) || actual <= 0) {
+        vendidosPlan.push({ ...base, actual: 0, nuevo: 0, falta: true, note: 'sin contador «Los más pedidos» (orden anterior) → nada que rebajar' });
+        continue;
+      }
+      vendidosPlan.push({ ...base, actual, nuevo: Math.max(0, actual - qty), falta: false, note: '' });
     }
   }
 
@@ -338,21 +413,38 @@ async function main() {
   line(`  auditLog: ${auditSnap.size} doc(s)`);
   line('');
   if (opts.keepStock) {
-    line('STOCK: --keep-stock → no se tocará ninguna variante.');
+    line('STOCK: --keep-stock → no se tocará ningún producto (ni vendidosTotal).');
   } else if (stockPlan.length === 0) {
     line('STOCK: la orden no tiene líneas con producto/variante → nada que reponer.');
   } else {
     line(`STOCK (${isReservationFlow ? 'flujo reserva: baja stockReserved' : 'flujo fallback: repone stock'})${cancelled ? ' · orden cancelada → sin cambios de stock' : ''}`);
     for (const p of stockPlan) {
       const label = p.name ? `${p.path} (${p.name})` : p.path;
+      line(`  ${label}`);
+      if (p.falta) {
+        line('    ⚠ el producto o la variante ya no existe (borrado) → nada que ajustar');
+        continue;
+      }
       const change = isReservationFlow
         ? `stockReserved ${p.reserved} → ${p.newReserved}`
         : `stock ${p.stock} → ${p.newStock}`;
-      line(`  ${label}`);
-      line(`    ${change}${p.note ? `  · ${p.note}` : ''}`);
+      line(`    ${change}${p.note ? `  · ${p.note}` : ''}${p.sinCambio ? '  · (sin cambio real: no se escribe)' : ''}`);
       if (p.parentDelta > 0) {
         line(`    stockTotal del producto ${p.path.split('/')[1]}: +${p.parentDelta} (5.74 · vitrina cuadrada)`);
       }
+    }
+  }
+  if (entregada && !opts.keepStock) {
+    line('\n«LOS MÁS PEDIDOS» (5.100 · la orden quedó ENTREGADA → rebaja vendidosTotal):');
+    if (vendidosPlan.length === 0) {
+      line('  la orden no tiene líneas con producto → nada que rebajar.');
+    }
+    for (const v of vendidosPlan) {
+      const label = v.name ? `${v.path} (${v.name})` : v.path;
+      line(`  ${label}`);
+      line(v.falta
+        ? `    ⚠ ${v.note}`
+        : `    vendidosTotal ${v.actual} → ${v.nuevo}  (rebaja ${v.qty} por la entrega)`);
     }
   }
   if (opts.resetCounter) line('\nEXTRA: counters/orders_seq.count → 0');
@@ -393,10 +485,22 @@ async function main() {
   push((b) => b.delete(db.collection('orders').doc(orderId)));
 
   for (const p of stockPlan) {
+    // 5.100 · referencias muertas y no-cambios (0→0) NO entran al lote: un
+    // solo update inválido cancelaría la purga completa (lote atómico).
+    if (p.falta || p.sinCambio) continue;
     const data = isReservationFlow
       ? { stockReserved: p.newReserved }
       : { stock: p.newStock };
     push((b) => b.update(p.ref, data));
+  }
+
+  // 5.100 · «Los más pedidos»: rebaja vendidosTotal de la orden entregada.
+  for (const v of vendidosPlan) {
+    if (v.falta || v.nuevo === v.actual) continue;
+    push((b) => b.update(v.ref, {
+      vendidosTotal: v.nuevo,
+      updatedAt: Date.now(),
+    }));
   }
 
   // 5.74 · stockTotal del producto (padre): repone lo que la venta de prueba
@@ -425,8 +529,15 @@ async function main() {
 
   line('✔ PURGA COMPLETADA');
   line(`  orders/${orderId} y sus rastros fueron eliminados.`);
+  const omitidas = stockPlan.filter((p) => p.falta).length;
+  if (omitidas > 0) {
+    line(`  ${omitidas} referencia${omitidas === 1 ? '' : 's'} muerta${omitidas === 1 ? '' : 's'} (producto/variante borrado) omitida${omitidas === 1 ? '' : 's'} sin tocar el resto.`);
+  }
   if (stockPlan.length > 0 && !opts.keepStock) {
     line('  Stock de variantes actualizado según el plan mostrado.');
+  }
+  if (vendidosPlan.some((v) => !v.falta && v.nuevo !== v.actual)) {
+    line('  «Los más pedidos» (vendidosTotal) rebajado según el plan mostrado.');
   }
   line('  La próxima compra de prueba puede repetir el flujo completo.');
 }

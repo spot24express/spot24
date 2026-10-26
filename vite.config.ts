@@ -48,6 +48,11 @@ export default defineConfig({
       workbox: {
         // Precachea el bundle y las fuentes autoalojadas (woff2) para modo offline.
         globPatterns: ['**/*.{js,css,html,woff2,png,svg,ico,webmanifest}'],
+        // 5.105 · jsPDF NO se precachea: es herramienta del PANEL y solo sirve
+        // en línea (el export necesita leer Firestore). Sin este ignore, cada
+        // cliente de la tienda bajaría ~370 KB al instalarse el SW por algo
+        // que jamás abrirá. Redes venezolanas: cada KB cuenta.
+        globIgnores: ['**/jspdf-vendor-*.js'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//, /^\/\.netlify\//],
         clientsClaim: true,
@@ -143,9 +148,15 @@ export default defineConfig({
         // al partirlos en chunks distintos se crea un ciclo vendor ↔ react-vendor
         // y el TDZ "Cannot access 'CB' before initialization" rompe la app en
         // producción (el bundler evalúa vendor antes de que exista React).
+        // 5.105 · jsPDF (export de inventario del PANEL) vive en chunk PROPIO:
+        // si fuera al vendor genérico, toda la tienda cargaría ~370 KB extra
+        // al arranque. @babel/runtime sí queda en vendor (lo comparte todo).
         manualChunks(id) {
           if (!id.includes('node_modules')) return;
           if (id.includes('firebase')) return 'firebase-vendor';
+          if (/[\\/]node_modules[\\/](jspdf|jspdf-autotable|fflate|fast-png)[\\/]/.test(id)) {
+            return 'jspdf-vendor';
+          }
           return 'vendor';
         },
       },

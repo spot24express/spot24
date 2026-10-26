@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { cleanProductName } from '@/shared/lib/display';
+import { cleanProductName, etiquetaStock } from '@/shared/lib/display';
 
 /**
  * Ronda 5e — limpieza del nombre de producto en la UI (catálogo y carrito).
@@ -40,5 +40,27 @@ describe('cleanProductName: marca fuera del nombre visible', () => {
     expect(cleanProductName('Caroreña Verano', '')).toBe('Caroreña Verano');
     expect(cleanProductName('', 'POLAR')).toBe('');
     expect(cleanProductName('  Caroreña Verano  ', 'POLAR')).toBe('Caroreña Verano');
+  });
+});
+
+/**
+ * Ronda 5.104 — texto del chip/badge de existencias bajas (tarjeta y ficha).
+ * Pedido del dueño: cuando queda UN solo producto, el chip debe decir
+ * «Última disponible», no «Últimas 1».
+ */
+describe('etiquetaStock (5.104): chip de existencias bajas', () => {
+  it('con UNA sola pieza dice «Última disponible» (antes «Últimas 1»)', () => {
+    expect(etiquetaStock(1)).toBe('Última disponible');
+  });
+
+  it('de 2 en adelante sigue diciendo «Últimas N»', () => {
+    expect(etiquetaStock(2)).toBe('Últimas 2');
+    expect(etiquetaStock(3)).toBe('Últimas 3');
+    expect(etiquetaStock(5)).toBe('Últimas 5');
+  });
+
+  it('sin existencias dice «Agotado» (criterio 5.92f)', () => {
+    expect(etiquetaStock(0)).toBe('Agotado');
+    expect(etiquetaStock(-2)).toBe('Agotado');
   });
 });

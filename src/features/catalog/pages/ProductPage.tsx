@@ -10,6 +10,7 @@ import { EmptyState } from '@/shared/components/ui/States';
 import { useCategories, useProduct, useRelated, useVariants } from '../hooks/useCatalog';
 import { subscribeProduct } from '../services/catalog.service';
 import { ProductCard } from '../components/ProductCard';
+import { ResenasProducto } from '../components/ResenasProducto';
 import { useCart } from '@/features/cart/hooks/useCart';
 import { trackEvent } from '@/shared/lib/analytics';
 import { validateAdd } from '@/features/cart/lib/cartLogic';
@@ -18,6 +19,8 @@ import { formatBs, usdToBs } from '@/shared/lib/format';
 import { cleanProductName } from '@/shared/lib/display';
 import { alFallarFoto } from '@/shared/lib/imgFallback';
 import { VOICE } from '@/shared/constants/brand';
+import { BotonCompartir } from '@/shared/components/ui/BotonCompartir';
+import { TITULAR } from '@/features/legal/datos';
 
 /** Ficha de producto: galería, variantes, precio en Bs. en vivo, stock, relacionados. */
 export default function ProductPage() {
@@ -269,6 +272,23 @@ export default function ProductPage() {
             <p className="mt-1 spot-label">Precio en bolívares</p>
           </div>
 
+          {/* 5.108 (aprobado por el dueño) · COMPARTIR la ficha: mismo mecanismo
+              que la tarjeta — panel nativo del teléfono (WhatsApp, etc.) y, en
+              PC, copia el enlace + toast. */}
+          <div className="mt-3">
+            <BotonCompartir
+              titulo={product.name}
+              texto={`Mira esta pieza en SPOT 24: ${displayName}`}
+              url={`${TITULAR.sitio}catalogo/${product.slug}`}
+              tipo="producto"
+              itemId={product.id}
+              label="Compartir"
+              ariaLabel={`Compartir ${product.name}`}
+              iconSize={16}
+              className="inline-flex min-h-[40px] items-center gap-2 rounded-brand border-2 border-line px-3.5 spot-label transition-colors hover:border-signal hover:text-signal"
+            />
+          </div>
+
           {variants && variants.length > 1 && (
             <fieldset className="mt-6">
               <legend className="mb-2 spot-label">Variante</legend>
@@ -340,6 +360,10 @@ export default function ProductPage() {
           ) : null}
         </div>
       </div>
+
+      {/* 5.98 (G) · RESEÑAS — solo con opiniones visibles (moderadas por el
+          dueño desde el panel). Con cero reseñas el bloque ni aparece. */}
+      {product.id && <ResenasProducto productId={product.id} />}
 
       {/* RELACIONADOS */}
       <RelatedSection related={related} />

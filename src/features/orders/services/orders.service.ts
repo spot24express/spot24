@@ -181,6 +181,44 @@ export async function listOrderEvents(orderId: string): Promise<OrderEvent[]> {
   }));
 }
 
+/**
+ * 5.98 (punto F) · Ids de productos COMPRADOS por el cliente (para «Vuelve a
+ * comprar» del Home). Lee SOLO lo propio (mismas reglas de 5.32), recorre los
+ * últimos `maxOrders` pedidos NO cancelados (más nuevo primero) y devuelve los
+ * productIds únicos en orden de recencia (el de la compra más reciente gana).
+ * Sin sesiones históricas devuelve [] → el Home oculta la sección.
+ * Tope defensivo: 10 pedidos ≈ 10 lecturas, la primera página de «Mis pedidos».
+ */
+export async function getRepurchaseProductIds(uid: string, maxOrders = 10): Promise<string[]> {
+  if (!uid) return [];
+  const fb = await loadFirebase();
+  if (!fb) return [];
+  try {
+    const snap = await getDocs(
+      query(
+        collection(fb.db, ORDERS),
+        where('uid', '==', uid),
+        orderBy('createdAt', 'desc'),
+        fbLimit(maxOrders),
+      ),
+    );
+    const vistos = new Set<string>();
+    for (const d of snap.docs) {
+      const o = d.data() as Record<string, unknown>;
+      if (String(o['status'] ?? '') === 'cancelado') continue;
+      const lines = Array.isArray(o['lines']) ? (o['lines'] as Array<Record<string, unknown>>) : [];
+      for (const l of lines) {
+        const pid = String(l['productId'] ?? '');
+        if (pid && !vistos.has(pid)) vistos.add(pid);
+      }
+    }
+    return [...vistos];
+  } catch (e) {
+    logger.warn('getRepurchaseProductIds falló', e);
+    return [];
+  }
+}
+
 export async function cancelOrder(orderId: string, reason: string): Promise<void> {
   await callFunction<{ ok: boolean }>('fn-cancelOrder', { orderId, reason: reason.slice(0, 300) });
 }

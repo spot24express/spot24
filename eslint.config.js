@@ -26,4 +26,15 @@ export default tseslint.config(
     files: ['**/*.test.{ts,tsx}', 'src/tests/**/*.ts'],
     rules: { 'no-console': 'off' },
   },
+  {
+    // extraerPdf.ts (5.87b): las referencias triple-slash a los .d.ts propios
+    // son VOLUNTARIAS — pdfjs-dist no publica pdf.worker.d.mts y esas líneas
+    // obligan a TODOS los tsconfig (root, netlify, functions) y a los
+    // proyectos inferidos de VSC a incluir las declaraciones ambientales
+    // (el dueño vio TS2307 en VSC sin ellas). La regla sugiere «import»,
+    // pero para declaraciones globales el triple-slash es la herramienta
+    // correcta. Excepción quirúrgica solo para ese archivo (5.91c).
+    files: ['functions/src/lib/extraerPdf.ts'],
+    rules: { '@typescript-eslint/triple-slash-reference': 'off' },
+  },
 );

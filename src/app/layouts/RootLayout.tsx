@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { registerSW } from 'virtual:pwa-register';
 import { Logo, LogoShield, SpeedLines } from '@/shared/components/brand/Logo';
 import { OfflineBanner } from '@/shared/components/ui/States';
@@ -237,6 +237,16 @@ function Footer({ waLink }: { waLink: string | null }) {
             </a>
           </p>
         )}
+        {/* 5.106 · Páginas legales: enlaces discretos en el pie (decisión del
+            dueño: aceptación vía footer, sin checkbox en checkout/registro). */}
+        <p className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+          <Link to="/terminos" className="spot-label hover:text-signal">
+            Términos y Condiciones
+          </Link>
+          <Link to="/privacidad" className="spot-label hover:text-signal">
+            Política de Privacidad
+          </Link>
+        </p>
         <p className="mt-1 text-sm text-muted">
           v{__APP_VERSION__.split('-')[0]} · Repuestos, servicios y conveniencia a domicilio
         </p>

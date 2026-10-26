@@ -243,15 +243,24 @@ describe('extraerItemsPdf · PDF mínimo real → pdfjs → parser (5.87b)', () 
     expect(typeof g.pdfjsWorker?.WorkerMessageHandler).toBe('function');
   });
 
-  it('extrae y parsea un PDF REAL de una página con las columnas del dueño', async () => {
-    const base64 = pdfMinimoInventario().toString('base64');
-    const { filas, problemas } = parseInventario(await extraerItemsPdf(base64));
-    expect(problemas).toEqual([]);
-    expect(filas).toEqual([
-      { codigo: '021400059245', descripcion: 'CAJA SHELL HELIX HX5 MINERAL 15W/40 SN', existencia: 12, costo: 61.19 },
-      { codigo: '25099349', descripcion: 'FILTRO DE AIRE KYOTO MI L-300', existencia: 3, costo: 7.25 },
-    ]);
-  });
+  it(
+    'extrae y parsea un PDF REAL de una página con las columnas del dueño',
+    // Timeout propio (30 s), igual que su hermano REGRESIÓN de abajo: pdfjs
+    // procesa un PDF real con worker y en la PC del dueño (Windows) tardó
+    // ~7 s en frío — el límite global de 5 s lo cortaba aunque el test esté
+    // sano (detectado en la validación de la ronda 5.108; en el clon corre
+    // en menos de 1 s: es velocidad de máquina, no un bug).
+    { timeout: 30_000 },
+    async () => {
+      const base64 = pdfMinimoInventario().toString('base64');
+      const { filas, problemas } = parseInventario(await extraerItemsPdf(base64));
+      expect(problemas).toEqual([]);
+      expect(filas).toEqual([
+        { codigo: '021400059245', descripcion: 'CAJA SHELL HELIX HX5 MINERAL 15W/40 SN', existencia: 12, costo: 61.19 },
+        { codigo: '25099349', descripcion: 'FILTRO DE AIRE KYOTO MI L-300', existencia: 3, costo: 7.25 },
+      ]);
+    },
+  );
 
   it('PDF truncado (<100 bytes) → error accionable, no 500', async () => {
     const base64 = Buffer.from('%PDF-1.4 truncado a proposito').toString('base64');

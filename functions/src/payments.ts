@@ -11,6 +11,7 @@ import { canTransition } from './domain/order-state';
 import { isDuplicateReference } from './lib/fraud';
 import { ORDER_NOTIFICATIONS } from './lib/notifications';
 import { hashReference } from './lib/crypto';
+import { finiteNum } from './lib/items';
 
 const db = () => admin.firestore(getAdminApp());
 
@@ -143,7 +144,8 @@ export async function coreVerifyPayment(ctx: CoreCtx): Promise<unknown> {
         const vref = db().doc(`products/${line.productId}/variants/${line.variantId}`);
         const vsnap = await tx.get(vref);
         if (vsnap.exists) {
-          restock.push({ ref: vref, newStock: Number(vsnap.data()?.['stock'] ?? 0) + line.qty, qty: line.qty });
+          // 5.93: finiteNum — stock NaN corrupto llegaba a tx.update → 500 opaco.
+          restock.push({ ref: vref, newStock: finiteNum(vsnap.data()?.['stock']) + line.qty, qty: line.qty });
         }
       }
       // 5.74 · VITRINA HONESTA: leer los productos ANTES de escribir (regla

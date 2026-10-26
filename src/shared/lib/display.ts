@@ -1,5 +1,5 @@
 /**
- * Utilidades de presentación de nombres de producto (UI).
+ * Utilidades de presentación de nombres y avisos de producto (UI).
  * Una sola fuente de verdad para catálogo y carrito: la marca vive en su
  * campo propio y NO se repite dentro del nombre visible.
  */
@@ -30,4 +30,19 @@ export function cleanProductName(name: string, brand: string): string {
   if (!isBrandToken && !isGluedBrand) return nameTrimmed;
   const cleaned = rest.join(' ');
   return cleaned || nameTrimmed;
+}
+
+/**
+ * Ronda 5.104 — texto del chip/badge de existencias bajas: UNA sola fuente de
+ * verdad para la tarjeta (ProductCard) y la ficha (StockBadge), mismo criterio
+ * 5.92f de que la tienda hable un solo idioma.
+ * · stock ≤ 0 → «Agotado»
+ * · stock = 1 → «Última disponible» (pedido del dueño: ya no «Últimas 1»)
+ * · stock ≥ 2 → «Últimas N»
+ * El llamador decide CUÁNDO mostrarlo (umbral 5 en ambos sitios).
+ */
+export function etiquetaStock(stock: number): string {
+  if (stock <= 0) return 'Agotado';
+  if (stock === 1) return 'Última disponible';
+  return `Últimas ${stock}`;
 }

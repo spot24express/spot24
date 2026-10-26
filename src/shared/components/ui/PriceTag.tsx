@@ -1,5 +1,6 @@
 import { formatBs, usdToBs } from '@/shared/lib/format';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
+import { etiquetaStock } from '@/shared/lib/display';
 
 interface PriceTagProps {
   usd: number;
@@ -46,7 +47,9 @@ export function StockBadge({ stock, lowThreshold = 5 }: StockBadgeProps) {
   if (stock <= lowThreshold) {
     return (
       <span className="inline-flex items-center rounded-brand border-2 border-signal bg-signal/10 px-2.5 py-1 text-xs font-semibold uppercase tracking-label text-signal">
-        Últimas {stock}
+        {/* 5.104 (pedido del dueño): con UNA pieza, «Última disponible»;
+            mismo texto que el chip de la tarjeta (etiquetaStock). */}
+        {etiquetaStock(stock)}
       </span>
     );
   }
