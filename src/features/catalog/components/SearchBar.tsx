@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useDebounce } from '@/shared/hooks/useDebounce';
-import { useCategories, useProductList, normalizeSearchTerm } from '../hooks/useCatalog';
-import { branchRootId, isTopLevel } from '@/shared/lib/categoryTree';
+import { useProductList, normalizeSearchTerm } from '../hooks/useCatalog';
 import { VOICE } from '@/shared/constants/brand';
 import { Chip } from '@/shared/components/ui/Badge';
 
@@ -126,70 +125,80 @@ export function SearchBar({ compact = false }: { compact?: boolean }) {
 }
 
 /**
- * Barra de filtros: categoría, precio, disponibilidad (5.1).
- * Las categorías salen SIEMPRE de Firestore (las mismas que las bahías de la
- * tienda, gestionadas por el admin). Sin respaldo demo: si el admin aún no
- * creó categorías, solo se ve el chip «Todas».
- * Ronda 5.76: solo categorías principales en la fila (las hijas no van aquí).
- * Ronda 5.77: el afinado por subcategoría vive en las TARJETAS que CatalogPage
- * pinta debajo (estilo app de conveniencia, con contador) — la fila repetida de chips
- * chiquitos se quitó para no duplicar la misma navegación dos veces.
+ * Barra de filtros 5.111 (estilo de la app de farmacia de referencia, decisión del dueño): UNA sola fila
+ * con lo esencial — «Ordenar» por precio + «Ver todo» — y los dos filtros que
+ * el dueño pidió CONSERVAR: «Solo disponibles» y «Precio máx.».
+ * La fila de chips de categorías se RETIRÓ: navegar por categorías se hace con
+ * sus TARJETAS (la grilla de bahías al entrar al catálogo y las tarjetas de
+ * subcategorías dentro de cada bahía, rondas 5.77/5.81) — igual que la app de
+ * referencia: categorías → subcategorías → productos, sin duplicar navegación.
+ * «Ver todo» solo se muestra con algo activo y limpia TODO (categoría,
+ * búsqueda, filtros y orden) de un toque.
+ * Ronda 5.111: el orden es de CLIENTE (lib/orden.ts): recalcula sobre lo
+ * cargado, sin tocar la consulta ni los índices de Firestore.
  */
 export function FilterBar({
-  activeCategory,
   inStockOnly,
   maxPrice,
+  orden,
+  mostrarVerTodo,
   onChange,
+  onReset,
 }: {
-  activeCategory: string | null;
   inStockOnly: boolean;
   maxPrice: number | null;
-  onChange: (patch: { categoryId?: string | null; inStockOnly?: boolean; maxPrice?: number | null }) => void;
+  orden: 'asc' | 'desc' | null;
+  mostrarVerTodo: boolean;
+  onChange: (patch: {
+    inStockOnly?: boolean;
+    maxPrice?: number | null;
+    orden?: 'asc' | 'desc' | null;
+  }) => void;
+  onReset: () => void;
 }) {
-  const { data: categories } = useCategories();
-  const list = categories ?? [];
-  const parents = list.filter(isTopLevel);
-  // Raíz de la rama activa: si hay una subcategoría activa, resalta su padre.
-  const activeRoot = activeCategory ? branchRootId(list, activeCategory) : '';
-
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por categoría">
-        <Chip active={!activeCategory} onClick={() => onChange({ categoryId: null })}>
-          Todas
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-3" role="group" aria-label="Filtros del catálogo">
+      <label className="flex items-center gap-2 spot-label" htmlFor="orden-filter">
+        Ordenar
+        <select
+          id="orden-filter"
+          value={orden ?? ''}
+          onChange={(e) => {
+            const v = e.target.value;
+            onChange({ orden: v === 'asc' || v === 'desc' ? v : null });
+          }}
+          className="rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none"
+        >
+          <option value="">Recientes</option>
+          <option value="asc">Menor precio</option>
+          <option value="desc">Mayor precio</option>
+        </select>
+      </label>
+      <Chip active={inStockOnly} onClick={() => onChange({ inStockOnly: !inStockOnly })}>
+        Solo disponibles
+      </Chip>
+      <label className="flex items-center gap-2 spot-label" htmlFor="price-filter">
+        Precio máx.
+        <input
+          id="price-filter"
+          type="number"
+          inputMode="decimal"
+          min={0}
+          step={5}
+          placeholder="USD"
+          value={maxPrice ?? ''}
+          onChange={(e) => {
+            const v = e.target.value === '' ? null : Number(e.target.value);
+            onChange({ maxPrice: v !== null && Number.isFinite(v) && v > 0 ? v : null });
+          }}
+          className="w-24 rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none"
+        />
+      </label>
+      {mostrarVerTodo && (
+        <Chip active={false} onClick={onReset}>
+          Ver todo
         </Chip>
-        {parents.map((c) => (
-          <Chip
-            key={c.id}
-            active={activeRoot === c.id}
-            onClick={() => onChange({ categoryId: c.id })}
-          >
-            {c.code ? `${c.code} · ` : ''}{c.name}
-          </Chip>
-        ))}
-      </div>
-      <div className="flex flex-wrap items-center gap-4">
-        <Chip active={inStockOnly} onClick={() => onChange({ inStockOnly: !inStockOnly })}>
-          Solo disponibles
-        </Chip>
-        <label className="flex items-center gap-2 spot-label" htmlFor="price-filter">
-          Precio máx.
-          <input
-            id="price-filter"
-            type="number"
-            inputMode="decimal"
-            min={0}
-            step={5}
-            placeholder="USD"
-            value={maxPrice ?? ''}
-            onChange={(e) => {
-              const v = e.target.value === '' ? null : Number(e.target.value);
-              onChange({ maxPrice: v !== null && Number.isFinite(v) && v > 0 ? v : null });
-            }}
-            className="w-24 rounded-brand border-2 border-line bg-surface-1 px-3 py-2 text-paper focus:border-signal focus:outline-none"
-          />
-        </label>
-      </div>
+      )}
     </div>
   );
 }

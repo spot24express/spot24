@@ -7,12 +7,18 @@ import { Button } from '@/shared/components/ui/Button';
 import { useCategories, useProductList } from '../hooks/useCatalog';
 import { dedupePorId } from '@/shared/lib/tiempos';
 import { branchRootId, hasSubcategories, isTopLevel, subcategoriesOf } from '@/shared/lib/categoryTree';
+import { estiloCascada } from '@/shared/lib/cascada';
+import { ordenarPorPrecio, type TipoOrden } from '../lib/orden';
 import { CategoryCard, SubcategoryCard } from '../components/CategoryCard';
 import { ProductCard } from '../components/ProductCard';
 import { SearchBar, FilterBar } from '../components/SearchBar';
 import { VOICE } from '@/shared/constants/brand';
 
-/** Listado con paginación por cursor, filtros y búsqueda (5.1). */
+/** Listado con paginación por cursor, filtros y búsqueda (5.1).
+ *  5.111 (estilo de la app de farmacia de referencia, aprobado por el dueño): cascada de entrada en las
+ *  tarjetas (index.css .card-enter) y filtros en una sola fila — ordenar por
+ *  precio EN CLIENTE (lib/orden.ts) + ver todo, conservando «Solo disponibles»
+ *  y «Precio máx.». La navegación por categorías vive en sus tarjetas. */
 export default function CatalogPage() {
   useDocumentTitle('Catálogo');
   const [params, setParams] = useSearchParams();
@@ -20,6 +26,11 @@ export default function CatalogPage() {
   const q = params.get('q') ?? undefined;
   const inStock = params.get('stock') === '1';
   const maxPrice = params.get('max') ? Number(params.get('max')) : null;
+  // 5.111 · ?orden=asc|desc (estilo de la app de referencia): ordena por precio EN CLIENTE
+  // (lib/orden.ts) sobre lo cargado — sin tocar la consulta de Firestore:
+  // mismos índices, mismas lecturas. Ausente = «Recientes» (como siempre).
+  const ordenParam = params.get('orden');
+  const orden: TipoOrden = ordenParam === 'asc' || ordenParam === 'desc' ? ordenParam : null;
 
   const { data: categories } = useCategories();
   // Ronda 5.78c (pedido del dueño): CADA categoría muestra SOLO sus productos
@@ -55,7 +66,12 @@ export default function CatalogPage() {
   const branchRoot = categories?.find((c) => c.id === activeRootId);
   const subcats = activeRootId && categories ? subcategoriesOf(categories, activeRootId) : [];
 
-  const patch = (p: { categoryId?: string | null; inStockOnly?: boolean; maxPrice?: number | null }) => {
+  const patch = (p: {
+    categoryId?: string | null;
+    inStockOnly?: boolean;
+    maxPrice?: number | null;
+    orden?: 'asc' | 'desc' | null;
+  }) => {
     const next = new URLSearchParams(params);
     if (p.categoryId !== undefined) {
       if (p.categoryId) next.set('cat', p.categoryId);
@@ -69,6 +85,10 @@ export default function CatalogPage() {
       if (p.maxPrice) next.set('max', String(p.maxPrice));
       else next.delete('max');
     }
+    if (p.orden !== undefined) {
+      if (p.orden) next.set('orden', p.orden);
+      else next.delete('orden');
+    }
     setParams(next, { replace: true });
   };
 
@@ -76,6 +96,13 @@ export default function CatalogPage() {
   // aunque una página se repita (cursor defectuoso), ninguna tarjeta se
   // renderiza dos veces (adiós «duplicate key» de React).
   const items = dedupePorId(data?.pages.flatMap((pg) => pg.items) ?? []);
+  // 5.111 · orden por precio en cliente: recalcula sobre TODO lo cargado, así
+  // «Cargar más» va acomodando el orden solo. Sin ?orden= queda tal cual.
+  const visibles = ordenarPorPrecio(items, orden);
+  // 5.111 · la cascada escalona SOLO la primera tanda (la que llega con la
+  // consulta inicial); las tarjetas de «Cargar más» entran con fundido seco
+  // (escalón 0) para que nadie espere medio segundo tras el toque.
+  const primeraTanda = data?.pages[0]?.items.length ?? 12;
 
   // Sin filtros: muestra también la grilla de categorías arriba.
   const showCategoryGrid = !cat && !q && !inStock && !maxPrice;
@@ -105,18 +132,23 @@ export default function CatalogPage() {
       </div>
 
       <FilterBar
-        activeCategory={cat}
         inStockOnly={inStock}
         maxPrice={maxPrice}
+        orden={orden}
+        mostrarVerTodo={Boolean(cat || q || inStock || maxPrice || orden)}
         onChange={(p) => patch(p)}
+        onReset={() => setParams(new URLSearchParams(), { replace: true })}
       />
 
       {showCategoryGrid && (
         <section className="mt-8" aria-label="Categorías">
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            {/* Solo principales: las subcategorías viven dentro de su bahía (tarjetas 5.77) */}
-            {categories?.filter(isTopLevel).map((c) => (
-              <CategoryCard key={c.id} category={c} />
+            {/* Solo principales: las subcategorías viven dentro de su bahía (tarjetas 5.77).
+                5.111 · cada tarjeta entra en cascada (fundido + subida escalonada). */}
+            {categories?.filter(isTopLevel).map((c, i) => (
+              <div key={c.id} className="card-enter" style={estiloCascada(i)}>
+                <CategoryCard category={c} />
+              </div>
             ))}
           </div>
         </section>
@@ -131,8 +163,11 @@ export default function CatalogPage() {
             Subcategorías{branchRoot ? ` · ${branchRoot.code ? `${branchRoot.code} ` : ''}${branchRoot.name}` : ''}
           </p>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            {subcats.map((s) => (
-              <SubcategoryCard key={s.id} category={s} active={s.id === cat} />
+            {/* 5.111 · cascada también en las tarjetas de subcategorías */}
+            {subcats.map((s, i) => (
+              <div key={s.id} className="card-enter" style={estiloCascada(i)}>
+                <SubcategoryCard category={s} active={s.id === cat} />
+              </div>
             ))}
           </div>
         </section>
@@ -153,11 +188,20 @@ export default function CatalogPage() {
               </p>
             </>
           ) : data ? (
-            items.length ? (
+            visibles.length ? (
               <>
                 <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-                  {items.map((p) => (
-                    <ProductCard key={p.id} product={p} />
+                  {/* 5.111 · envoltorio con .card-enter: el article de ProductCard
+                      ya es h-full (5.108b), así la hilera conserva sus alturas
+                      parejas mientras las tarjetas entran en cascada. */}
+                  {visibles.map((p, i) => (
+                    <div
+                      key={p.id}
+                      className="card-enter h-full"
+                      style={estiloCascada(i < primeraTanda ? i : 0)}
+                    >
+                      <ProductCard product={p} />
+                    </div>
                   ))}
                 </div>
                 {hasNextPage && (

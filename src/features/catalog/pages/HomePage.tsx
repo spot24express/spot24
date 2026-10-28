@@ -10,6 +10,7 @@ import { useAutoCarousel } from '../hooks/useAutoCarousel';
 import { getProductsByIds } from '../services/catalog.service';
 import { curarRecientes, debeCargarMasPaginas } from '../lib/vitrina';
 import { isTopLevel } from '@/shared/lib/categoryTree';
+import { estiloCascada } from '@/shared/lib/cascada';
 import { CategoryCard } from '../components/CategoryCard';
 import { ProductCard } from '../components/ProductCard';
 import { SearchBar } from '../components/SearchBar';
@@ -103,8 +104,15 @@ function ProductCarousel({ products, label }: { products: Product[]; label: stri
       onPointerDown={pause}
       onWheel={pause}
     >
-      {products.map((p) => (
-        <div key={p.id} className="w-44 shrink-0 snap-start sm:w-52">
+      {/* 5.111 · cada tarjeta entra en cascada (fundido + subida escalonada);
+          el auto-avance no se entera: scrollTo usa offsetLeft y la animación
+          solo mueve la tarjeta en vertical. */}
+      {products.map((p, i) => (
+        <div
+          key={p.id}
+          className="card-enter w-44 shrink-0 snap-start sm:w-52"
+          style={estiloCascada(i)}
+        >
           <ProductCard product={p} />
         </div>
       ))}
@@ -118,7 +126,11 @@ function ProductCarousel({ products, label }: { products: Product[]; label: stri
  *  Vuelve a comprar (si el cliente ya compró) → Bahías → Los más pedidos →
  *  Recién llegados (AHORA carrusel como las otras vitrinas) → pie.
  *  Las secciones sin datos NO aparecen: arrancamos desde cero (decisión del
- *  dueño) y se pueblan solas con el uso. */
+ *  dueño) y se pueblan solas con el uso.
+ *  5.111 (estilo de la app de farmacia de referencia, aprobado por el dueño):
+ *  cascada de entrada en carruseles y bahías (fundido + subida 6 px, 40 ms
+ *  por tarjeta, index.css .card-enter). El HÉROE no cascada: es la fachada,
+ *  la foto más importante de la app entra de una (sin demoras). */
 export default function HomePage() {
   useDocumentTitle('Tu parada segura. 24/7');
   const { data: categories } = useCategories();
@@ -187,16 +199,21 @@ export default function HomePage() {
           la promesa y el buscador ENCIMA con degradado oscuro (el mismo truco
           de las fotos del carrusel para que el texto se lea). Arriba a la
           derecha, discreto: compartir la app. */}
-      <section className="relative overflow-hidden rounded-brand-lg border-2 border-line">
-        <img
-          src="/img/fachada-spot24.jpg"
-          alt="Fachada de SPOT 24 al anochecer: valla con la promesa, letrero iluminado y mural del escudo"
-          loading="eager"
-          decoding="async"
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-        {/* Degradado: oscurece la zona del texto sin apagar la foto. */}
-        <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-b from-ink/80 via-ink/55 to-ink/85" />
+      <section className="relative rounded-brand-lg border-2 border-line">
+        {/* 5.109 (hallazgo 2 del dueño) · el recorte de esquinas vive SOLO en
+            esta capa interna (foto + degradado): si el section recorta,
+            las sugerencias del buscador salen cortadas. */}
+        <div className="absolute inset-0 overflow-hidden rounded-brand-lg">
+          <img
+            src="/img/fachada-spot24.jpg"
+            alt="Fachada de SPOT 24 al anochecer: valla con la promesa, letrero iluminado y mural del escudo"
+            loading="eager"
+            decoding="async"
+            className="h-full w-full object-cover"
+          />
+          {/* Degradado: oscurece la zona del texto sin apagar la foto. */}
+          <div aria-hidden="true" className="absolute inset-0 bg-gradient-to-b from-ink/80 via-ink/55 to-ink/85" />
+        </div>
         <BotonCompartir
           titulo={APP_COMPARTIR.titulo}
           texto={APP_COMPARTIR.texto}
@@ -239,10 +256,13 @@ export default function HomePage() {
           onPointerDown={promoRef.pause}
           onWheel={promoRef.pause}
         >
-          {slides.map((g) => (
+          {/* 5.111 · las diapositivas también entran en cascada (la primera
+              tanda es la que se ve; el resto ya está fuera de pantalla) */}
+          {slides.map((g, i) => (
             <figure
               key={g.key}
-              className={`relative shrink-0 snap-start overflow-hidden rounded-brand-lg border-2 border-line ${
+              style={estiloCascada(i)}
+              className={`card-enter relative shrink-0 snap-start overflow-hidden rounded-brand-lg border-2 border-line ${
                 g.caption ? 'aspect-[16/9] h-52 sm:h-72' : 'h-52 w-auto sm:h-72'
               }`}
             >
@@ -300,8 +320,11 @@ export default function HomePage() {
         </h2>
         <p className="spot-subtitle mb-6">Elige tu categoría. Todo en el mismo pit stop.</p>
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {parents.map((c) => (
-            <CategoryCard key={c.id} category={c} />
+          {/* 5.111 · bahías con la misma cascada que la grilla del catálogo */}
+          {parents.map((c, i) => (
+            <div key={c.id} className="card-enter" style={estiloCascada(i)}>
+              <CategoryCard category={c} />
+            </div>
           ))}
         </div>
       </section>

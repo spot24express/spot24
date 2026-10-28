@@ -61,6 +61,22 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         runtimeCaching: [
           {
+            // 5.109 · Fotos del LOCAL servidas del propio sitio (fachada del
+            // héroe, mural, equipo, QR). Cache-first como imgbb/Storage: la
+            // 1ª visita las baja una vez y a partir de ahí salen del cache
+            // SIN red (Netlify no manda caché larga en rutas sin hash —
+            // antes se revalidaban en cada visita). El dueño las reemplaza
+            // por copia en public/img/; al cambiar el nombre de archivo se
+            // refresca, y si mantiene el nombre, la entrada expira en 30 días.
+            urlPattern: /\/img\/.+\.(jpg|jpeg|png|webp)$/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'spot24-local-images',
+              expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
             // Imágenes de producto en Storage: cache-first (inmutables por nombre).
             urlPattern: /^https:\/\/firebasestorage\.googleapis\.com\/.*/i,
             handler: 'CacheFirst',

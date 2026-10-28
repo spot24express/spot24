@@ -19,7 +19,11 @@
       content="Repuestos, servicios automotrices y conveniencia a domicilio. Pide desde tu teléfono y sigue tu pedido en vivo. Abierto cuando importa."
     />
     <meta property="og:url" content="https://spot24express.netlify.app/" />
-    <meta property="og:image" content="https://spot24express.netlify.app/og-cover.jpg" />
+    <!-- 5.110 · ?v=2: WhatsApp/Facebook GUARDAN la tarjeta la primera vez que
+         alguien comparte un enlace y no la vuelven a pedir — compartimos antes
+         de que existiera la foto y quedó la tarjeta sin imagen. Cambiar la URL
+         de la foto (aunque sea solo el ?v=2) los obliga a re-bajarla. -->
+    <meta property="og:image" content="https://spot24express.netlify.app/og-cover.jpg?v=2" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
     <meta
@@ -33,7 +37,7 @@
       name="twitter:description"
       content="Repuestos, conveniencia y delivery. Pide desde tu teléfono. Abierto cuando importa."
     />
-    <meta name="twitter:image" content="https://spot24express.netlify.app/og-cover.jpg" />
+    <meta name="twitter:image" content="https://spot24express.netlify.app/og-cover.jpg?v=2" />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -41,7 +45,7 @@
         "name": "SPOT 24",
         "url": "https://spot24express.netlify.app/",
         "logo": "https://spot24express.netlify.app/icons/icon-512.png",
-        "image": "https://spot24express.netlify.app/og-cover.jpg",
+        "image": "https://spot24express.netlify.app/og-cover.jpg?v=2",
         "slogan": "Tu parada segura. 24/7.",
         "description": "Repuestos, servicios automotrices y conveniencia a domicilio. Lubricantes, filtros, amortiguadores, baterías, bebidas, snacks y café.",
         "areaServed": "Venezuela",
@@ -61,6 +65,14 @@
     <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="apple-touch-startup-image" media="(prefers-color-scheme: dark)" href="/icons/startup-512.png" />
+    <!-- 5.109 · Rendimiento de llegada: la fachada del héroe es lo PRIMERO que
+         se ve al entrar. El preload con prioridad alta hace que su descarga
+         arranque de una vez (antes esperaba a que el JS cargara y decidiera
+         pintarla). El preconnect a imgbb calienta la conexión con el CDN de
+         las fotos del catálogo (misma regla: ganarle tiempo a la red). -->
+    <link rel="preload" as="image" href="/img/fachada-spot24.jpg" fetchpriority="high" />
+    <link rel="preconnect" href="https://i.ibb.co" crossorigin />
+    <link rel="dns-prefetch" href="https://i.ibb.co" />
   </head>
   <body>
     <div id="root"></div>

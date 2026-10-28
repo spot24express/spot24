@@ -140,7 +140,12 @@ export default function AdminCategoriesPage() {
                       <p className="spot-label truncate">{c.tagline || 'Sin descripción'}</p>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  {/* 5.109 (fix del dueño) · flex-wrap: en subcategorías (que además
+                      vienen corridas a la derecha) la fila no cabía en pantallas
+                      chicas y «Eliminar» se desbordaba fuera de la tarjeta. Con
+                      flex-wrap, lo que no cabe baja a una 2ª línea DENTRO de la
+                      tarjeta. justify-end mantiene los botones a la derecha. */}
+                  <div className="flex flex-wrap items-center justify-end gap-2">
                     {isChild && (
                       <Chip>
                         Subcategoría{parent ? ` de ${parent.name}` : ''}

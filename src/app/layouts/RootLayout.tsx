@@ -7,6 +7,7 @@ import { useCart } from '@/features/cart/hooks/useCart';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useNotifs } from '@/features/orders/hooks/useNotifs';
 import { NewOrderAlert } from '@/features/admin/components/NewOrderAlert';
+import { InstalarEnIphone } from '@/shared/components/pwa/InstalarEnIphone';
 import { BRAND } from '@/shared/constants/brand';
 import { getGeneralSettingsCached } from '@/shared/services/settings.service';
 import { waHref } from '@/shared/lib/whatsapp';
@@ -312,6 +313,13 @@ export function RootLayout() {
           nuevos. La píldora es visible con la pestaña al fondo vía el
           contador en el título; el toast entra en cualquier página. */}
       <NewOrderAlert />
+      {/* 5.110 · Aviso de instalación para iPhone/iPad: Android ya tiene el
+          aviso nativo de Chrome, pero iOS nunca lo da — este aviso propio
+          trae los 3 pasos (Compartir → Agregar a pantalla de inicio).
+          Solo Apple, solo si no está instalada y solo si no se cerró antes.
+          Fuera del envoltorio route-enter a propósito: el aviso es fijo y no
+          debe remontarse al navegar. */}
+      <InstalarEnIphone />
     </div>
   );
 }
