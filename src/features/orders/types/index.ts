@@ -10,6 +10,11 @@ export interface OrderLine {
   variantId: string;
   /** Marca congelada al crear la orden. Órdenes viejas: undefined. */
   brand?: string;
+  /** Código interno del producto (el que administra el dueño en catálogo).
+   *  DECISIÓN DEL DUEÑO (5.112-A): dato SOLO del personal (verificación de
+   *  pagos y despacho); el CLIENTE JAMÁS lo ve. NO es el sku de variante.
+   *  Órdenes viejas: undefined → la vista cae sola a «marca». */
+  code?: string;
   name: string;
   variantName: string;
   sku: string;

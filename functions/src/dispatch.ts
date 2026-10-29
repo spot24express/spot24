@@ -24,7 +24,7 @@
 import admin from 'firebase-admin';
 import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/https';
 import { getAdminApp, type CoreCtx } from './lib/ctx';
-import { canTransition, isOrderStatus } from './domain/order-state';
+import { canTransitionFor, isOrderStatus, type FulfillmentMode } from './domain/order-state';
 import { qtyVendidosPorProducto } from './domain/vendidos';
 import { ORDER_NOTIFICATIONS } from './lib/notifications';
 import { writeAudit } from './payments';
@@ -81,6 +81,14 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   if (!snap.exists) throw new HttpsError('not-found', 'Orden no encontrada.');
   const order = snap.data()!;
   const from = String(order['status']);
+  // 5.112.1 · MODALIDAD: retiro en tienda NO usa la ruta del delivery — ni
+  // «en_camino», ni tracking, ni CTA de despacho. Del mostrador pasa DIRECTO
+  // a «entregado» (preparado → entregado), y lo cierra el personal de
+  // caja/gerencia. Reporte del dueño: un pedido pickup seguía todo el flujo
+  // como si fuera a domicilio, hasta en la notificación del cliente.
+  const modo: FulfillmentMode =
+    String(order['delivery']?.['mode'] ?? 'delivery') === 'pickup' ? 'pickup' : 'delivery';
+  const esRetiro = modo === 'pickup';
 
   // Ronda 5i-c — REPLAY IDEMPOTENTE: la orden YA está en el estado destino
   // (el 200 de la llamada original no llegó al cliente por el arranque en
@@ -96,15 +104,24 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
     };
   }
 
-  if (!canTransition(from as never, to)) {
+  // 5.112.1 · La máquina ahora depende de la modalidad: en pickup,
+  // preparado → en_camino es INVÁLIDA (nadie sale a entregarlo) y
+  // preparado → entregado es el cierre normal del mostrador.
+  if (!canTransitionFor(from as never, to, modo)) {
     throw new HttpsError('failed-precondition', `Transición inválida: ${from} → ${to}.`);
   }
-  if (!canRoleMove(role, from, to)) {
+  // 5.112.1 · Cierre del retiro en mostrador: cajero y gerencia también
+  // pueden (el delivery NO — no hay ruta que hacer). El resto de movimientos
+  // queda gobernado por canRoleMove sin cambios.
+  const cierreRetiro =
+    esRetiro && to === 'entregado' && (from === 'preparado' || from === 'en_camino');
+  if (!canRoleMove(role, from, to) && !(cierreRetiro && ['cajero', 'gerente', 'admin'].includes(role))) {
     throw new HttpsError('permission-denied', 'Tu rol no permite mover el pedido a ese estado.');
   }
 
   const patch: Record<string, unknown> = { status: to, updatedAt: Date.now() };
-  if (to === 'en_camino' && !order['delivery']?.['trackingCode']) {
+  // 5.112.1 · Tracking SOLO con envío: en retiro no hay ruta que seguir.
+  if (to === 'en_camino' && !esRetiro && !order['delivery']?.['trackingCode']) {
     patch['delivery.trackingCode'] = `SP-TRK-${Math.floor(100000 + Math.random() * 899999)}`;
   }
   if (to === 'entregado') {
@@ -130,14 +147,23 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   }
 
   await db().runTransaction(async (tx) => {
-    for (const v of vendidos) {
-      const snap = await tx.get(v.ref);
-      if (snap.exists) {
+    // 5.112.1 · REGLA DE TRANSACCIONES FIRESTORE: TODAS las lecturas ANTES
+    // que CUALQUIER escritura. El bucle anterior intercalaba get→update por
+    // producto: con 2+ productos distintos, la 2.ª lectura llegaba DESPUÉS
+    // de la 1.ª escritura → «Firestore transactions require all reads to be
+    // executed before all writes» → 500 SIEMPRE al entregar un pedido de
+    // más de un producto (reporte del dueño con SP-261029-0007: 4 de 5
+    // intentos de entrega fallaron; era determinista, también en producción).
+    // Ahora: primero se leen TODOS los productos, después se escriben TODOS
+    // los contadores (mismo criterio que ya aplicaba cancelOrder en orders.ts).
+    const snaps = await Promise.all(vendidos.map((v) => tx.get(v.ref)));
+    vendidos.forEach((v, i) => {
+      if (snaps[i]?.exists) {
         tx.update(v.ref, {
           vendidosTotal: admin.firestore.FieldValue.increment(v.qty),
         });
       }
-    }
+    });
     tx.update(ref, patch);
     tx.set(ref.collection('events').doc(), {
       status: to,
@@ -149,7 +175,8 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
 
   // 5.28 · Aviso de despacho: pedido con envío PREPARADO → push a los
   // deliverys (tómalo) y a gerencia/admin/cajero (informativo 5.71). Los
-  // retiros en tienda no generan aviso: nadie tiene que ir a entregarlos.
+  // retiros en tienda no generan aviso: nadie tiene que ir a entregarlos
+  // (5.112.1 · y su globo dice «Listo para retirar», no «preparado»).
   // 5.71 · EN CADENA: primero el aviso de despacho (el delivery debe
   // enterarse YA) y detrás el globo de estado del cliente — sin ráfagas de
   // lecturas concurrentes → orden de llegada predecible.
@@ -157,11 +184,11 @@ export async function coreUpdateOrderStatus(ctx: CoreCtx): Promise<unknown> {
   // respuesta; un push fire-and-forget («void») queda suspendido a medio
   // camino y NUNCA sale en producción (el emulador no congela → aquí pasó
   // desapercibido). Los envíos son best-effort internamente (nunca lanzan).
-  if (to === 'preparado' && String(order['delivery']?.['mode'] ?? 'delivery') !== 'pickup') {
+  if (to === 'preparado' && !esRetiro) {
     await ORDER_NOTIFICATIONS.sendDispatchAlert(String(order['code']), String(order['delivery']?.['zoneName'] ?? ''));
-    await ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to);
+    await ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to, modo);
   } else {
-    await ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to);
+    await ORDER_NOTIFICATIONS.send(String(order['uid']), String(order['code']), to, modo);
   }
   await writeAudit({ action: `estado_${to}`, adminUid: ctx.auth.uid, targetId: orderId, note });
   return { ok: true, trackingCode: patch['delivery.trackingCode'] ?? order['delivery']?.['trackingCode'] ?? null };

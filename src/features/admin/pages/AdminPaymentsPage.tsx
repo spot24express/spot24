@@ -11,6 +11,7 @@ import { PAYMENT_METHOD_LABELS, PAYMENT_REQUIRES_RECEIPT } from '@/shared/consta
 import { formatBs, usdToBs } from '@/shared/lib/format';
 import { AppError, userMessage } from '@/shared/lib/errors';
 import { VOICE } from '@/shared/constants/brand';
+import { unirConPuntos } from '@/shared/lib/lineaMeta';
 
 /**
  * Verificación manual de pagos (5.4): visor de comprobantes, aprobar/rechazar.
@@ -39,6 +40,13 @@ import { VOICE } from '@/shared/constants/brand';
  * · Antifraude SIEMPRE visible: si la orden no trae señales se anuncia
  *   «sin señales de riesgo» en vez de ocultar el bloque.
  * · Sin contador «(N líneas)» y sin ventana de entrega (no aporta a caja).
+ *
+ * Ronda 5.112-A — a pedido del dueño: cada línea del contenido muestra el
+ * CÓDIGO del producto (el que él administra en catálogo), formato
+ * «Cód. X · marca · precio» con el código PRIMERO (no se recorta en
+ * pantallas angostas). DECISIÓN DEL DUEÑO: el código es interno — se ve
+ * SOLO aquí y en despacho; el CLIENTE JAMÁS lo ve. Órdenes viejas sin
+ * código: la línea cae sola a «marca · precio» (sin separadores raros).
  */
 export default function AdminPaymentsPage() {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -296,8 +304,9 @@ function VerifyBody({
                   {l.qty} × {l.name}
                 </p>
                 <p className="truncate text-xs text-muted">
-                  {l.brand ? `${l.brand} · ` : ''}
-                  {bsLine(l.unitPriceUsd)} c/u
+                  {/* 5.112-A: código del producto solo para el personal; en
+                      órdenes viejas (sin code) cae solo marca · precio. */}
+                  {unirConPuntos(l.code && `Cód. ${l.code}`, l.brand, `${bsLine(l.unitPriceUsd)} c/u`)}
                 </p>
               </div>
               <p className="shrink-0 text-sm font-bold text-paper">{bsLine(l.lineTotalUsd)}</p>

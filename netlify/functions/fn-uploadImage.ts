@@ -3,16 +3,21 @@
  * Subida de imágenes del panel (productos, promos) → imgbb.
  * · SOLO admin (claim role). El cliente comprime antes (máx 1600px JPEG).
  * · IMGBB_API_KEY vive SOLO en el servidor (Netlify env). Jamás en el cliente.
+ * · 5.112-C: la subida reintenta 3 veces contra caídas del hosting de fotos
+ *   (red, 5xx, 429 — el 29/10/2026 imgbb estuvo en 503 global y toda subida
+ *   del panel fallaba al primer intento). Tope de 5 s por intento; agotados
+ *   los intentos, el error viaja con el mensaje honesto «El servicio de
+ *   imágenes está caído…» que la UI del panel muestra tal cual.
  * · Errores con código preciso: el log de Netlify dice exactamente qué falló
- *   (clave ausente = 'failed-precondition', imgbb rechaza = 'unavailable').
+ *   (clave ausente = 'failed-precondition', imgbb caído/rechaza = 'unavailable').
  */
 import { HttpsError } from 'firebase-functions/v2/https';
 import { handle, type Core } from './_backend';
+import { imgbbConReintentos } from '../../functions/src/lib/imgbb';
 import type { CoreCtx } from '../../functions/src/lib/ctx';
 
 /** Tope defensivo: base64 sin prefijo data: (el cliente ya recorta a ~5M). */
 const MAX_BASE64_CHARS = 5_500_000;
-const IMGBB_ENDPOINT = 'https://api.imgbb.com/1/upload';
 
 function requireStaff(ctx: CoreCtx): string {
   if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
@@ -48,29 +53,10 @@ export const coreUploadImage: Core = async (ctx) => {
     );
   }
 
-  let res: Response;
-  try {
-    res = await fetch(IMGBB_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ key, image }).toString(),
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    throw new HttpsError('unavailable', 'No pudimos contactar a imgbb. Reintenta en unos segundos.');
-  }
-  if (!res.ok) {
-    throw new HttpsError('unavailable', `imgbb rechazó la subida (HTTP ${res.status}).`);
-  }
-  const json = (await res.json().catch(() => null)) as
-    | { success?: boolean; data?: { url?: string; delete_url?: string } }
-    | null;
-  const url = json?.data?.url;
-  const deleteUrl = json?.data?.delete_url ?? '';
-  if (json?.success !== true || typeof url !== 'string' || !url.startsWith('https://')) {
-    throw new HttpsError('internal', 'imgbb no devolvió la dirección de la foto.');
-  }
-  return { url, deleteUrl };
+  // 5.112-C: 3 intentos, pausas de 500 ms y 1,5 s, tope de 5 s por intento.
+  // Válida respuesta https://… y devuelve url + deleteUrl (el panel lo
+  // conserva por si el admin quiere borrar la foto desde imgbb.com).
+  return imgbbConReintentos(key, image);
 };
 
 export default async (req: Request): Promise<Response> => handle(coreUploadImage, req);

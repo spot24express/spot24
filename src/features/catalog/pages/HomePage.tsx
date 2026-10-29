@@ -10,7 +10,7 @@ import { useAutoCarousel } from '../hooks/useAutoCarousel';
 import { getProductsByIds } from '../services/catalog.service';
 import { curarRecientes, debeCargarMasPaginas } from '../lib/vitrina';
 import { isTopLevel } from '@/shared/lib/categoryTree';
-import { estiloCascada } from '@/shared/lib/cascada';
+import { alFallarFotoCon, FOTO_LOCAL } from '@/shared/lib/imgFallback';
 import { CategoryCard } from '../components/CategoryCard';
 import { ProductCard } from '../components/ProductCard';
 import { SearchBar } from '../components/SearchBar';
@@ -104,15 +104,8 @@ function ProductCarousel({ products, label }: { products: Product[]; label: stri
       onPointerDown={pause}
       onWheel={pause}
     >
-      {/* 5.111 · cada tarjeta entra en cascada (fundido + subida escalonada);
-          el auto-avance no se entera: scrollTo usa offsetLeft y la animación
-          solo mueve la tarjeta en vertical. */}
-      {products.map((p, i) => (
-        <div
-          key={p.id}
-          className="card-enter w-44 shrink-0 snap-start sm:w-52"
-          style={estiloCascada(i)}
-        >
+      {products.map((p) => (
+        <div key={p.id} className="w-44 shrink-0 snap-start sm:w-52">
           <ProductCard product={p} />
         </div>
       ))}
@@ -126,11 +119,7 @@ function ProductCarousel({ products, label }: { products: Product[]; label: stri
  *  Vuelve a comprar (si el cliente ya compró) → Bahías → Los más pedidos →
  *  Recién llegados (AHORA carrusel como las otras vitrinas) → pie.
  *  Las secciones sin datos NO aparecen: arrancamos desde cero (decisión del
- *  dueño) y se pueblan solas con el uso.
- *  5.111 (estilo de la app de farmacia de referencia, aprobado por el dueño):
- *  cascada de entrada en carruseles y bahías (fundido + subida 6 px, 40 ms
- *  por tarjeta, index.css .card-enter). El HÉROE no cascada: es la fachada,
- *  la foto más importante de la app entra de una (sin demoras). */
+ *  dueño) y se pueblan solas con el uso. */
 export default function HomePage() {
   useDocumentTitle('Tu parada segura. 24/7');
   const { data: categories } = useCategories();
@@ -185,7 +174,22 @@ export default function HomePage() {
 
   // Carrusel de promos/fotos: avanza solo cada 5 s; pausa al interactuar (5.98:
   // mismo hook que las hileras de producto — comportamiento idéntico).
-  const promoRef = useAutoCarousel(promos && promos.length > 0 ? promos.length : BANNER.length);
+  // 5.112-C · PARCHE IMGBB: ESPERAR la primera imagen antes de empezar a
+  // contar los 5 s (durante la caída de imgbb el slide mostraba el cartel
+  // azul de imgbb y el carrusel saltaba sin esperar). Si la foto falla, el
+  // onError muestra la foto del local del repo Y libera el carrusel; a los
+  // 8 s arranca igual (tope del hook) para no congelar el Home.
+  const promoRef = useAutoCarousel(promos && promos.length > 0 ? promos.length : BANNER.length, 5000, {
+    esperarPrimera: true,
+  });
+
+  // Respaldo visual de un slide de promo (5.112-C): foto del local con el
+  // escudo (archivo del repo, jamás se cae) y ADEMÁS libera el carrusel si
+  // la que falló era la primera (onError del slide 0 = «primera lista»).
+  const alFallarPromo = (e: { currentTarget: HTMLImageElement }): void => {
+    alFallarFotoCon(FOTO_LOCAL)(e);
+    promoRef.marcarLista();
+  };
 
   const slides: Slide[] =
     promos && promos.length > 0
@@ -248,7 +252,9 @@ export default function HomePage() {
         <p className="spot-subtitle mb-6">Tu pit stop de confianza, abierto las 24 horas.</p>
 
         {/* CARRUSEL — avanza solo cada 5 s; las promos activas del admin tienen
-            título superpuesto; si no hay, salen las fotos limpias del local */}
+            título superpuesto; si no hay, salen las fotos limpias del local.
+            5.112-C: el avance espera la primera imagen; toda promo fallida
+            muestra la foto del local del repo (nunca el cartel de imgbb). */}
         <div
           ref={promoRef.trackRef}
           aria-label={promos && promos.length > 0 ? 'Promociones' : 'Galería del local'}
@@ -256,21 +262,22 @@ export default function HomePage() {
           onPointerDown={promoRef.pause}
           onWheel={promoRef.pause}
         >
-          {/* 5.111 · las diapositivas también entran en cascada (la primera
-              tanda es la que se ve; el resto ya está fuera de pantalla) */}
           {slides.map((g, i) => (
             <figure
               key={g.key}
-              style={estiloCascada(i)}
-              className={`card-enter relative shrink-0 snap-start overflow-hidden rounded-brand-lg border-2 border-line ${
+              className={`relative shrink-0 snap-start overflow-hidden rounded-brand-lg border-2 border-line ${
                 g.caption ? 'aspect-[16/9] h-52 sm:h-72' : 'h-52 w-auto sm:h-72'
               }`}
             >
               <img
                 src={g.src}
                 alt={g.alt}
-                loading="lazy"
+                // 5.112-C: la primera eager (el carrusel y su espera la miran);
+                // el resto lazy como siempre.
+                loading={i === 0 ? 'eager' : 'lazy'}
                 decoding="async"
+                onError={alFallarPromo}
+                onLoad={i === 0 ? promoRef.marcarLista : undefined}
                 className={g.caption ? 'h-full w-full object-cover' : 'h-full w-auto object-cover'}
               />
               {g.caption ? (
@@ -320,11 +327,8 @@ export default function HomePage() {
         </h2>
         <p className="spot-subtitle mb-6">Elige tu categoría. Todo en el mismo pit stop.</p>
         <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          {/* 5.111 · bahías con la misma cascada que la grilla del catálogo */}
-          {parents.map((c, i) => (
-            <div key={c.id} className="card-enter" style={estiloCascada(i)}>
-              <CategoryCard category={c} />
-            </div>
+          {parents.map((c) => (
+            <CategoryCard key={c.id} category={c} />
           ))}
         </div>
       </section>

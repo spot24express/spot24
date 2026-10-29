@@ -6,22 +6,17 @@
  * la URL directa https://i.ibb.co/... que el panel guarda en Firestore.
  * Seguridad: requiere sesión verificada con custom claim role='admin'
  * (mismo criterio que las reglas isAdmin() y el resto de cores admin).
+ * 5.112-C: la subida pasa por imgbbConReintentos (lib/imgbb.ts) — 3 intentos
+ * contra caídas del hosting (red, 5xx, 429) con tope de 5 s por intento
+ * (antes este core podía quedar colgado indefinidamente) y mensaje honesto
+ * al agotarse los intentos.
  */
 import { HttpsError } from 'firebase-functions/v2/https';
+import { imgbbConReintentos } from './lib/imgbb';
 import type { CoreCtx } from './lib/ctx';
 
 /** Tope de seguridad en base64 (~5.5M chars ≈ 4 MB de imagen real). */
 const MAX_BASE64 = 5_500_000;
-
-interface ImgbbPayload {
-  success?: { code?: number };
-  data?: {
-    url?: string;
-    display_url?: string;
-    image?: { url?: string };
-    delete_url?: string;
-  };
-}
 
 export async function coreUploadImage(ctx: CoreCtx): Promise<{ url: string; deleteUrl: string }> {
   // Ronda 3: gerente también gestiona fotos del catálogo.
@@ -46,27 +41,8 @@ export async function coreUploadImage(ctx: CoreCtx): Promise<{ url: string; dele
     );
   }
 
-  // imgbb acepta base64 por POST form-urlencoded (documentación oficial).
-  const form = new URLSearchParams();
-  form.set('key', key);
-  form.set('image', image);
-
-  let res: Response;
-  try {
-    res = await fetch('https://api.imgbb.com/1/upload', { method: 'POST', body: form });
-  } catch {
-    throw new HttpsError('unavailable', 'No se pudo contactar al servicio de imágenes; intenta de nuevo.');
-  }
-  if (!res.ok) {
-    throw new HttpsError('internal', `El servicio de imágenes rechazó la subida (HTTP ${res.status}).`);
-  }
-
-  const payload = (await res.json().catch(() => null)) as ImgbbPayload | null;
-  const url = payload?.data?.url || payload?.data?.image?.url || payload?.data?.display_url || '';
-  if (!payload?.success?.code || !url) {
-    throw new HttpsError('internal', 'El servicio de imágenes no devolvió URL; intenta de nuevo.');
-  }
-  // delete_url permite borrar la foto desde imgbb.com; se devuelve por si el
-  // admin quiere conservarlo, la UI no depende de él.
-  return { url, deleteUrl: String(payload?.data?.delete_url ?? '') };
+  // 5.112-C: la subida (con sus 3 intentos y su tope de 5 s por intento)
+  // vive en lib/imgbb.ts, compartida con fn-uploadImage y el comprobante
+  // del checkout. La respuesta válida siempre trae https://…
+  return imgbbConReintentos(key, image);
 }

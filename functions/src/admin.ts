@@ -133,6 +133,62 @@ export async function coreDeleteUser(ctx: CoreCtx): Promise<unknown> {
   return { ok: true };
 }
 
+/**
+ * 5.112.1 · «Eliminar mi cuenta» — auto-baja del CLIENTE (privacidad, derecho
+ * al olvido; petición del dueño: «Puedes darte de baja cuando quieras, sin
+ * pedir permiso a nadie»). El uid SIEMPRE sale del token verificado (jamás
+ * del body): nadie puede borrar una cuenta ajena. Solo las cuentas de CLIENTE
+ * pueden auto-eliminarse — el personal coordina su baja con administración
+ * (coreDeleteUser). Limpieza idéntica a coreDeleteUser y en el MISMO orden
+ * deliberado: (1) leer Auth, (2) lote atómico Firestore (ficha + carrito +
+ * tokens FCM), (3) borrar la cuenta de Authentication, (4) auditar.
+ * IDEMPOTENTE: si la cuenta ya no existe en Auth (reintento tras un fallo
+ * tardío o una baja previa a medias), se limpian IGUAL los restos de
+ * Firestore y se responde ok — el cliente cierra sesión sin ver error.
+ * Los pedidos históricos NO se tocan (registro contable/antifraude).
+ */
+export async function coreDeleteMyAccount(ctx: CoreCtx): Promise<unknown> {
+  if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
+  const uid = ctx.auth.uid;
+  const role = String(ctx.auth.token['role'] ?? 'customer');
+  if (role !== 'customer') {
+    throw new HttpsError(
+      'failed-precondition',
+      'Las cuentas del personal no se auto-eliminan: coordina tu baja con administración.',
+    );
+  }
+
+  // 1) Existencia en Auth. Si ya fue eliminada, seguimos con la limpieza
+  //    para no dejar restos (flujo idempotente, mismo espíritu que 5.36).
+  let existe = true;
+  try {
+    await admin.auth(getAdminApp()).getUser(uid);
+  } catch (e) {
+    if ((e as { code?: unknown }).code === 'auth/user-not-found') {
+      existe = false;
+    } else {
+      throw e; // red u otro fallo transitorio: reintentar es seguro.
+    }
+  }
+
+  // 2) Lote atómico: ficha del panel + carrito + tokens de notificaciones
+  //    (subcolección fcmTokens). Borrar lo inexistente es inocuo.
+  const userRef = db().collection('users').doc(uid);
+  const batch = db().batch();
+  batch.delete(userRef);
+  batch.delete(db().collection('carts').doc(uid));
+  const tokens = await userRef.collection('fcmTokens').limit(100).get();
+  tokens.docs.forEach((d) => batch.delete(d.ref));
+  await batch.commit();
+
+  // 3) Baja en Authentication: el correo queda libre y la sesión muere.
+  if (existe) await admin.auth(getAdminApp()).deleteUser(uid);
+
+  // 4) Auditoría (solo uid, sin PII).
+  await writeAudit({ action: 'eliminar_mi_cuenta', adminUid: uid, targetId: uid });
+  return { ok: true };
+}
+
 export async function coreGetAdminMetrics(ctx: CoreCtx): Promise<unknown> {
   // Ronda 3: gerente también consulta métricas (solo lectura).
   requirePanel(ctx);

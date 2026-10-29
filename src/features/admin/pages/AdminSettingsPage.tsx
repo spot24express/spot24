@@ -9,6 +9,12 @@
  * · Agregar y quitar cuentas; interruptor Activo/Inactivo por cuenta.
  * El cliente solo ve en el checkout las cuentas ACTIVAS (chips por cuenta).
  * Guardar aplica al instante en producción — sin deploy, sin código.
+ *
+ * Ronda 5.112-B (pedido del dueño): la sección Operación gana la franja REAL
+ * del delivery (desde/hasta, hora de Venezuela). Fuera de esa franja el
+ * checkout solo ofrece RETIRO EN TIENDA — así un cliente que entra a comprar
+ * jamás puede pedir envío cuando los deliverys no están. Cambiar la franja
+ * aquí aplica al instante en el checkout: sin deploy, sin código.
  */
 import { useEffect, useRef, useState } from 'react';
 import { toast } from '@/shared/lib/toast';
@@ -26,6 +32,7 @@ import {
   getGeneralSettings, saveGeneralSettings, GENERAL_SEED,
 } from '@/shared/services/settings.service';
 import { adminUploadImage } from '../services/imageUpload.service';
+import { esHHMM } from '@/shared/lib/horarioDelivery';
 import {
   accountChipLabel, copyRowsForAccount, isValidBinanceId, isValidHolderName,
   isValidQrUrl, newAccountId, qrForAccount, usesVeForm,
@@ -103,6 +110,9 @@ interface GeneralForm {
   pickupAddress: string;
   pickupHours: string;
   deliveryHours: string;
+  /** 5.112-B: franja del delivery en HH:MM (24h, hora Venezuela). '' = sin restricción. */
+  deliveryStart: string;
+  deliveryEnd: string;
 }
 
 const EMPTY_GENERAL: GeneralForm = {
@@ -111,6 +121,8 @@ const EMPTY_GENERAL: GeneralForm = {
   pickupAddress: '',
   pickupHours: '',
   deliveryHours: GENERAL_SEED.deliveryHours,
+  deliveryStart: '',
+  deliveryEnd: '',
 };
 
 export default function AdminSettingsPage() {
@@ -153,6 +165,9 @@ export default function AdminSettingsPage() {
           // el valor EFECTIVO (el que el cliente ve ahora) para que el admin
           // decida con la verdad en pantalla, no con un campo vacío.
           deliveryHours: g.deliveryHours || GENERAL_SEED.deliveryHours,
+          // 5.112-B: franja del delivery (docs viejos: '' = sin restricción).
+          deliveryStart: g.deliveryStart,
+          deliveryEnd: g.deliveryEnd,
         });
       })
       .catch(() => setError(true))
@@ -171,6 +186,19 @@ export default function AdminSettingsPage() {
     if (wa && !isValidPhoneVE(wa) && !/^\+?58\d{10}$/.test(wa.replace(/[\s-]/g, ''))) {
       e['whatsappNumber'] = 'WhatsApp: 04241234567 (o vacío para ocultar el botón).';
     }
+    // 5.112-B: franja del delivery. Reglas: ambas vacías = sin restricción;
+    // si se llena una, van las dos (HH:MM) y no pueden ser la misma hora.
+    const dStart = general.deliveryStart.trim();
+    const dEnd = general.deliveryEnd.trim();
+    if ((dStart || dEnd) && (!esHHMM(dStart) || !esHHMM(dEnd))) {
+      const msg = 'Franja del delivery: llena ambas horas (o deja ambas vacías).';
+      e['deliveryStart'] = msg;
+      e['deliveryEnd'] = msg;
+    } else if (dStart && dStart === dEnd) {
+      const msg = 'La hora inicial y la final del delivery no pueden ser iguales.';
+      e['deliveryStart'] = msg;
+      e['deliveryEnd'] = msg;
+    }
     setErrors((prev) => ({ ...prev, ...e }));
     if (Object.values(e).some((x) => x)) return;
 
@@ -182,9 +210,11 @@ export default function AdminSettingsPage() {
         pickupAddress: sanitizeText(general.pickupAddress, 200),
         pickupHours: sanitizeText(general.pickupHours, 60),
         deliveryHours: sanitizeText(general.deliveryHours, 60),
+        deliveryStart: dStart,
+        deliveryEnd: dEnd,
       });
       setSavedGeneralAt(Date.now());
-      toast.success('Operación guardada: IVA, WhatsApp, retiro y horario de deliverys en vivo.');
+      toast.success('Operación guardada: IVA, WhatsApp, retiro, horario y franja del delivery en vivo.');
     } catch (err) {
       toast.error(userMessage(err));
     } finally {
@@ -425,6 +455,29 @@ export default function AdminSettingsPage() {
                 hint="Lo que ve el cliente en el Home. Si lo cambias aquí, se muestra al instante."
                 error={errors['deliveryHours']}
               />
+              {/* 5.112-B: franja REAL que gobierna el checkout (hora Venezuela).
+                  type="time" abre el selector nativo de hora en el teléfono:
+                  cero errores de tecleo y siempre HH:MM válido. Fuera de la
+                  franja el checkout solo ofrece retiro en tienda — y si el
+                  dueño cambia la franja, el checkout obedece al instante. */}
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Input
+                  label="Delivery disponible desde (hora Venezuela)"
+                  type="time"
+                  value={general.deliveryStart}
+                  onChange={(ev) => setGeneral((g) => ({ ...g, deliveryStart: ev.target.value }))}
+                  hint="Ej.: 12:00 (12 pm). Ambas horas vacías = delivery siempre disponible."
+                  error={errors['deliveryStart']}
+                />
+                <Input
+                  label="Delivery disponible hasta (hora Venezuela)"
+                  type="time"
+                  value={general.deliveryEnd}
+                  onChange={(ev) => setGeneral((g) => ({ ...g, deliveryEnd: ev.target.value }))}
+                  hint="Ej.: 23:59 (11:59 pm). Fuera de la franja, solo retiro en tienda."
+                  error={errors['deliveryEnd']}
+                />
+              </div>
               <Input
                 label="IVA (%) — 0 para desactivado"
                 value={general.ivaPercent}

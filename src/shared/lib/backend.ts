@@ -58,6 +58,16 @@ function toAppError(code: string, serverMessage?: string): AppError {
   }
   else if (code.includes('resource-exhausted')) mapped = 'rate-limit';
   else if (code.includes('out-of-range')) mapped = 'stock';
+  else if (code.includes('unavailable')) {
+    // 5.112-C · PARCHE IMGBB: la subida de fotos (comprobante en el
+    // checkout, imágenes del panel) ya reintentó 3 veces en el servidor y
+    // sigue habiendo caída. El prefijo del mensaje ES CONTRATO con
+    // lib/imgbb.ts: reconoce la caída del hosting de imágenes y mapea al
+    // código 'images' → la UI muestra la verdad («El servicio de imágenes
+    // está caído…») en vez del genérico «Algo salió fuera de línea».
+    if (serverMessage?.startsWith('El servicio de imágenes está caído')) mapped = 'images';
+    else mapped = 'generic';
+  }
   return new AppError(mapped, serverMessage);
 }
 
@@ -101,7 +111,8 @@ export async function callFunction<TRes = unknown>(
       // el tope de 25 s abortaba respuestas que el servidor SÍ procesó y
       // convertía reintentos seguros en errores fantasmas. En producción no
       // hay cola y el arranque en frío es 1-3 s: se mantienen 25 s.
-      // (fn-uploadReceipt tiene 15 s internos de imgbb → margen suficiente.)
+      // (imgbb interno llega a ~17 s el peor caso con los reintentos del
+      // parche 5.112-C → margen suficiente.)
       signal: AbortSignal.timeout(import.meta.env.DEV ? 60_000 : 25_000),
     });
   } catch (e) {

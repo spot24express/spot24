@@ -23,9 +23,22 @@ interface ModalProps {
  * transform presente o futuro. El foco, ESC y el clic-fuera siguen
  * funcionando igual (React propaga los eventos por el árbol de componentes,
  * no por el del DOM).
+ *
+ * 5.112 · FIX «se sale del cuadro» (reporte del dueño en la nota interna de
+ * Verificación): el efecto vivía con [open, onClose] y TODA la app pasa un
+ * arrow inline como onClose → nueva identidad en cada render. Escribir UNA
+ * letra en un input dentro de la modal re-ejecutaba el efecto y el foco
+ * saltaba al primer botón (la X de cerrar): el cursor abandonaba el cuadro
+ * tras cada tecla. Ahora onClose vive en un ref y el efecto SOLO depende de
+ * `open`: el foco se captura una vez por apertura y ninguna tecla lo mueve.
  */
 export function Modal({ open, onClose, title, children, wide = false }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null);
+  // onClose SIEMPRE fresco sin re-disparar el efecto (ver 5.112 arriba).
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -36,7 +49,7 @@ export function Modal({ open, onClose, title, children, wide = false }: ModalPro
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key === 'Tab' && node) {
@@ -62,11 +75,11 @@ export function Modal({ open, onClose, title, children, wide = false }: ModalPro
       document.body.style.overflow = '';
       previous?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-6" role="presentation" onClick={(e) => e.target === e.currentTarget && onClose()}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 p-0 sm:items-center sm:p-6" role="presentation" onClick={(e) => e.target === e.currentTarget && onCloseRef.current()}>
       <div
         ref={ref}
         role="dialog"
@@ -78,7 +91,7 @@ export function Modal({ open, onClose, title, children, wide = false }: ModalPro
           <h2 className="font-display text-xl font-bold italic uppercase text-paper">{title}</h2>
           <button
             type="button"
-            onClick={onClose}
+            onClick={() => onCloseRef.current()}
             aria-label="Cerrar"
             className="rounded-brand p-2 text-muted hover:bg-surface-2 hover:text-paper"
           >

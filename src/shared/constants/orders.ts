@@ -124,8 +124,17 @@ export const PAYMENT_REQUIRES_RECEIPT: Record<PaymentMethod, boolean> = {
 };
 
 /** Texto de estado ajustado por método: en contra-entrega «verificando tu
- *  pago» confunde (el pago ocurre al recibir), así que se dice claro. */
-export function customerStatusText(status: OrderStatus, method: PaymentMethod): string {
+ *  pago» confunde (el pago ocurre al recibir), así que se dice claro.
+ *  5.112.1 · `pickup`: retiro en tienda — «sale de la bahía»/«en ruta» no
+ *  aplican (nadie sale a entregarlo); el cliente pasa por el mostrador.
+ *  Espejo del backend en MESSAGES_PICKUP (functions/src/lib/notifications). */
+export function customerStatusText(status: OrderStatus, method: PaymentMethod, pickup = false): string {
+  if (pickup && status === 'preparado') {
+    return 'Empacado y listo. Te esperamos en la tienda para tu retiro.';
+  }
+  if (pickup && status === 'entregado') {
+    return 'Retirado en tienda. ¡Gracias por tu visita!';
+  }
   if (status === 'en_verificacion' && !PAYMENT_REQUIRES_RECEIPT[method]) {
     return method === 'efectivo'
       ? 'Pedido recibido. Prepara el efectivo: pagas al recibir (monto exacto si puedes).'

@@ -16,12 +16,27 @@
  * IVA: porcentaje configurable por el admin en settings/general.ivaPercent
  * (0–100; 0 = sin IVA). Se aplica sobre subtotal + envío.
  *
+ * 5.112-B · CANDADO DE FRANJA DEL DELIVERY: fn-createOrder rechaza todo
+ * pedido a domicilio fuera de la franja guardada en settings/general
+ * (deliveryStart/deliveryEnd, HH:MM, HORA DE VENEZUELA UTC-4). El rechazo
+ * viaja como failed-precondition con mensaje que empieza por «Delivery
+ * cerrado» — el checkout nuevo lo reconoce y manda al cliente a retiro en
+ * tienda. Sin franja guardada = sin restricción (los ajustes viejos no
+ * rompen nada y datos raros jamás dejan a la tienda sin ventas).
+ *
  * Ronda 5.71 · EL CAJERO ENTRA AL MAPA: cada pedido que entra a verificación
  * dispara el aviso «Pago por verificar» al cajero (con gerencia/admin de
  * respaldo), EN CADENA tras el globo del cliente — en createOrder (la orden
  * nace en en_verificación) y en uploadReceipt SOLO cuando la subida mete a
  * la orden en verificación (legacy «pendiente» + comprobante); las
  * re-subidas no repiten el aviso.
+ *
+ * 5.112-C · PARCHE IMGBB: la subida del comprobante a imgbb pasó por
+ * imgbbConReintentos (lib/imgbb.ts): 3 intentos contra caídas del hosting
+ * de fotos (el 29/10/2026 imgbb estuvo en 503 global y el checkout
+ * rechazaba pedidos al primer intento). Tras agotar los intentos el error
+ * viaja con mensaje honesto («El servicio de imágenes está caído…») que
+ * el checkout muestra tal cual vía el código 'images'.
  */
 import admin from 'firebase-admin';
 import type { DecodedIdToken } from 'firebase-admin/auth';
@@ -33,6 +48,7 @@ import { assessRisk, MAX_ORDERS_PER_HOUR } from './lib/fraud';
 import { canTransition } from './domain/order-state';
 import { ORDER_NOTIFICATIONS, STOCK_NOTIFICATIONS } from './lib/notifications';
 import { extractItems, finiteNum, isSafeDocId } from './lib/items';
+import { imgbbConReintentos } from './lib/imgbb';
 
 void encryptField;
 void hashReference;
@@ -46,10 +62,10 @@ const MAX_LINES = 50;
 const MAX_PRICE_USD = 10_000;
 
 /* Comprobante de pago: tope defensivo del base64 sin prefijo data: (el
- * cliente comprime antes) y endpoint del host de imágenes. Funciona sin
- * bucket de Storage (plan Spark): la imagen vive en imgbb. */
+ * cliente comprime antes). Funciona sin bucket de Storage (plan Spark):
+ * la imagen vive en imgbb y la subida la hace lib/imgbb.ts con reintentos
+ * (5.112-C); aquí solo vive el tope del payload. */
 const MAX_RECEIPT_BASE64 = 5_500_000;
-const IMGBB_ENDPOINT = 'https://api.imgbb.com/1/upload';
 
 /* ─────────────────────────── utilidades ─────────────────────────── */
 
@@ -136,6 +152,8 @@ function parseReceiptImage(raw: string): string {
 /**
  * Sube el comprobante a imgbb y devuelve la URL pública.
  * La clave IMGBB_API_KEY vive SOLO en el servidor (nunca en el cliente).
+ * 5.112-C: la subida reintenta 3 veces contra caídas de imgbb (lib/imgbb.ts);
+ * agotados los intentos, el mensaje honesto llega al cliente vía 'images'.
  */
 async function uploadReceiptToImgbb(image: string): Promise<string> {
   const key = process.env['IMGBB_API_KEY'] ?? '';
@@ -145,28 +163,7 @@ async function uploadReceiptToImgbb(image: string): Promise<string> {
       'IMGBB_API_KEY no configurada en el servidor (Netlify → Environment variables) y redeploy.',
     );
   }
-
-  let res: Response;
-  try {
-    res = await fetch(IMGBB_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ key, image }).toString(),
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    throw new HttpsError('unavailable', 'No pudimos contactar a imgbb. Reintenta en unos segundos.');
-  }
-  if (!res.ok) {
-    throw new HttpsError('unavailable', `imgbb rechazó la subida (HTTP ${res.status}).`);
-  }
-  const json = (await res.json().catch(() => null)) as
-    | { success?: boolean; data?: { url?: string } }
-    | null;
-  const url = json?.data?.url;
-  if (json?.success !== true || typeof url !== 'string' || !url.startsWith('https://')) {
-    throw new HttpsError('internal', 'imgbb no devolvió la dirección del comprobante.');
-  }
+  const { url } = await imgbbConReintentos(key, image);
   return url;
 }
 
@@ -461,6 +458,61 @@ function normalizeIva(v: unknown): number {
   return Math.min(100, Math.round(n * 100) / 100);
 }
 
+/* ───────── 5.112-B · franja REAL del delivery (candado backend) ───────── */
+
+/** "HH:MM" de 24h bien formado, p. ej. "12:00" o "23:59". */
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+/** "12:30" → 750 minutos del día. Llamar solo con HHMM_RE válido. */
+function hhmmAMinutos(v: string): number {
+  const [h = 0, m = 0] = v.split(':').map(Number);
+  return h * 60 + m;
+}
+
+/** Minuto del día AHORA en Venezuela (0 = 12:00 am … 1439 = 11:59 pm).
+ *  Caracas = UTC-4 TODO el año (sin horario de verano desde 2016): el doble
+ *  módulo maneja la vuelta de medianoche y da el MISMO resultado que el
+ *  navegador del cliente (misma lógica que src/shared/lib/horarioDelivery.ts). */
+function minutosAhoraCaracas(d: Date = new Date()): number {
+  return (((d.getUTCHours() * 60 + d.getUTCMinutes() - 240) % 1440) + 1440) % 1440;
+}
+
+/** "12:00" → "12:00 pm", "23:59" → "11:59 pm", "07:05" → "7:05 am". */
+function hhmmBonito(v: string): string {
+  if (!HHMM_RE.test(v)) return v;
+  const [rawH = 0, rawM = 0] = v.split(':').map(Number);
+  const h = rawH;
+  const m = rawM;
+  const sufijo = h < 12 ? 'am' : 'pm';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${sufijo}`;
+}
+
+/**
+ * Candado 5.112-B en el SERVIDOR: si el dueño guardó la franja del delivery
+ * y AHORA (hora Venezuela) queda fuera, rechaza el pedido a domicilio con
+ * mensaje accionable. El cliente ya lo valida (el checkout nuevo solo manda
+ * retiro fuera de franja): esta es la doble llave — el backend NUNCA confía
+ * en la UI. · Sin franja válida (vacía, incompleta o start === end) → sin
+ * restricción: jamás bloquear ventas por datos raros. · start < end →
+ * abierto DENTRO de la franja (12:00–23:59). · start > end → franja que
+ * CRUZA la medianoche (22:00–02:00).
+ */
+function assertDeliveryAbierto(genSnap: admin.firestore.DocumentSnapshot): void {
+  const start = sanitizeStr(genSnap.data()?.['deliveryStart'], 5);
+  const end = sanitizeStr(genSnap.data()?.['deliveryEnd'], 5);
+  if (!HHMM_RE.test(start) || !HHMM_RE.test(end) || start === end) return;
+  const a = hhmmAMinutos(start);
+  const b = hhmmAMinutos(end);
+  const m = minutosAhoraCaracas();
+  const abierto = a < b ? m >= a && m <= b : m >= a || m <= b;
+  if (abierto) return;
+  throw new HttpsError(
+    'failed-precondition',
+    `Delivery cerrado: el envío a domicilio solo está disponible de ${hhmmBonito(start)} a ${hhmmBonito(end)}. Elige retiro en tienda o vuelve dentro de la franja.`,
+  );
+}
+
 /** Lee precios SOLO de Firestore y calcula todos los montos. */
 async function computeTotals(
   _uid: string,
@@ -524,6 +576,11 @@ async function computeTotals(
     linesSnapshot.push({
       ...line,
       brand: sanitizeStr(psnap.data()?.['brand'], 60),
+      // 5.112-A: código del producto (el que administra el dueño) congelado
+      // en la línea. CERO lecturas nuevas: el doc del producto ya se leyó
+      // arriba con getAll. Solo personal (verificación/despacho); el cliente
+      // jamás lo ve. Órdenes viejas y productos sin código: '' → no se guarda.
+      code: sanitizeStr(psnap.data()?.['code'], 40),
       name: sanitizeStr(psnap.data()?.['name'], 120),
       variantName: sanitizeStr(vsnap.data()?.['name'], 80),
       sku: sanitizeStr(vsnap.data()?.['sku'], 40),
@@ -576,6 +633,8 @@ async function computeTotals(
 
 interface ValidLineWithPrice extends ValidLine {
   brand: string;
+  /** 5.112-A: código del producto congelado (solo personal). */
+  code: string;
   name: string;
   variantName: string;
   sku: string;
@@ -654,14 +713,6 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
     const req = validateCreateOrderReq(ctx.data as CreateOrderReq | undefined);
     const isPickup = req.fulfillment === 'pickup';
 
-    // Dirección del local para retiro: la fija el SERVIDOR desde settings/general
-    // (el cliente no puede definir dónde retira).
-    let pickupAddress = '';
-    if (isPickup) {
-      const genSnap = await db().collection('settings').doc('general').get();
-      pickupAddress = sanitizeStr(genSnap.data()?.['pickupAddress'], 200) || 'Retiro en tienda · Maracay, Aragua';
-    }
-
     // Idempotencia: misma clave → misma orden, sin duplicados (5.4).
     const idemRef = db().collection('idempotency').doc(`${uid}_${req.idempotencyKey}`);
     const existing = await idemRef.get();
@@ -690,6 +741,19 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       }
       reservation = rsnap;
     }
+
+    // 5.112-B · settings/general — UNA lectura sirve para TODO:
+    // · delivery → franja REAL del delivery: candado de horario. Doble llave:
+    //   el checkout nuevo ya no ofrece domicilio fuera de franja, pero el
+    //   backend NUNCA confía en la UI — un cliente viejo o modificado recibe
+    //   el rechazo AQUÍ, antes de gastar imgbb ni lecturas de montos.
+    // · pickup    → dirección del local que fija el SERVIDOR (el cliente no
+    //   puede definir dónde retira).
+    const genSnap = await db().collection('settings').doc('general').get();
+    if (!isPickup) assertDeliveryAbierto(genSnap);
+    const pickupAddress = isPickup
+      ? sanitizeStr(genSnap.data()?.['pickupAddress'], 200) || 'Retiro en tienda · Maracay, Aragua'
+      : '';
 
     // FLUJO ESTRICTO (5i-k): el comprobante se sube a imgbb ANTES de crear la
     // orden. Si imgbb falla, NO hay pedido (cero pedidos sin pago) y el
@@ -751,6 +815,7 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
         productId: l.productId,
         variantId: l.variantId,
         brand: l.brand,
+        code: l.code,
         name: l.name,
         variantName: l.variantName,
         sku: l.sku,

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { Button } from '@/shared/components/ui/Button';
 import { Input, Textarea } from '@/shared/components/ui/Input';
+import { Modal } from '@/shared/components/ui/Modal';
 import { SpeedDivider, SpeedLines } from '@/shared/components/brand/Logo';
 import { toast } from '@/shared/lib/toast';
 import { userMessage } from '@/shared/lib/errors';
@@ -45,6 +46,14 @@ import { isValidPhoneVE, normalizePhoneVE } from '@/shared/lib/validation';
  * cédula se muestra como dato de solo lectura en «Datos» y sigue prellenando
  * cada compra en el checkout (contacto y «Cédula del pagador» del pago
  * móvil). Fuera el rótulo «Van prellenados en cada compra».
+ *
+ * 5.112.1 — «Zona de peligro»: ELIMINAR MI CUENTA (privacidad, derecho al
+ * olvido). Botón SOLO para clientes (el staff coordina su baja con
+ * administración). Modal de confirmación → fn-deleteMyAccount (el uid viaja
+ * dentro del token Bearer; el servidor limpia ficha user + carrito + tokens
+ * y borra la cuenta de Auth; pedidos históricos se conservan) → cierre de
+ * sesión local y salida a la portada. Idempotente: un reintento tras un
+ * fallo tardío nunca deja la cuenta a medias.
  */
 /** Etiqueta del panel según rol (fallback para roles futuros). */
 const PANEL_TITLES: Record<string, string> = {
@@ -56,11 +65,14 @@ const PANEL_TITLES: Record<string, string> = {
 
 export default function AccountPage() {
   useDocumentTitle('Mi cuenta');
-  const { user, signOut, isStaff, saveMyData, changeMyPassword } = useAuth();
+  const { user, signOut, isStaff, saveMyData, changeMyPassword, deleteMyAccount } = useAuth();
   const navigate = useNavigate();
   const [pushState, setPushState] = useState<'unknown' | 'on' | 'off'>('unknown');
   // null = comprobando soporte (el botón se pinta igual: comportamiento de siempre).
   const [supported, setSupported] = useState<boolean | null>(null);
+  // 5.112.1 · Zona de peligro: confirmación en modal + estado de la baja.
+  const [dangerOpen, setDangerOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // 5.92g · Datos de entrega: teléfono + dirección del perfil, editables aquí
   // (decisión del dueño: la cédula ya NO se edita — la del registro sigue
@@ -137,6 +149,23 @@ export default function AccountPage() {
       toast.error(userMessage(err));
     } finally {
       setSavingPw(false);
+    }
+  };
+
+  /** 5.112.1 · Baja completa: el servidor borra TODO (idempotente); aquí
+   *  cerramos sesión local y salimos a la portada. Cualquier fallo se traduce
+   *  a mensaje claro (userMessage) y la cuenta sigue intacta. */
+  const onDeleteMyAccount = async () => {
+    setDeleting(true);
+    try {
+      await deleteMyAccount();
+      toast.success('Tu cuenta fue eliminada. ¡Gracias por haber pasado por SPOT 24!');
+      navigate('/');
+    } catch (err) {
+      toast.error(userMessage(err));
+      setDangerOpen(false);
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -325,6 +354,52 @@ export default function AccountPage() {
           </Button>
         </section>
       </div>
+
+      {/* ZONA DE PELIGRO (5.112.1) — solo clientes: el personal coordina su
+          baja con administración. Última tarjeta, separada, sin ambigüedad. */}
+      {!isStaff && (
+        <section className="mt-6 rounded-brand-lg border-2 border-signal/30 bg-surface-1 p-6">
+          <h2 className="font-display text-lg font-bold italic uppercase text-paper">
+            Zona de peligro
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm text-muted">
+            Puedes darte de baja cuando quieras, sin pedir permiso a nadie. Se
+            borran tu ficha, tu carrito y tus notificaciones, y tu correo queda
+            libre. Tus pedidos históricos se conservan como registro de compra,
+            sin acceso a tu cuenta. Esta acción no se puede deshacer.
+          </p>
+          <Button
+            variant="danger-ghost"
+            className="mt-4"
+            onClick={() => setDangerOpen(true)}
+          >
+            Eliminar mi cuenta
+          </Button>
+        </section>
+      )}
+
+      {/* Confirmación de baja (5.112.1): dos pasos claros, sin sorpresas. */}
+      <Modal open={dangerOpen} onClose={() => (deleting ? undefined : setDangerOpen(false))} title="Eliminar mi cuenta">
+        <p className="text-body-base text-paper">
+          Esto elimina tu cuenta PARA SIEMPRE: tu ficha, tu carrito guardado y
+          tus notificaciones. No se puede deshacer.
+        </p>
+        <p className="mt-2 text-sm text-muted">
+          Tus pedidos ya realizados se conservan como registro de compra.
+        </p>
+        <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <Button variant="secondary" disabled={deleting} onClick={() => setDangerOpen(false)}>
+            Mejor no
+          </Button>
+          <Button
+            variant="danger-ghost"
+            loading={deleting}
+            onClick={() => void onDeleteMyAccount()}
+          >
+            Sí, eliminar mi cuenta
+          </Button>
+        </div>
+      </Modal>
     </div>
   );
 }

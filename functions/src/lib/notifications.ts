@@ -80,6 +80,30 @@ const MESSAGES: Record<string, { title: string; body: string }> = {
   cancelado: { title: 'SPOT 24 · Pedido cancelado', body: 'Tu pedido fue cancelado. Cuando quieras, aquí estamos.' },
 };
 
+/**
+ * 5.112.1 · Textos para RETIRO EN TIENDA (pickup): el pedido NO sale por
+ * ruta — el cliente pasa por el mostrador. Antes heredaba los textos del
+ * envío («Sale de la bahía pronto», «va en ruta») y el dueño los leyó como
+ * «el flujo sigue como delivery». Los demás estados comparten texto (son
+ * neutrales). Espejo del cliente en customerStatusText (constants/orders).
+ */
+const MESSAGES_PICKUP: Record<string, { title: string; body: string }> = {
+  preparado: { title: 'SPOT 24 · Listo para retirar', body: 'Empacado y listo. Te esperamos en la tienda.' },
+  entregado: { title: 'SPOT 24 · Retirado', body: 'Retirado en tienda. ¡Gracias por tu visita!' },
+};
+
+/**
+ * 5.112.1 · Texto del aviso por estado y modalidad (puro, testeable).
+ * pickup gana SOLO donde tiene texto propio; el resto cae al mapa general.
+ */
+export function textoEstado(
+  status: string,
+  mode: 'delivery' | 'pickup' = 'delivery',
+): { title: string; body: string } | undefined {
+  if (mode === 'pickup' && MESSAGES_PICKUP[status]) return MESSAGES_PICKUP[status];
+  return MESSAGES[status];
+}
+
 /** 5.28 · Aviso de despacho (pedido con envío marcado PREPARADO). */
 const DISPATCH_TITLE = 'SPOT 24 · Pedido listo para salir';
 
@@ -273,9 +297,19 @@ async function sendAndCleanup(
 }
 
 export const ORDER_NOTIFICATIONS = {
-  /** Envía a todos los tokens registrados del usuario (fan-out acotado a 20). */
-  async send(uid: string, orderCode: string, status: string): Promise<void> {
-    const msg = MESSAGES[status];
+  /**
+   * Envía a todos los tokens registrados del usuario (fan-out acotado a 20).
+   * 5.112.1 · `mode` ajusta el texto a la modalidad (pickup: «Listo para
+   * retirar» / «Retirado»). Default 'delivery': los envíos actuales y TODOS
+   * los llamadores existentes conservan el texto de siempre.
+   */
+  async send(
+    uid: string,
+    orderCode: string,
+    status: string,
+    mode: 'delivery' | 'pickup' = 'delivery',
+  ): Promise<void> {
+    const msg = textoEstado(status, mode);
     if (!msg) return;
     try {
       // 5.27 · Apertura personalizada: «Erick, tu pago está en revisión…».

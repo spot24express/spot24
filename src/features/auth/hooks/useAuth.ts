@@ -35,6 +35,7 @@ export function useAuth() {
   const resetPassword = useAuthStore((s) => s.resetPassword);
   const saveMyData = useAuthStore((s) => s.saveMyData);
   const changeMyPassword = useAuthStore((s) => s.changeMyPassword);
+  const deleteMyAccount = useAuthStore((s) => s.deleteMyAccount);
   return {
     user,
     ready,
@@ -49,6 +50,8 @@ export function useAuth() {
     /** 5.92g: datos de entrega (teléfono + dirección) y cambio de contraseña. */
     saveMyData,
     changeMyPassword,
+    /** 5.112.1: «Eliminar mi cuenta» — baja completa del propio cliente. */
+    deleteMyAccount,
   };
 }
 

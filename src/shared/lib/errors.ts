@@ -11,6 +11,7 @@ export type AppErrorCode =
   | 'stock'
   | 'reservation'
   | 'payment'
+  | 'images'
   | 'rate-limit'
   | 'code-duplicate';
 
@@ -22,6 +23,13 @@ const USER_MESSAGES: Record<AppErrorCode, string> = {
   stock: 'Alguien llegó primero a ese repuesto. Ajusta la cantidad y sigue.',
   reservation: 'Tu reserva de stock venció. Para. Resuelve. Sigue: confirma de nuevo.',
   payment: 'No pudimos procesar el pago. Verifica los datos o intenta otro método.',
+  // 5.112-C · PARCHE IMGBB: imgbb (el hosting externo de todas las fotos)
+  // está caído. El mensaje es la verdad, no un «reintenta» genérico: el
+  // cliente entiende que NO es culpa de su red ni de su tarjeta y que su
+  // carrito/comprobante no se pierde. El servidor reintenta 3 veces por
+  // su cuenta antes de que este mensaje llegue a la UI.
+  images:
+    'El servicio de imágenes está caído. Intenta de nuevo en unos minutos: tu carrito y tu comprobante están a salvo.',
   'rate-limit': 'Demasiados intentos seguidos. Espera un momento y vuelve a intentar.',
   'code-duplicate': 'Ese código ya lo usa otro producto. Escribe uno diferente.',
 };

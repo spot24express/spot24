@@ -140,7 +140,7 @@ export default function OrderDetailPage() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="spot-title">{order.code}</h1>
-          <p className="spot-subtitle mt-1">{customerStatusText(order.status, order.payment.method)}</p>
+          <p className="spot-subtitle mt-1">{customerStatusText(order.status, order.payment.method, order.delivery.mode === 'pickup')}</p>
         </div>
         <StatusBadge status={order.status} />
       </div>
@@ -151,7 +151,7 @@ export default function OrderDetailPage() {
           <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
             <h2 className="font-display text-lg font-bold italic uppercase text-paper">Seguimiento</h2>
             <div className="mt-5">
-              <StatusTimeline current={order.status} events={events} />
+              <StatusTimeline current={order.status} events={events} pickup={order.delivery.mode === 'pickup'} />
             </div>
             {order.delivery.trackingCode && (
               <p className="mt-4 spot-label">Número de seguimiento: {order.delivery.trackingCode}</p>
@@ -164,6 +164,9 @@ export default function OrderDetailPage() {
               {order.lines.map((line) => {
                 /* Key compuesta productId+variantId: en órdenes viejas varias
                    líneas comparten variantId «v1» y una key simple duplicaba. */
+                /* DECISIÓN DEL DUEÑO (5.112-A): el código del producto es
+                   interno — el CLIENTE JAMÁS lo ve. Aquí solo marca, nombre,
+                   cantidad y monto (aunque la orden traiga code congelado). */
                 /* Marca SIEMPRE arriba, sola (snapshot de la orden o catálogo
                    en órdenes viejas); el nombre no repite la marca. */
                 const brand = line.brand || brands[line.productId] || '';

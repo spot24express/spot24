@@ -1,9 +1,13 @@
 import { Link } from 'react-router-dom';
 import type { CategoryDef } from '@/shared/constants/categories';
+import { alFallarFotoCon, FOTO_LOCAL } from '@/shared/lib/imgFallback';
 
 /**
  * Tarjeta de categoría: número de bahía estilo pit stop sobre foto de fondo.
  * Sin imagen definida conserva el estilo limpio de siempre.
+ * 5.112-C: si la foto de la bahía no carga (caída de imgbb), el onError
+ * cambia a la foto del local con el escudo (archivo del repo, jamás se
+ * cae) — nunca un cuadro roto en la primera pantalla del Home.
  */
 export function CategoryCard({ category }: { category: CategoryDef }) {
   const bg = category.imageUrl?.trim();
@@ -12,7 +16,8 @@ export function CategoryCard({ category }: { category: CategoryDef }) {
       to={`/catalogo?cat=${category.id}`}
       className="group relative flex min-h-[140px] flex-col justify-end overflow-hidden rounded-brand-lg border-2 border-line bg-surface-1 p-4 transition-colors hover:border-signal focus-visible:border-signal"
     >
-      {/* Foto de fondo con velo oscuro para mantener la legibilidad */}
+      {/* Foto de fondo con velo oscuro para mantener la legibilidad.
+          5.112-C: onError → foto del local del repo (sin cuadro roto). */}
       {bg && (
         <>
           <img
@@ -20,6 +25,7 @@ export function CategoryCard({ category }: { category: CategoryDef }) {
             alt=""
             loading="lazy"
             decoding="async"
+            onError={alFallarFotoCon(FOTO_LOCAL)}
             className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
           />
           <span
@@ -69,7 +75,8 @@ export function SubcategoryCard({
         active ? 'border-signal' : 'border-line hover:border-signal'
       }`}
     >
-      {/* Foto de fondo con velo oscuro para mantener la legibilidad */}
+      {/* Foto de fondo con velo oscuro para mantener la legibilidad.
+          5.112-C: onError → foto del local del repo (sin cuadro roto). */}
       {bg && (
         <>
           <img
@@ -77,6 +84,7 @@ export function SubcategoryCard({
             alt=""
             loading="lazy"
             decoding="async"
+            onError={alFallarFotoCon(FOTO_LOCAL)}
             className="absolute inset-0 h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
           />
           <span

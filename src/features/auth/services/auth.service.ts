@@ -416,3 +416,19 @@ export function observeAuth(cb: (user: SpotUser | null) => void): () => void {
     unsub?.();
   };
 }
+
+/**
+ * 5.112.1 · «Eliminar mi cuenta» (privacidad, derecho al olvido): pide al
+ * servidor la BAJA COMPLETA de la propia cuenta (ficha user, carrito, tokens
+ * de notificaciones y acceso de autenticación; los pedidos históricos se
+ * conservan como registro contable). El uid viaja DENTRO del token Bearer —
+ * el servidor jamás lo toma del body — y solo el rol customer puede
+ * auto-eliminarse. Sin re-autenticación en el cliente: la sesión vigente ya
+ * está verificada por el backend (checkRevoked). Operación IDEMPOTENTE del
+ * lado servidor: si la cuenta ya no existe (reintento tras un fallo), el
+ * servidor limpia restos y responde ok — reintentar nunca deja a medias.
+ */
+export async function deleteMyAccount(): Promise<void> {
+  const { callFunction } = await import('@/shared/lib/backend');
+  await callFunction<void>('fn-deleteMyAccount');
+}

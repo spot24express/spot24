@@ -17,6 +17,7 @@ import { loadFirebase } from '@/shared/lib/firebase';
 import { AppError } from '@/shared/lib/errors';
 import type { PaymentAccount } from '@/shared/constants/brand';
 import { isPaymentAccount } from '@/shared/lib/paymentMethods';
+import { esHHMM } from '@/shared/lib/horarioDelivery';
 
 /**
  * Cuentas de recaudación guardadas en Firestore (settings/payment_accounts).
@@ -60,6 +61,13 @@ export interface GeneralSettings {
   /** Horario en que trabajan los deliverys (texto libre, Home, ronda 5.75).
    *  Antes era una constante en brand.ts: el dueño lo cambia en Ajustes sin deploy. */
   deliveryHours: string;
+  /** 5.112-B · Franja REAL del delivery para el checkout, HORA DE VENEZUELA,
+   *  formato HH:MM de 24h (p. ej. "12:00" a "23:59"). Fuera de la franja el
+   *  checkout solo ofrece RETIRO EN TIENDA — así un cliente jamás pide envío
+   *  cuando no hay deliverys. AMBOS vacíos = delivery siempre disponible
+   *  (los ajustes viejos no restringen nada hasta que el dueño guarde). */
+  deliveryStart: string;
+  deliveryEnd: string;
 }
 
 /** Valores por defecto mientras el admin no guarda nada. */
@@ -69,6 +77,8 @@ export const GENERAL_SEED: GeneralSettings = {
   pickupAddress: '',
   pickupHours: '',
   deliveryHours: 'de 8:00 am a 8:00 pm',
+  deliveryStart: '',
+  deliveryEnd: '',
 };
 
 /** Defensa en cliente: solo aceptamos valores bien formados. */
@@ -81,6 +91,10 @@ function sanitizeGeneral(raw: Record<string, unknown>): GeneralSettings {
     pickupAddress: String(raw['pickupAddress'] ?? '').trim().slice(0, 200),
     pickupHours: String(raw['pickupHours'] ?? '').trim().slice(0, 60),
     deliveryHours: String(raw['deliveryHours'] ?? '').trim().slice(0, 60),
+    // 5.112-B: franja del delivery. Solo pasa HH:MM bien formado; si algo
+    // viene raro cae a '' = sin restricción (jamás bloquear ventas por datos).
+    deliveryStart: esHHMM(String(raw['deliveryStart'] ?? '').trim()) ? String(raw['deliveryStart']).trim() : '',
+    deliveryEnd: esHHMM(String(raw['deliveryEnd'] ?? '').trim()) ? String(raw['deliveryEnd']).trim() : '',
   };
 }
 

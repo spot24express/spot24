@@ -35,9 +35,23 @@ export function Stepper({ steps, current }: StepperProps) {
   );
 }
 
-/** Timeline vertical de eventos del pedido (seguimiento). */
-export function StatusTimeline({ current, events }: { current: OrderStatus; events: { status: OrderStatus; at: number }[] }) {
-  const order: OrderStatus[] = ['pendiente', 'en_verificacion', 'pagado', 'preparado', 'en_camino', 'entregado'];
+/** Timeline vertical de eventos del pedido (seguimiento).
+ *  5.112.1 · `pickup`: retiro en tienda — el paso «En camino» se OCULTA
+ *  (nadie sale a entregarlo; del mostrador pasa a retirado). Legacy: si un
+ *  pickup viejo quedó en en_camino, el paso se mantiene para no romper la
+ *  línea de tiempo. El cierre se lee «Retirado en tienda». */
+export function StatusTimeline({
+  current,
+  events,
+  pickup = false,
+}: {
+  current: OrderStatus;
+  events: { status: OrderStatus; at: number }[];
+  pickup?: boolean;
+}) {
+  const base: OrderStatus[] = ['pendiente', 'en_verificacion', 'pagado', 'preparado', 'en_camino', 'entregado'];
+  const order: OrderStatus[] =
+    pickup && current !== 'en_camino' ? base.filter((s) => s !== 'en_camino') : base;
   const cancelled = current === 'cancelado';
   const currentIndex = order.indexOf(current);
   return (
@@ -59,7 +73,7 @@ export function StatusTimeline({ current, events }: { current: OrderStatus; even
             </div>
             <div className="pb-6">
               <p className={`font-display text-base font-bold italic uppercase ${active ? 'text-signal' : done ? 'text-paper' : 'text-muted'}`}>
-                {STATUS_LABELS[status]}
+                {pickup && status === 'entregado' ? 'Retirado en tienda' : STATUS_LABELS[status]}
               </p>
               {evt && (
                 <p className="text-sm text-muted">

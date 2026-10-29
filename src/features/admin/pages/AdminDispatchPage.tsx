@@ -18,6 +18,7 @@ import { STATUS_LABELS, STATUS_TRANSITIONS } from '@/shared/constants/orders';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { userMessage } from '@/shared/lib/errors';
 import { formatBs, formatDateTime, usdToBs } from '@/shared/lib/format';
+import { unirConPuntos } from '@/shared/lib/lineaMeta';
 
 /**
  * Panel de despacho (5.5): cola de pedidos activos, cambio de estado con
@@ -369,8 +370,10 @@ export default function AdminDispatchPage() {
                             <p className="truncate text-sm font-semibold text-paper">
                               {l.qty} × {l.name}
                             </p>
-                            {l.brand && (
-                              <p className="truncate text-xs text-muted">{l.brand}</p>
+                            {(l.brand || l.code) && (
+                              /* 5.112-A: marca y código del producto (interno,
+                                  SOLO personal). Órdenes viejas: solo marca. */
+                              <p className="truncate text-xs text-muted">{unirConPuntos(l.brand, l.code && `Cód. ${l.code}`)}</p>
                             )}
                           </div>
                           <p className="shrink-0 text-sm font-semibold text-paper">{lineBs(o, l.lineTotalUsd)}</p>
@@ -468,8 +471,10 @@ export default function AdminDispatchPage() {
                           <p className="truncate text-sm font-semibold text-paper">
                             {l.qty} × {l.name}
                           </p>
-                          {l.brand && (
-                            <p className="truncate text-xs text-muted">{l.brand}</p>
+                          {(l.brand || l.code) && (
+                            /* 5.112-A: marca y código del producto (interno,
+                                SOLO personal). Órdenes viejas: solo marca. */
+                            <p className="truncate text-xs text-muted">{unirConPuntos(l.brand, l.code && `Cód. ${l.code}`)}</p>
                           )}
                         </div>
                         <p className="shrink-0 text-sm font-semibold text-paper">{lineBs(o, l.lineTotalUsd)}</p>
@@ -486,21 +491,44 @@ export default function AdminDispatchPage() {
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {(STATUS_TRANSITIONS[o.status] ?? [])
+                    .concat(
+                      /* 5.112.1 · Retiro en tienda: el salto del mostrador
+                          (preparado → entregado) no existe en la máquina global
+                          (es exclusivo de pickup). Se inyecta aquí para pintar
+                          el botón; el backend lo valida con canTransitionFor. */
+                      o.delivery.mode === 'pickup' && o.status === 'preparado'
+                        ? (['entregado'] as OrderStatus[])
+                        : [],
+                    )
                     .filter(
                       (s) => {
                         if (s === 'cancelado') return false;
+                        /* 5.112.1 · RETIRO EN TIENDA: «En camino» DESAPARECE del
+                            flujo (nadie sale a entregarlo — antes quedaba visible
+                            y el pedido seguía como envío) y el cierre es del
+                            personal de caja/gerencia con el gesto «→ Retirado en
+                            tienda». El delivery no ve botones en estos pedidos.
+                            Legacy: un pickup viejo ya en en_camino se cierra con
+                            → Entregado (la máquina base lo permite). */
+                        if (o.delivery.mode === 'pickup') {
+                          if (s === 'en_camino') return false;
+                          if (s === 'entregado') {
+                            if (!['admin', 'gerente', 'cajero'].includes(role)) return false;
+                            return o.status === 'preparado' || o.status === 'en_camino';
+                          }
+                        } else {
+                          /* 5.28 · En pedidos con envío, el modelo de reclamo
+                              manda: «→ En camino» ya no existe como botón
+                              genérico (se TOMA); culminar (→ Entregado) es del
+                              delivery. */
+                          if (s === 'en_camino') return false;
+                          if (s === 'entregado' && role !== 'delivery') return false;
+                        }
                         if (
                           role !== 'admin' &&
                           !(ROLE_MOVES[role] ?? []).some(([f, t]) => f === o.status && t === s)
                         ) {
                           return false;
-                        }
-                        // 5.28 · En pedidos con envío, el modelo de reclamo manda:
-                        // «→ En camino» ya no existe como botón genérico (se TOMA);
-                        // culminar (→ Entregado) es del delivery.
-                        if (o.delivery.mode !== 'pickup') {
-                          if (s === 'en_camino') return false;
-                          if (s === 'entregado' && role !== 'delivery') return false;
                         }
                         return true;
                       },
@@ -512,7 +540,7 @@ export default function AdminDispatchPage() {
                       loading={busyId === o.id}
                       onClick={() => void advance(o, next)}
                     >
-                      → {STATUS_LABELS[next]}
+                      → {next === 'entregado' && o.delivery.mode === 'pickup' ? 'Retirado en tienda' : STATUS_LABELS[next]}
                     </Button>
                   ))}
                   {/* 5.28 · «Tomar pedido» — SOLO delivery. Una acción: lo asigna

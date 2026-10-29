@@ -9,6 +9,9 @@
  *   El servidor lo sube a imgbb ANTES de crear la orden → el pedido nace en
  *   en_verificacion con hasReceipt: true. Ya no existen pedidos sin pago y
  *   el cajero solo ve pedidos ya pagados en su cola.
+ * · 5.112-B: «Envío a domicilio» obedece la franja del delivery guardada en
+ *   Ajustes (deliveryStart/deliveryEnd, HORA DE VENEZUELA): fuera de la
+ *   franja solo se ofrece RETIRO EN TIENDA, con aviso y auto-cambio.
  */
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -35,7 +38,11 @@ import {
   copyRowsForAccount, qrForAccount, validatePaymentForm,
   usesVeForm, EMPTY_PAYMENT_FORM, type PaymentFormState,
 } from '@/shared/lib/paymentMethods';
-import { getPaymentAccounts } from '@/shared/services/settings.service';
+import { getGeneralSettings, getPaymentAccounts } from '@/shared/services/settings.service';
+import {
+  deliveryAbierto, esHHMM, hhmmBonito, minutosAhoraCaracas,
+  type FranjaDelivery,
+} from '@/shared/lib/horarioDelivery';
 import {
   isValidPersonName, isValidCedulaVE, isValidPhoneVE,
   normalizeCedulaVE, normalizePhoneVE, sanitizeMultiline, sanitizeText,
@@ -48,7 +55,6 @@ import { formatBs, usdToBs, cleanAmountBs } from '@/shared/lib/format';
 import { copyText } from '@/shared/lib/clipboard';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import type { CreateOrderResponse, QuoteResponse, ReservationResponse, FulfillmentMode } from '../types';
-import { getGeneralSettings } from '@/shared/services/settings.service';
 
 const STEPS = ['Datos', 'Entrega', 'Pago', 'Confirmación'] as const;
 
@@ -89,6 +95,9 @@ export default function CheckoutPage() {
   const [gps, setGps] = useState<{ lat: number; lng: number } | null>(null);
   const [payment, setPayment] = useState<PaymentFormState>(EMPTY_PAYMENT_FORM);
   const [pickupInfo, setPickupInfo] = useState<{ address: string; hours: string }>({ address: '', hours: '' });
+  // 5.112-B: franja REAL del delivery (settings/general) + reloj de Venezuela.
+  const [franja, setFranja] = useState<FranjaDelivery>({ start: '', end: '' });
+  const [nowMin, setNowMin] = useState(() => minutosAhoraCaracas());
   const [reservation, setReservation] = useState<ReservationResponse | null>(null);
   const [quote, setQuote] = useState<QuoteResponse | null>(null);
   const [quoteState, setQuoteState] = useState<'loading' | 'ok' | 'error'>('loading');
@@ -164,7 +173,12 @@ export default function CheckoutPage() {
     let alive = true;
     void getGeneralSettings()
       .then((g) => {
-        if (alive && g) setPickupInfo({ address: g.pickupAddress, hours: g.pickupHours });
+        if (alive && g) {
+          setPickupInfo({ address: g.pickupAddress, hours: g.pickupHours });
+          // 5.112-B: la franja viaja en la MISMA lectura de settings/general
+          // que ya se hace para el retiro: cero lecturas extra a Firestore.
+          setFranja({ start: g.deliveryStart, end: g.deliveryEnd });
+        }
       })
       .catch(() => {
         /* sin ajustes: usamos el texto por defecto de retiro */
@@ -173,6 +187,39 @@ export default function CheckoutPage() {
       alive = false;
     };
   }, []);
+
+  // 5.112-B: reloj vivo cada 30 s — si el cliente deja el checkout abierto al
+  // cruzar el límite de la franja, la app reacciona sola, sin recargar.
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMin(minutosAhoraCaracas()), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  // 5.112-B: ¿delivery DISPONIBLE ahora mismo? Sin franja guardada = siempre
+  // disponible (los ajustes viejos no restringen nada hasta que el dueño
+  // guarde la franja). Manda en la UI (opción deshabilitada) y en los guards.
+  const deliveryOk = useMemo(
+    () => deliveryAbierto(franja, nowMin),
+    [franja, nowMin],
+  );
+  // "12:00"–"23:59" → "de 12:00 pm a 11:59 pm". '' si no hay franja válida.
+  const franjaTexto =
+    esHHMM(franja.start) && esHHMM(franja.end) && franja.start !== franja.end
+      ? `de ${hhmmBonito(franja.start)} a ${hhmmBonito(franja.end)}`
+      : '';
+
+  // 5.112-B: si el delivery CERRÓ (o ya estaba cerrado al entrar al checkout),
+  // el cliente vuela a RETIRO EN TIENDA con aviso claro. El backend revalida
+  // la franja al crear la orden: doble llave — jamás un envío fuera de horario.
+  useEffect(() => {
+    if (created || deliveryOk || fulfillment !== 'delivery') return;
+    setFulfillment('pickup');
+    toast.warning(
+      franjaTexto
+        ? `El envío a domicilio solo está disponible ${franjaTexto}. Tomamos tu pedido para RETIRO EN TIENDA.`
+        : 'El envío a domicilio no está disponible ahora. Tomamos tu pedido para RETIRO EN TIENDA.',
+    );
+  }, [created, deliveryOk, fulfillment, franjaTexto]);
 
   // Cotización autoritativa: al elegir zona (delivery) o de una vez (pickup).
   // Con estado visible: loading → montos; error → Reintentar (no cuelga).
@@ -342,6 +389,14 @@ export default function CheckoutPage() {
   };
 
   const validateStep1 = (): boolean => {
+    // 5.112-B: candado del paso Entrega — si el delivery cerró mientras el
+    // cliente llenaba el formulario, vuela a retiro y el paso queda válido.
+    if (fulfillment === 'delivery' && !deliveryOk) {
+      setFulfillment('pickup');
+      toast.warning('El envío a domicilio cerró hace un momento. Tomamos tu pedido para RETIRO EN TIENDA.');
+      setErrors({});
+      return true;
+    }
     if (fulfillment === 'pickup') {
       // Retiro en tienda: no hay dirección ni GPS que validar.
       setErrors({});
@@ -376,6 +431,14 @@ export default function CheckoutPage() {
     if (needsReceipt && !receipt) {
       toast.error('Adjunta la foto del comprobante de pago.');
       setStep(2);
+      return;
+    }
+    // 5.112-B: candado final en cliente — si el delivery cerró entre el paso
+    // Entrega y aquí, vuela a retiro. El backend revalida la franja igual.
+    if (fulfillment === 'delivery' && !deliveryOk) {
+      setFulfillment('pickup');
+      toast.warning('El envío a domicilio cerró. Tu pedido sigue como RETIRO EN TIENDA: revisa y confirma.');
+      setStep(1);
       return;
     }
     setBusy(true);
@@ -471,7 +534,15 @@ export default function CheckoutPage() {
           /* reintento en la próxima confirmación */
         }
       }
-      toast.error(userMessage(e));
+      if (e instanceof AppError && e.message.startsWith('Delivery cerrado')) {
+        // 5.112-B: el backend vio la franja cerrada (el reloj cruzó justo al
+        // confirmar). Vuelta al paso Entrega como retiro: nada se pierde.
+        setFulfillment('pickup');
+        setStep(1);
+        toast.warning('El envío a domicilio cerró justo ahora. Tu pedido sigue como RETIRO EN TIENDA: revisa y confirma.');
+      } else {
+        toast.error(userMessage(e));
+      }
     } finally {
       setBusy(false);
     }
@@ -587,13 +658,26 @@ export default function CheckoutPage() {
                   type="button"
                   role="radio"
                   aria-checked={fulfillment === 'delivery'}
+                  // 5.112-B: fuera de la franja la opción NO se elige — solo
+                  // retiro en tienda (el dueño manda el horario desde Ajustes).
+                  disabled={!deliveryOk}
                   onClick={() => setFulfillment('delivery')}
-                  className={`rounded-brand border-2 p-4 text-left transition ${fulfillment === 'delivery' ? 'border-signal bg-signal/10' : 'border-line hover:border-muted'}`}
+                  className={`rounded-brand border-2 p-4 text-left transition ${
+                    !deliveryOk
+                      ? 'cursor-not-allowed border-line opacity-60'
+                      : fulfillment === 'delivery'
+                        ? 'border-signal bg-signal/10'
+                        : 'border-line hover:border-muted'
+                  }`}
                 >
-                  <p className={`font-display text-sm font-bold italic uppercase ${fulfillment === 'delivery' ? 'text-signal' : 'text-paper'}`}>
+                  <p className={`font-display text-sm font-bold italic uppercase ${fulfillment === 'delivery' && deliveryOk ? 'text-signal' : 'text-paper'}`}>
                     Envío a domicilio
                   </p>
-                  <p className="mt-1 text-xs text-muted">Llevamos tu pedido a tu zona en Maracay, Aragua.</p>
+                  <p className="mt-1 text-xs text-muted">
+                    {!deliveryOk
+                      ? `Cerrado ahora${franjaTexto ? ` · Entregamos ${franjaTexto}` : ''}. Hoy toca retiro en tienda.`
+                      : `Llevamos tu pedido a tu zona en Maracay, Aragua.${franjaTexto ? ` Entregamos ${franjaTexto}.` : ''}`}
+                  </p>
                 </button>
               </div>
 
@@ -606,6 +690,11 @@ export default function CheckoutPage() {
                   </p>
                   {pickupInfo.hours && (
                     <p className="mt-2 text-sm text-muted">Horario: {pickupInfo.hours}</p>
+                  )}
+                  {!deliveryOk && (
+                    <p className="mt-2 text-sm font-semibold text-signal">
+                      Envío a domicilio cerrado ahora{franjaTexto ? ` (entregamos ${franjaTexto})` : ''}: solo retiro en tienda.
+                    </p>
                   )}
                   <p className="mt-2 text-sm text-muted">
                     Paga con Pago Móvil y adjunta el comprobante en el siguiente paso.
