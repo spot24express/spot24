@@ -93,16 +93,28 @@ export default function OrderDetailPage() {
     );
   }
 
+  /* 5.114 (P-1): pago ya verificado ⇒ NO se vuelve a pedir comprobante.
+   * Con el Pago Móvil automático el pedido nace pagado SIN comprobante (el
+   * banco lo confirmó) y, hasta ahora, debajo de «Pago confirmado por el
+   * banco» seguía apareciendo «Subir comprobante». Cubre cualquier
+   * verificación: del banco (verifiedBy=bdv) o del personal. El camino Manual
+   * (subir captura) queda INTACTO para pagos aún sin verificar. */
+  const pagoVerificado = Boolean(order.payment.verifiedAt);
+
   /* POLÍTICA DEL DUEÑO (5.26): el cliente cancela solo ANTES de efectuar el
    * pago. Todo pedido electrónico nace con comprobante (5i-k); los de contra
    * entrega (5.80) nacen ya en verificación sin comprobante que subir. El
    * botón solo aparece en los legacy «pendiente» sin pago registrado: con
-   * pedido en curso NO hay cancelación para el cliente ni canal de rescate. */
-  const canCancel = order.status === 'pendiente' && !order.payment.hasReceipt;
+   * pedido en curso NO hay cancelación para el cliente ni canal de rescate.
+   * (5.114) Y tampoco si el banco ya verificó el pago: un pedido pagado no
+   * se cancela solo, aunque el status legacy aún diga «pendiente». */
+  const canCancel = order.status === 'pendiente' && !order.payment.hasReceipt && !pagoVerificado;
   // Contra entrega (efectivo/punto_venta, 5.80): NUNCA se pide comprobante —
   // el pago ocurre al recibir. Solo las electrónicas muestran el botón de subida.
+  // (5.114) Y solo mientras el pago siga SIN verificar: verificado ⇒ tampoco.
   const needsReceipt = PAYMENT_REQUIRES_RECEIPT[order.payment.method]
     && !order.payment.hasReceipt
+    && !pagoVerificado
     && order.status !== 'entregado'
     && order.status !== 'cancelado';
   const receiptToShow = order.payment.receiptUrl ?? null;
@@ -236,7 +248,10 @@ export default function OrderDetailPage() {
             )}
             {order.payment.verifiedAt && (
               <p className="mt-1 text-sm text-muted">
-                Verificado {new Date(order.payment.verifiedAt).toLocaleString('es-VE')}
+                {order.payment.verifiedBy === 'bdv'
+                  ? `Pago confirmado por el banco · ${new Date(order.payment.verifiedAt).toLocaleString('es-VE')}`
+                  : `Verificado ${new Date(order.payment.verifiedAt).toLocaleString('es-VE')}`}
+                {order.payment.vueltoVes ? ` · Vuelto a entregar: ${formatBs(order.payment.vueltoVes)}` : ''}
               </p>
             )}
             {needsReceipt && (
@@ -279,12 +294,22 @@ export default function OrderDetailPage() {
                   <Row label="Dirección" value={order.delivery.addressPreview || '—'} />
                 </>
               )}
-              <Row
-                label="Horario de entrega"
-                value={order.delivery.window.start && order.delivery.window.end ? `${order.delivery.window.start}–${order.delivery.window.end}` : 'Por confirmar'}
-              />
+              {/* 5.114 (P-3): retiro en tienda abre 24 HORAS — la ventana
+                  congelada (hardcode 08:00–20:00 del checkout) no aporta: no
+                  se muestra. En envío a domicilio sigue la franja real de la
+                  zona; «Por confirmar» si la zona no trae franja. */}
+              {order.delivery.mode !== 'pickup' && (
+                <Row
+                  label="Horario de entrega"
+                  value={order.delivery.window.start && order.delivery.window.end ? `${order.delivery.window.start}–${order.delivery.window.end}` : 'Por confirmar'}
+                />
+              )}
               <Row label="Contacto" value={order.contact.name} />
-              <Row label="Teléfono" value={order.contact.phoneMasked} />
+              {/* 5.114 (P-2): el teléfono se ve COMPLETO — es el propio cliente
+                  mirando SU pedido, no hay tercero que proteger. La orden ya
+                  trae `phone` en claro desde la ronda 5.9; las órdenes viejas,
+                  que no lo traen, caen al enmascarado sin romper nada. */}
+              <Row label="Teléfono" value={order.contact.phone ?? order.contact.phoneMasked} />
             </dl>
             {order.delivery.location && (
               <a

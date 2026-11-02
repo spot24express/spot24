@@ -161,6 +161,16 @@ export default function AdminPaymentsPage() {
                         {o.payment.reference || o.payment.referenceMasked || 'sin referencia'} ·{' '}
                         {formatBs(o.totals.totalVes)}
                       </p>
+                      {/* 5.113 · Pago validado por el banco (BDV): evidencia
+                          visible para el personal (órdenes con faltante mínimo
+                          por movimiento de tasa, o revisión posterior). */}
+                      {o.payment.bdvValidaciones && o.payment.bdvValidaciones.length > 0 && (
+                        <p className="mt-1 break-words text-sm font-semibold text-signal">
+                          Pago validado por el banco (BDV):{' '}
+                          {o.payment.bdvValidaciones.map((v) => `Bs ${v.importe.toFixed(2)}`).join(' + ')}
+                          {o.payment.vueltoVes ? ` · Vuelto: ${formatBs(o.payment.vueltoVes)}` : ''}
+                        </p>
+                      )}
                       <p className="mt-0.5 break-words text-sm text-muted">
                         {o.lines.length} {o.lines.length === 1 ? 'producto' : 'productos'} ·{' '}
                         {o.lines.map((l) => `${l.qty}× ${l.name}`).join(', ')}

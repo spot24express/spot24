@@ -113,6 +113,10 @@ interface GeneralForm {
   /** 5.112-B: franja del delivery en HH:MM (24h, hora Venezuela). '' = sin restricción. */
   deliveryStart: string;
   deliveryEnd: string;
+  /** 5.113: validación automática del pago móvil (BDV). OFF = como hoy. */
+  pagoMovilAuto: boolean;
+  /** 5.113: teléfono del Pago Móvil BDV donde el banco concilia. */
+  pagoMovilTelefono: string;
 }
 
 const EMPTY_GENERAL: GeneralForm = {
@@ -123,6 +127,8 @@ const EMPTY_GENERAL: GeneralForm = {
   deliveryHours: GENERAL_SEED.deliveryHours,
   deliveryStart: '',
   deliveryEnd: '',
+  pagoMovilAuto: false,
+  pagoMovilTelefono: '',
 };
 
 export default function AdminSettingsPage() {
@@ -168,6 +174,9 @@ export default function AdminSettingsPage() {
           // 5.112-B: franja del delivery (docs viejos: '' = sin restricción).
           deliveryStart: g.deliveryStart,
           deliveryEnd: g.deliveryEnd,
+          // 5.113: validación automática BDV (docs viejos: OFF = como hoy).
+          pagoMovilAuto: g.pagoMovilAuto,
+          pagoMovilTelefono: g.pagoMovilTelefono,
         });
       })
       .catch(() => setError(true))
@@ -199,6 +208,12 @@ export default function AdminSettingsPage() {
       e['deliveryStart'] = msg;
       e['deliveryEnd'] = msg;
     }
+    // 5.113: validación automática BDV — si se activa, exige el teléfono del
+    // Pago Móvil donde el banco concilia (el conciliador solo ve esa cuenta).
+    const autoTel = general.pagoMovilTelefono.replace(/\D/g, '');
+    if (general.pagoMovilAuto && !isValidPhoneVE(autoTel)) {
+      e['pagoMovilTelefono'] = 'Teléfono del Pago Móvil BDV: 0412, 0414, 0416, 0422, 0424 o 0426.';
+    }
     setErrors((prev) => ({ ...prev, ...e }));
     if (Object.values(e).some((x) => x)) return;
 
@@ -212,9 +227,11 @@ export default function AdminSettingsPage() {
         deliveryHours: sanitizeText(general.deliveryHours, 60),
         deliveryStart: dStart,
         deliveryEnd: dEnd,
+        pagoMovilAuto: general.pagoMovilAuto,
+        pagoMovilTelefono: autoTel,
       });
       setSavedGeneralAt(Date.now());
-      toast.success('Operación guardada: IVA, WhatsApp, retiro, horario y franja del delivery en vivo.');
+      toast.success('Operación guardada: IVA, WhatsApp, retiro, horario, franja del delivery y pago móvil automático en vivo.');
     } catch (err) {
       toast.error(userMessage(err));
     } finally {
@@ -477,6 +494,58 @@ export default function AdminSettingsPage() {
                   hint="Ej.: 23:59 (11:59 pm). Fuera de la franja, solo retiro en tienda."
                   error={errors['deliveryEnd']}
                 />
+              </div>
+              {/* 5.113 · VALIDACIÓN AUTOMÁTICA DEL PAGO MÓVIL (BDV): el suiche
+                  del dueño. Apagado = TODO como siempre (comprobante + cajero).
+                  Encendido = el checkout valida el pago contra el banco sin
+                  comprobante y el pedido nace «pagado». El teléfono DEBE ser el
+                  del Pago Móvil BDV donde el banco concilia, y debe coincidir
+                  con el teléfono de la cuenta de Pago Móvil activa. */}
+              <div className="rounded-brand border-2 border-line bg-ink p-4">
+                <p className="spot-label mb-1">Pago móvil automático (BDV)</p>
+                <p className="mb-3 text-xs text-muted">
+                  El banco confirma el pago en segundos y el pedido nace confirmado: el cajero solo lo prepara.
+                  Requiere las claves del API Conciliación BDV en Netlify (variables BDV_API_KEY y BDV_CONCILIACION_URL).
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2" role="radiogroup" aria-label="Verificación del pago móvil">
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={!general.pagoMovilAuto}
+                    onClick={() => setGeneral((g) => ({ ...g, pagoMovilAuto: false }))}
+                    className={`rounded-brand border-2 p-3 text-left transition ${!general.pagoMovilAuto ? 'border-signal bg-signal/10' : 'border-line hover:border-muted'}`}
+                  >
+                    <p className={`font-display text-sm font-bold italic uppercase ${!general.pagoMovilAuto ? 'text-signal' : 'text-paper'}`}>
+                      Manual (como hoy)
+                    </p>
+                    <p className="mt-1 text-xs text-muted">El cajero revisa cada comprobante antes de confirmar.</p>
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={general.pagoMovilAuto}
+                    onClick={() => setGeneral((g) => ({ ...g, pagoMovilAuto: true }))}
+                    className={`rounded-brand border-2 p-3 text-left transition ${general.pagoMovilAuto ? 'border-signal bg-signal/10' : 'border-line hover:border-muted'}`}
+                  >
+                    <p className={`font-display text-sm font-bold italic uppercase ${general.pagoMovilAuto ? 'text-signal' : 'text-paper'}`}>
+                      Automática (BDV)
+                    </p>
+                    <p className="mt-1 text-xs text-muted">El banco valida el pago móvil y confirma solo.</p>
+                  </button>
+                </div>
+                {general.pagoMovilAuto && (
+                  <Input
+                    className="mt-3"
+                    label="Teléfono del Pago Móvil BDV (donde concilia el banco)"
+                    type="tel"
+                    inputMode="numeric"
+                    value={general.pagoMovilTelefono}
+                    onChange={(ev) => setGeneral((g) => ({ ...g, pagoMovilTelefono: ev.target.value.replace(/\D/g, '').slice(0, 11) }))}
+                    placeholder="04220337872"
+                    hint="Debe coincidir con el teléfono de tu cuenta de Pago Móvil activa: solo esa cuenta se valida automática."
+                    error={errors['pagoMovilTelefono']}
+                  />
+                )}
               </div>
               <Input
                 label="IVA (%) — 0 para desactivado"

@@ -1,5 +1,6 @@
 /** Contratos del módulo checkout. */
 import type { PaymentMethod } from '@/shared/constants/orders';
+import type { PagoBdvEvidence } from '@/shared/lib/pagoMovilAuto';
 import type { ContactData, AddressData } from '@/shared/types';
 
 /** Modalidad de entrega: envío a domicilio por zona o retiro en tienda. */
@@ -30,8 +31,14 @@ export interface CreateOrderPayload {
    * comprimido en el cliente. OBLIGATORIO: el backend lo sube a imgbb ANTES de
    * crear la orden y el pedido nace en en_verificacion con hasReceipt: true.
    * Si falta, el servidor rechaza la creación (no existen pedidos sin pago).
+   * 5.113: en pago móvil con validación automática puede venir vacío —
+   * viajan las evidencias BDV de abajo.
    */
   receiptImage: string;
+  /** 5.113 · Evidencias de pago validado por el banco (BDV). Cada una quedó
+   *  cerrada en pagoRefs por fn-checkPagoMovil; createOrder las cobra y, si
+   *  cubren el total, la orden nace «pagado». Opcional; máx 3 (parciales). */
+  pagosBdv?: PagoBdvEvidence[];
 }
 
 /** Totales autoritativos devueltos por el backend. */

@@ -22,6 +22,18 @@
  *   (mismo mecanismo del «Reserva vencida» de la ronda 5i-b) y lo mapea
  *   al código de app 'images': el cliente ve la verdad en el toast en
  *   lugar del genérico «Algo salió fuera de línea».
+ * · 5.113.1 · DIAGNÓSTICO: cuando imgbb rechaza (4xx) o responde sin
+ *   foto, AHORA se registra en el log del servidor el cuerpo de SU
+ *   respuesta («imgbb dice: …»). Antes el motivo real (clave inválida,
+ *   foto ilegible, imagen vacía…) se quedaba dentro de imgbb y el
+ *   terminal solo mostraba «HTTP 400» a ciegas. El MENSAJE al cliente
+ *   NO cambia un punto: mismo texto, mismos códigos, mismos tests.
+ * · 5.113.2 · MANTENIMIENTO: imgbb a veces devuelve «Imgbb is currently
+ *   down for maintenance.» envuelto en un HTTP 400. Eso NO es una foto
+ *   inválida — es el servicio caído. Se informa con el mensaje honesto
+ *   de caída (el que backend.ts mapea a 'images') en lugar del engañoso
+ *   «imgbb rechazó la subida», y sin quemar reintentos: un mantenimiento
+ *   dura más que los ~17 s del presupuesto de intentos.
  *
  * Los tres puntos de subida del negocio pasan por aquí:
  * · functions/src/orders.ts (comprobante del cliente dentro de
@@ -56,8 +68,27 @@ class CaidaImgbb extends Error {}
 
 /** Rechazo definitivo (4xx o respuesta sin URL): NO se reintenta. */
 class RechazoImgbb extends Error {
-  constructor(readonly status: number) {
+  /** Cuerpo que devolvió imgbb (recortado) para el log del servidor. */
+  constructor(
+    readonly status: number,
+    readonly detalle = '',
+  ) {
     super(`imgbb HTTP ${status}`);
+  }
+}
+
+/**
+ * Cuerpo del error de imgbb, recortado y en una sola línea (para el log).
+ * Tolerante: el doble de pruebas solo define ok/status/json — sin text()
+ * devuelve vacío y el comportamiento queda idéntico al de 5.112-C.
+ */
+async function cuerpoDelError(res: Response): Promise<string> {
+  try {
+    if (typeof res.text !== 'function') return '';
+    const crudo = await res.text();
+    return crudo.slice(0, 400).replace(/\s+/g, ' ').trim();
+  } catch {
+    return '';
   }
 }
 
@@ -95,13 +126,13 @@ async function unIntento(key: string, image: string): Promise<SubidaImgbb> {
   }
   if (!res.ok) {
     if (res.status >= 500 || res.status === 429) throw new CaidaImgbb();
-    throw new RechazoImgbb(res.status);
+    throw new RechazoImgbb(res.status, await cuerpoDelError(res));
   }
   const json = (await res.json().catch(() => null)) as RespuestaImgbb | null;
   const exito = json?.success === true || Boolean((json?.success as { code?: number } | undefined)?.code);
   const url = json?.data?.url || json?.data?.image?.url || json?.data?.display_url || '';
   if (!exito || typeof url !== 'string' || !url.startsWith('https://')) {
-    throw new RechazoImgbb(0); // respondió, pero sin foto utilizable
+    throw new RechazoImgbb(0, json ? JSON.stringify(json).slice(0, 400) : ''); // respondió, pero sin foto utilizable
   }
   return { url, deleteUrl: String(json?.data?.delete_url ?? '') };
 }
@@ -127,7 +158,17 @@ export async function imgbbConReintentos(key: string, image: string): Promise<Su
         throw new HttpsError('unavailable', MSG_IMGBB_CAIDO);
       }
       if (e instanceof RechazoImgbb) {
-        if (e.status === 0) throw new HttpsError('internal', MSG_IMGBB_RESPUESTA);
+        if (e.status === 0) {
+          if (e.detalle) console.error(`[spot24] imgbb HTTP 0 · respondió sin foto utilizable · cuerpo: ${e.detalle}`);
+          throw new HttpsError('internal', MSG_IMGBB_RESPUESTA);
+        }
+        if (e.detalle) console.error(`[spot24] imgbb HTTP ${e.status} · imgbb dice: ${e.detalle}`);
+        // 5.113.2 · «down for maintenance» llega como 4xx pero es una
+        // caída del servicio, no un rechazo de la foto del cliente:
+        // mensaje honesto de caída (contrato 'images'), sin reintentos.
+        if (e.detalle && /down for maintenance/i.test(e.detalle)) {
+          throw new HttpsError('unavailable', MSG_IMGBB_CAIDO);
+        }
         throw new HttpsError('unavailable', `imgbb rechazó la subida (HTTP ${e.status}).`);
       }
       throw e; // imprevisto: mismo tratamiento de siempre

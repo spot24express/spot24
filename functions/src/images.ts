@@ -13,6 +13,7 @@
  */
 import { HttpsError } from 'firebase-functions/v2/https';
 import { imgbbConReintentos } from './lib/imgbb';
+import { subirComprobanteRespaldo } from './lib/imagen-respaldo';
 import type { CoreCtx } from './lib/ctx';
 
 /** Tope de seguridad en base64 (~5.5M chars ≈ 4 MB de imagen real). */
@@ -44,5 +45,18 @@ export async function coreUploadImage(ctx: CoreCtx): Promise<{ url: string; dele
   // 5.112-C: la subida (con sus 3 intentos y su tope de 5 s por intento)
   // vive en lib/imgbb.ts, compartida con fn-uploadImage y el comprobante
   // del checkout. La respuesta válida siempre trae https://…
-  return imgbbConReintentos(key, image);
+  //
+  // 5.115 · Red de seguridad: primero imgbb igual que siempre; solo si imgbb
+  // falla, intenta los respaldos (imagen-respaldo.ts) — fotos de productos,
+  // categorías y el QR de pago quedan cubiertas igual que el comprobante.
+  // Si también fallan, se relanza el error original de imgbb → el panel ve
+  // el mismo mensaje de siempre. Con respaldo deleteUrl va vacío: esos
+  // hosts no dan enlace de borrado (se gestionan desde su panel web).
+  try {
+    return await imgbbConReintentos(key, image);
+  } catch (eImgbb) {
+    const urlRespaldo = await subirComprobanteRespaldo(image).catch(() => null);
+    if (urlRespaldo) return { url: urlRespaldo, deleteUrl: '' };
+    throw eImgbb;
+  }
 }

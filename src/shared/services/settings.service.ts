@@ -68,6 +68,14 @@ export interface GeneralSettings {
    *  (los ajustes viejos no restringen nada hasta que el dueño guarde). */
   deliveryStart: string;
   deliveryEnd: string;
+  /** 5.113 · Validación automática del pago móvil (API Conciliación BDV).
+   *  OFF = la app funciona 100% como siempre (comprobante + cajero).
+   *  ON = el checkout valida el pago contra el banco sin comprobante. */
+  pagoMovilAuto: boolean;
+  /** 5.113 · Teléfono del Pago Móvil BDV donde el banco concilia (0422…).
+   *  La validación automática solo se ofrece para la cuenta cuyo teléfono
+   *  coincida con este (el conciliador BDV solo ve los pagos de esa cuenta). */
+  pagoMovilTelefono: string;
 }
 
 /** Valores por defecto mientras el admin no guarda nada. */
@@ -79,6 +87,10 @@ export const GENERAL_SEED: GeneralSettings = {
   deliveryHours: 'de 8:00 am a 8:00 pm',
   deliveryStart: '',
   deliveryEnd: '',
+  // 5.113: APAGADO por defecto — hasta que el dueño lo active, la app se
+  // comporta EXACTAMENTE como hoy (comprobante + verificación del cajero).
+  pagoMovilAuto: false,
+  pagoMovilTelefono: '',
 };
 
 /** Defensa en cliente: solo aceptamos valores bien formados. */
@@ -95,6 +107,10 @@ function sanitizeGeneral(raw: Record<string, unknown>): GeneralSettings {
     // viene raro cae a '' = sin restricción (jamás bloquear ventas por datos).
     deliveryStart: esHHMM(String(raw['deliveryStart'] ?? '').trim()) ? String(raw['deliveryStart']).trim() : '',
     deliveryEnd: esHHMM(String(raw['deliveryEnd'] ?? '').trim()) ? String(raw['deliveryEnd']).trim() : '',
+    // 5.113: validación automática BDV. OFF salvo true explícito (los docs
+    // viejos sin el campo siguen en modo manual — cero cambios de conducta).
+    pagoMovilAuto: raw['pagoMovilAuto'] === true,
+    pagoMovilTelefono: String(raw['pagoMovilTelefono'] ?? '').replace(/\D/g, '').slice(0, 11),
   };
 }
 

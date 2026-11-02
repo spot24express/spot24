@@ -111,6 +111,12 @@
 [functions."fn-uploadImage"]
   timeout = 26
 
+# 5.113 · VALIDACIÓN AUTOMÁTICA DEL PAGO MÓVIL (BDV): consulta al API
+# Conciliación BDV (timeout interno 12 s) + Firestore + auditoría. 26 s =
+# mismo margen que las funciones de negocio (en producción corre en 1-3 s).
+[functions."fn-checkPagoMovil"]
+  timeout = 26
+
 # 5.73 · Seguro del mandato de notificaciones: con el fix «await», estas 4
 # funciones ESPERAN a que los push completen (lectura de tokens + FCM,
 # +1-3 s) ANTES de responder. Con el tope por defecto (10 s) y la red del

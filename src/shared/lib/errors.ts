@@ -13,7 +13,10 @@ export type AppErrorCode =
   | 'payment'
   | 'images'
   | 'rate-limit'
-  | 'code-duplicate';
+  | 'code-duplicate'
+  | 'pago-no-visto'
+  | 'pago-repetido'
+  | 'banco-no-responde';
 
 const USER_MESSAGES: Record<AppErrorCode, string> = {
   generic: 'Algo salió fuera de línea. Para. Resuelve. Sigue: reintenta en unos segundos.',
@@ -32,6 +35,15 @@ const USER_MESSAGES: Record<AppErrorCode, string> = {
     'El servicio de imágenes está caído. Intenta de nuevo en unos minutos: tu carrito y tu comprobante están a salvo.',
   'rate-limit': 'Demasiados intentos seguidos. Espera un momento y vuelve a intentar.',
   'code-duplicate': 'Ese código ya lo usa otro producto. Escribe uno diferente.',
+  // 5.113.3 · PAGO MÓVIL BDV: la verdad del banco en la UI, con el mismo
+  // espíritu del parche de imágenes (5.112-C). Los prefijos de mensaje son
+  // CONTRATO con lib/backend.ts (toAppError) y con pagoMovil.ts.
+  'pago-no-visto':
+    'El banco no encontró ese pago con esos datos. Revisa la referencia, el monto o la fecha — o declara el monto real que pagaste.',
+  'pago-repetido':
+    'Esa referencia ya fue usada en otro pago. Usa la referencia del pago nuevo: cada pago tiene la suya.',
+  'banco-no-responde':
+    'El banco no respondió a tiempo. Tu carrito está a salvo: reintenta en unos segundos o sube tu comprobante para revisión manual.',
 };
 
 export class AppError extends Error {

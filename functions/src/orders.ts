@@ -49,6 +49,9 @@ import { canTransition } from './domain/order-state';
 import { ORDER_NOTIFICATIONS, STOCK_NOTIFICATIONS } from './lib/notifications';
 import { extractItems, finiteNum, isSafeDocId } from './lib/items';
 import { imgbbConReintentos } from './lib/imgbb';
+import { subirComprobanteRespaldo } from './lib/imagen-respaldo';
+import { bancoOrigenBdv, fechaBdv, telefonoBdv } from './lib/bdv';
+import { MAX_PAGOS_PARCIALES, pagoRefId } from './pagoMovil';
 
 void encryptField;
 void hashReference;
@@ -150,12 +153,29 @@ function parseReceiptImage(raw: string): string {
 }
 
 /**
+ * 5.115 · Red de seguridad: primero imgbb igual que siempre; solo si imgbb
+ * falla, intenta los respaldos (imagen-respaldo.ts). Si también fallan, se
+ * relanza el error original de imgbb → el cliente ve el mismo mensaje de
+ * siempre y no hay orden huérfana.
+ */
+async function uploadReceiptToImgbb(image: string): Promise<string> {
+  try {
+    return await uploadReceiptToImgbbImgbb(image);
+  } catch (eImgbb) {
+    const urlRespaldo = await subirComprobanteRespaldo(image).catch(() => null);
+    if (urlRespaldo) return urlRespaldo;
+    throw eImgbb;
+  }
+}
+
+/**
+ * Función original de imgbb (solo cambió de nombre, nada dentro).
  * Sube el comprobante a imgbb y devuelve la URL pública.
  * La clave IMGBB_API_KEY vive SOLO en el servidor (nunca en el cliente).
  * 5.112-C: la subida reintenta 3 veces contra caídas de imgbb (lib/imgbb.ts);
  * agotados los intentos, el mensaje honesto llega al cliente vía 'images'.
  */
-async function uploadReceiptToImgbb(image: string): Promise<string> {
+async function uploadReceiptToImgbbImgbb(image: string): Promise<string> {
   const key = process.env['IMGBB_API_KEY'] ?? '';
   if (!key) {
     throw new HttpsError(
@@ -604,17 +624,22 @@ async function computeTotals(
   }
 
   // IVA configurable por el admin (settings/general.ivaPercent, 0–100).
-  // Base imponible: subtotal + envío. 0 = sin IVA (comportamiento anterior).
+  // 5.119 · El IVA se calcula sobre la base imponible EN BOLÍVARES — la moneda
+  // del cobro y de la factura. Antes se redondeaba en USD (2 decimales) y
+  // LUEGO se convertía: con precios bajos el redondeo mataba el IVA
+  // (0,02 USD × 16% = 0,0032 → 0,00) y con precios normales el doble
+  // redondeo desviaba céntimos del IVA real cobrado en Bs.
   const ivaPercent = normalizeIva(genSnap?.data()?.['ivaPercent']);
-  const ivaUsd = round2(((subtotal + shipping) * ivaPercent) / 100);
+  const baseVes = round2((subtotal + shipping) * rate);
+  const ivaVes = round2((baseVes * ivaPercent) / 100);
+  const ivaUsd = round2(ivaVes / rate); // referencia USD (panel admin)
 
-  const totalUsd = round2(subtotal + shipping + ivaUsd);
-  const totalVes = round2(totalUsd * rate);
-  // Desglose en Bs autoritativo (Ronda 3): el cliente ya NO convierte ni
-  // muestra USD; cada partida viaja redondeada desde el servidor.
+  // El Bs es la moneda oficial: total = suma cuadrada de las partidas en Bs.
   const subtotalVes = round2(subtotal * rate);
   const shippingVes = round2(shipping * rate);
-  const ivaVes = round2(ivaUsd * rate);
+  const totalVes = round2(subtotalVes + shippingVes + ivaVes);
+  // USD solo referencia (panel admin): suma cuadrada de las partidas en USD.
+  const totalUsd = round2(subtotal + shipping + ivaUsd);
   return {
     subtotalUsd: subtotal,
     shippingUsd: shipping,
@@ -658,8 +683,54 @@ interface CreateOrderReq {
   paymentMethod: unknown;
   paymentDetails: unknown;
   /** Comprobante en base64 puro. OBLIGATORIO en electrónicas (5i-k);
-   *  opcional/vacío en contra entrega (efectivo, punto_venta — 5.80). */
+   *  opcional/vacío en contra entrega (efectivo, punto_venta — 5.80).
+   *  5.113: en pago_movil puede venir vacío si viajan evidencias BDV. */
   receiptImage: unknown;
+  /** 5.113 · Evidencias de pago validado por el banco (BDV). Cada una fue
+   *  cerrada con llave en pagoRefs por fn-checkPagoMovil; aquí se COBRAN:
+   *  se verifican en la transacción y la orden nace «pagado» si cubren. */
+  pagosBdv: unknown;
+}
+
+/** Evidencia de pago validado (espejo del checkout; saneada y acotada). */
+interface PagoBdvValidado {
+  referencia: string;
+  importe: number;
+  fechaPago: string;
+  bancoOrigen: string;
+  telefonoDestino: string;
+  validatedAt: number;
+}
+
+/**
+ * 5.113 · Sanea las evidencias BDV del payload. Máximo 3 (pagos parciales);
+ * cada una debe venir completa y bien formada — la VERIFICACIÓN real contra
+ * pagoRefs ocurre en coreCreateOrder (pre-chequeo + transacción).
+ */
+function parsePagosBdv(raw: unknown): PagoBdvValidado[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new HttpsError('invalid-argument', 'Evidencias de pago inválidas.');
+  if (raw.length > MAX_PAGOS_PARCIALES) {
+    throw new HttpsError('invalid-argument', 'Demasiados pagos parciales (máximo 3).');
+  }
+  const out: PagoBdvValidado[] = [];
+  for (const it of raw) {
+    const o = (it ?? {}) as Record<string, unknown>;
+    const referencia = sanitizeDigits(o['referencia'], 15);
+    const importeN = Number(o['importe']);
+    const importe = Math.round(importeN * 100) / 100;
+    const fechaPago = fechaBdv(o['fechaPago']);
+    const bancoOrigen = bancoOrigenBdv(o['bancoOrigen']);
+    const telefonoDestino = telefonoBdv(o['telefonoDestino']);
+    if (
+      referencia.length < 4 || !Number.isFinite(importeN) || importe <= 0 || importe > 1_000_000 ||
+      !fechaPago || !bancoOrigen || telefonoDestino.length !== 11
+    ) {
+      throw new HttpsError('invalid-argument', 'Evidencia de pago inválida.');
+    }
+    out.push({ referencia, importe, fechaPago, bancoOrigen, telefonoDestino, validatedAt: Date.now() });
+  }
+  return out;
 }
 
 // Rondas 5.79 + 5.80: SEIS formas de pago. El dueño activa/desactiva cada
@@ -755,6 +826,34 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       ? sanitizeStr(genSnap.data()?.['pickupAddress'], 200) || 'Retiro en tienda · Maracay, Aragua'
       : '';
 
+    // 5.113 · PAGO MÓVIL AUTOMÁTICO (BDV): cobrar las evidencias que viajaron
+    // con la orden. Solo cuentan con el suiche ON; si el dueño lo apagó, un
+    // payload viejo NO confirma nada — sin comprobante se rechaza como siempre.
+    // Pre-chequeo AQUÍ (antes de gastar imgbb ni lecturas de montos: mensaje
+    // temprano y barato); el AUTORITATIVO va dentro de la transacción final.
+    const pagoAutoOn = req.paymentMethod === 'pago_movil' && genSnap.data()?.['pagoMovilAuto'] === true;
+    const evidencias = pagoAutoOn ? req.pagosBdv : [];
+    if (req.paymentMethod === 'pago_movil' && evidencias.length === 0 && !req.receiptImage) {
+      throw new HttpsError('invalid-argument', 'Falta el comprobante de pago: adjunta la foto antes de confirmar.');
+    }
+    let bdvTotal = 0;
+    for (const ev of evidencias) {
+      const esnap = await db().collection('pagoRefs').doc(pagoRefId(ev.telefonoDestino, ev.referencia)).get();
+      if (
+        !esnap.exists ||
+        esnap.data()?.['used'] === true ||
+        String(esnap.data()?.['uid'] ?? '') !== uid ||
+        Math.abs(Number(esnap.data()?.['importe'] ?? NaN) - ev.importe) > 0.004
+      ) {
+        throw new HttpsError(
+          'failed-precondition',
+          'Tu pago validado ya no está disponible: valida de nuevo o sube el comprobante.',
+        );
+      }
+      bdvTotal += ev.importe;
+    }
+    bdvTotal = Math.round(bdvTotal * 100) / 100;
+
     // FLUJO ESTRICTO (5i-k): el comprobante se sube a imgbb ANTES de crear la
     // orden. Si imgbb falla, NO hay pedido (cero pedidos sin pago) y el
     // cliente reintenta con la misma imagen en el estado. Va DESPUÉS del
@@ -766,6 +865,14 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
 
     // Totales calculados SOLO aquí (6.3): precios, envío, IVA y Bs.
     const totals = await phase('montos', () => computeTotals(uid, req.lines, isPickup ? null : req.address['zoneId']));
+
+    // Nace «pagado» SOLO si las evidencias cubren el total (máquina existente:
+    // en_verificacion → pagado → preparado — cero estados nuevos). Con un
+    // faltante mínimo (la tasa BCV se movió entre cotizar y validar) la orden
+    // nace en verificación CON sus evidencias: el cajero ve el pago real y
+    // decide — jamás una orden pagada de menos sin que nadie lo sepa.
+    const nacePagado = evidencias.length > 0 && bdvTotal + 0.004 >= totals.totalVes;
+    const vueltoVes = nacePagado ? Math.round((bdvTotal - totals.totalVes) * 100) / 100 : 0;
 
     // Antifraude (6.8).
     const refRaw = req.paymentDetails['referencia'] ?? req.paymentDetails['referenciaZelle'] ?? '';
@@ -810,7 +917,9 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       // FLUJO ESTRICTO (5i-k): nace EN VERIFICACIÓN — el cliente ya pagó y
       // su comprobante viaja en este mismo documento. El estado «pendiente»
       // queda reservado para pedidos legacy anteriores a esta ronda.
-      status: 'en_verificacion' as const,
+      // 5.113 · con evidencias BDV que cubren el total nace DIRECTO «pagado»:
+      // el banco ya confirmó el pago — el cajero solo lo prepara.
+      status: nacePagado ? ('pagado' as const) : ('en_verificacion' as const),
       lines: totals.linesSnapshot.map((l) => ({
         productId: l.productId,
         variantId: l.variantId,
@@ -838,7 +947,10 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       },
       payment: {
         method: req.paymentMethod,
-        status: 'pendiente',
+        status: nacePagado ? 'pagado' : 'pendiente',
+        ...(nacePagado ? { verifiedBy: 'bdv', verifiedAt: now } : {}),
+        ...(evidencias.length > 0 ? { bdvValidaciones: evidencias } : {}),
+        ...(vueltoVes > 0.004 ? { vueltoVes } : {}),
         refHash,
         detailsEncrypted: encPaymentDetails,
         // FLUJO ESTRICTO: los electrónicos nacen con comprobante (pago
@@ -900,6 +1012,22 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       const idemAgain = await tx.get(idemRef);
       if (idemAgain.exists) {
         throw new HttpsError('already-exists', 'Orden en proceso.');
+      }
+      // 5.113 · Re-chequeo AUTORITATIVO de las evidencias BDV (carrera: otra
+      // orden pudo cobrar la misma referencia entre el pre-chequeo y aquí).
+      for (const ev of evidencias) {
+        const esnap = await tx.get(db().collection('pagoRefs').doc(pagoRefId(ev.telefonoDestino, ev.referencia)));
+        if (
+          !esnap.exists ||
+          esnap.data()?.['used'] === true ||
+          String(esnap.data()?.['uid'] ?? '') !== uid ||
+          Math.abs(Number(esnap.data()?.['importe'] ?? NaN) - ev.importe) > 0.004
+        ) {
+          throw new HttpsError(
+            'failed-precondition',
+            'Tu pago validado ya no está disponible: valida de nuevo o sube el comprobante.',
+          );
+        }
       }
       // Leer y validar TODAS las variantes ANTES de encolar cualquier
       // escritura. El «falló fase escritura-orden: Firestore transactions
@@ -1026,14 +1154,27 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       // ── A partir de aquí SOLO escrituras: ninguna lectura después ──
       tx.set(db().collection('orders').doc(orderId), orderDoc);
       tx.set(idemRef, { orderId, createdAt: now }, { merge: false });
+      // 5.113 · COBRAR las evidencias: cada referencia validada queda usada
+      // por ESTA orden — jamás paga dos pedidos (ni el propio cliente puede
+      // reutilizarla: la tx lo impide).
+      for (const ev of evidencias) {
+        tx.update(db().collection('pagoRefs').doc(pagoRefId(ev.telefonoDestino, ev.referencia)), {
+          used: true,
+          orderId,
+          orderCode: code,
+        });
+      }
       // Evento inicial del timeline: nace ya con pago realizado (5i-k).
+      // 5.113 · con BDV nace DIRECTO «pagado» (el banco ya confirmó).
       tx.set(db().collection('orders').doc(orderId).collection('events').doc('e0'), {
-        status: 'en_verificacion',
+        status: nacePagado ? 'pagado' : 'en_verificacion',
         at: now,
         by: 'system',
-        note: isPickup
-          ? 'Pedido creado con comprobante de pago. Retiro en tienda. Pago en verificación.'
-          : 'Pedido creado con comprobante de pago. Pago en verificación.',
+        note: nacePagado
+          ? `Pago validado automáticamente por el banco (BDV).${vueltoVes > 0.004 ? ` Vuelto a entregar: Bs ${vueltoVes.toFixed(2)}.` : ''}`
+          : isPickup
+            ? 'Pedido creado con comprobante de pago. Retiro en tienda. Pago en verificación.'
+            : 'Pedido creado con comprobante de pago. Pago en verificación.',
       });
       // Consume la reserva y liquida hold + venta (Ronda 5i).
       if (reservation) {
@@ -1068,8 +1209,22 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
     // todos). Los envíos son best-effort internamente (nunca lanzan), así
     // que el await no puede romper la operación del cliente: solo garantiza
     // que el push complete ANTES de responder. Costo: +1-3 s por operación.
-    await ORDER_NOTIFICATIONS.send(uid, code, 'en_verificacion');
-    await ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code);
+    // 5.113 · Nacimiento por modalidad de pago:
+    // · BDV (nacePagado) → el push «Pago confirmado» al cliente Y, 5.114,
+    //   el aviso «Pedido pagado — listo para preparar» al cajero (con
+    //   gerencia/admin de respaldo): el banco ya confirmó — no hay nada que
+    //   VERIFICAR, pero SÍ hay algo que PREPARAR. Sin este aviso el pedido
+    //   pagado era invisible para la tienda (hallazgo 1 de la prueba en vivo
+    //   del dueño: nadie en el local se enteraba del pedido).
+    // · Resto → la cadena de siempre (cliente + cola del cajero).
+    if (nacePagado) {
+      await ORDER_NOTIFICATIONS.send(uid, code, 'pagado');
+      // 5.114 · El cajero se entera: pedido pagado por el banco, a preparar.
+      await ORDER_NOTIFICATIONS.sendPaidAlert(code);
+    } else {
+      await ORDER_NOTIFICATIONS.send(uid, code, 'en_verificacion');
+      await ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code);
+    }
     // 5.74 · «Se agotó» SOLO a los carritos que tenían la variante vendida
     // hasta el cero (fuera el comprador: él ya sabe). En cadena y best-effort.
     for (const d of depleted) {
@@ -1128,6 +1283,7 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
   paymentMethod: string;
   paymentDetails: Record<string, string>;
   receiptImage: string;
+  pagosBdv: PagoBdvValidado[];
 } {
   if (!data) throw new HttpsError('invalid-argument', 'Datos faltantes.');
 
@@ -1243,11 +1399,18 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
   // FLUJO ESTRICTO (5i-k): el comprobante es OBLIGATORIO en las formas
   // electrónicas. Contra entrega (efectivo/punto_venta, 5.80) lo acepta
   // opcional: sin este campo el pedido entra igual (se cobra al recibir).
+  // 5.113 · EXCEPCIÓN pago_movil: el comprobante puede venir vacío si viajan
+  // evidencias BDV (pagos ya validados por el banco). Si el dueño tiene el
+  // suiche automático APAGADO, coreCreateOrder tira las evidencias y aquí
+  // el pedido no llega: sin comprobante se rechaza igual que siempre.
+  const pagosBdv = parsePagosBdv(data.pagosBdv);
   const receiptImage = PAYMENT_METHODS_RECEIPT.has(paymentMethod)
-    ? requireReceiptImage(data.receiptImage)
+    ? paymentMethod === 'pago_movil' && pagosBdv.length > 0
+      ? optionalReceiptImage(data.receiptImage)
+      : requireReceiptImage(data.receiptImage)
     : optionalReceiptImage(data.receiptImage);
 
-  return { idempotencyKey, reservationId, fulfillment, lines, contact, address: { ...address, location }, deliveryWindow, notes, paymentMethod, paymentDetails, receiptImage };
+  return { idempotencyKey, reservationId, fulfillment, lines, contact, address: { ...address, location }, deliveryWindow, notes, paymentMethod, paymentDetails, receiptImage, pagosBdv };
 }
 
 /* ─────────────────────────── cancelar orden ─────────────────────────── */

@@ -27,14 +27,26 @@
  *     --keep-stock salta TODA escritura de producto (stock, stockTotal y
  *     vendidosTotal).
  *
- * REGLAS DE REPOSICIÓN DE STOCK (verificadas contra orders.ts/payments.ts):
- *   · Flujo FALLBACK (orden sin reservationId): createOrder descontó `stock`
- *     → se repone stock += qty SOLO si la orden NO está 'cancelado'
- *     (al cancelar/rechazar el backend ya repuso; duplicar inflaría stock).
- *   · Flujo RESERVA (orden con reservationId): el stock real NUNCA se descontó
- *     (solo quedó la retención en `stockReserved`) → se baja stockReserved -= qty.
- *     Si la orden estaba 'cancelado' se advierte: el rechazo del backend pudo
- *     haber sumado stock de más (revisar la variante en el panel).
+ * 5.118 · REGLAS DE REPOSICIÓN DE STOCK (corregidas — auditoría post-QA):
+ *   La contabilidad vigente es la de la Ronda 5i: createOrder descuenta el
+ *   stock REAL de la variante (y el stockTotal del padre) en AMBOS flujos,
+ *   con o sin reserva («Venta real: descuenta el stock validado (ambos
+ *   flujos)» — orders.ts). La regla anterior de esta herramienta («con
+ *   reserva el stock real nunca se descontó») era del modelo previo a 5i:
+ *   al purgar órdenes con reserva solo bajaba stockReserved y las unidades
+ *   NO volvían → el stock quedaba consumido para siempre (hallazgo real:
+ *   el «Producto de prueba» quedó en 7 tras la QA del 31/10).
+ *   Reglas corregidas (verificadas contra orders.ts 5i + cancelOrder):
+ *   · Orden NO cancelada (AMBOS flujos): se repone stock += qty en la
+ *     variante y stockTotal += qty en el padre. Además se libera cualquier
+ *     hold residual (stockReserved -= qty; en órdenes confirmadas ya está
+ *     en 0 → la escritura se omite).
+ *   · Orden CANCELADA: el backend YA repuso stock + stockTotal al cancelar
+ *     (cancelOrder) → no se toca el stock; solo hold residual defensivo.
+ *   · Órdenes de la era PRE-5i (anteriores al cambio de contabilidad) con
+ *     reserva: la creación NO descontó stock real; reponer +qty inflaría.
+ *     Si vas a purgar una orden vieja de esa era, usa --keep-stock y ajusta
+ *     a mano (hoy no queda ninguna en producción).
  *
  * SIMULACIÓN POR DEFECTO: sin --yes solo MUESTRA el plan (valores «actual → nuevo»).
  *
@@ -342,18 +354,22 @@ async function main() {
       let newStock = stock;
       let newReserved = reserved;
       let note = '';
-      if (isReservationFlow) {
-        // El stock real nunca se descontó en este flujo: solo la retención.
+      if (cancelled) {
+        // 5.118 · Cancelada: cancelOrder YA repuso stock + stockTotal y
+        // liberó el hold. Solo hold residual defensivo (normalmente 0→0).
         newReserved = Math.max(0, reserved - qty);
-        if (cancelled) {
-          note = 'orden cancelada: el rechazo del backend pudo haber sumado stock de más (revisar en el panel)';
-        }
+        note = 'ya repuesta por el backend al cancelar';
       } else {
-        // Fallback: createOrder descontó stock; cancelar/rechazar ya repuso.
-        newStock = cancelled ? stock : stock + qty;
-        note = cancelled ? 'ya repuesta por el backend al cancelar' : 'se repone';
+        // 5.118 · Ronda 5i: la creación descontó stock REAL en ambos flujos
+        // (con y sin reserva) → se repone. El hold residual se libera
+        // (reserva aún activa → baja; consumida → ya está en 0).
+        newStock = stock + qty;
+        newReserved = Math.max(0, reserved - qty);
+        note = isReservationFlow
+          ? 'se repone (5i: la creación descontó stock real aunque hubiera reserva)'
+          : 'se repone';
       }
-      const parentDelta = !isReservationFlow && !cancelled ? qty : 0;
+      const parentDelta = !cancelled ? qty : 0;
       if (parentDelta > 0) productDeltas.set(pid, (productDeltas.get(pid) ?? 0) + parentDelta);
       const sinCambio = newStock === stock && newReserved === reserved && parentDelta === 0;
       stockPlan.push({ ref: vref, path: `products/${key}`, name: String(l?.['name'] ?? ''), stock, reserved, newStock, newReserved, note, parentDelta, falta: false, sinCambio });
@@ -417,7 +433,7 @@ async function main() {
   } else if (stockPlan.length === 0) {
     line('STOCK: la orden no tiene líneas con producto/variante → nada que reponer.');
   } else {
-    line(`STOCK (${isReservationFlow ? 'flujo reserva: baja stockReserved' : 'flujo fallback: repone stock'})${cancelled ? ' · orden cancelada → sin cambios de stock' : ''}`);
+    line(`STOCK (5.118 · contabilidad 5i: repone stock real en ambos flujos)${cancelled ? ' · orden cancelada → el backend ya repuso, sin cambios de stock' : ''}`);
     for (const p of stockPlan) {
       const label = p.name ? `${p.path} (${p.name})` : p.path;
       line(`  ${label}`);
@@ -425,9 +441,10 @@ async function main() {
         line('    ⚠ el producto o la variante ya no existe (borrado) → nada que ajustar');
         continue;
       }
-      const change = isReservationFlow
-        ? `stockReserved ${p.reserved} → ${p.newReserved}`
-        : `stock ${p.stock} → ${p.newStock}`;
+      const cambios = [];
+      if (p.newStock !== p.stock) cambios.push(`stock ${p.stock} → ${p.newStock}`);
+      if (p.newReserved !== p.reserved) cambios.push(`stockReserved ${p.reserved} → ${p.newReserved}`);
+      const change = cambios.length > 0 ? cambios.join(' · ') : 'sin cambios';
       line(`    ${change}${p.note ? `  · ${p.note}` : ''}${p.sinCambio ? '  · (sin cambio real: no se escribe)' : ''}`);
       if (p.parentDelta > 0) {
         line(`    stockTotal del producto ${p.path.split('/')[1]}: +${p.parentDelta} (5.74 · vitrina cuadrada)`);
@@ -488,10 +505,12 @@ async function main() {
     // 5.100 · referencias muertas y no-cambios (0→0) NO entran al lote: un
     // solo update inválido cancelaría la purga completa (lote atómico).
     if (p.falta || p.sinCambio) continue;
-    const data = isReservationFlow
-      ? { stockReserved: p.newReserved }
-      : { stock: p.newStock };
-    push((b) => b.update(p.ref, data));
+    // 5.118 · Escribe SOLO los campos que cambian (stock, stockReserved o
+    // ambos — la contabilidad 5i descuenta stock real en ambos flujos).
+    const data = {};
+    if (p.newStock !== p.stock) data['stock'] = p.newStock;
+    if (p.newReserved !== p.reserved) data['stockReserved'] = p.newReserved;
+    if (Object.keys(data).length > 0) push((b) => b.update(p.ref, data));
   }
 
   // 5.100 · «Los más pedidos»: rebaja vendidosTotal de la orden entregada.
@@ -504,8 +523,9 @@ async function main() {
   }
 
   // 5.74 · stockTotal del producto (padre): repone lo que la venta de prueba
-  // descontó (solo flujo fallback sin cancelar). updatedAt: el pulso del
-  // catálogo refresca las pantallas abiertas al instante.
+  // descontó (5.118 · ambos flujos; solo si la orden NO quedó cancelada —
+  // al cancelar el backend ya lo sumó). updatedAt: el pulso del catálogo
+  // refresca las pantallas abiertas al instante.
   for (const [pid, delta] of productDeltas) {
     push((b) => b.update(db.doc(`products/${pid}`), {
       stockTotal: admin.firestore.FieldValue.increment(delta),

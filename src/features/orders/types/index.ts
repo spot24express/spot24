@@ -39,6 +39,11 @@ export interface OrderPayment {
   reference?: string;
   verifiedBy?: string;
   verifiedAt?: number;
+  /** 5.113 · Pagos validados automáticamente por el banco (BDV): evidencia
+   *  visible para el personal. Órdenes anteriores: undefined. */
+  bdvValidaciones?: Array<{ referencia: string; importe: number; fechaPago: string }>;
+  /** 5.113 · Vuelto a entregar al cliente (pagó de más del total). */
+  vueltoVes?: number;
 }
 
 export interface OrderDelivery {

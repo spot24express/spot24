@@ -26,7 +26,7 @@ import { Modal } from '@/shared/components/ui/Modal';
 import { useCart } from '@/features/cart/hooks/useCart';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useZones } from '@/features/delivery/hooks/useZones';
-import { reserveStock, quoteTotals, createOrder } from '../services/checkout.service';
+import { reserveStock, quoteTotals, createOrder, checkPagoMovil } from '../services/checkout.service';
 import { buildIdempotencyKey } from '../lib/idempotency';
 import {
   PAYMENT_METHOD_LABELS, PAYMENT_INSTRUCTIONS, PAYMENT_REQUIRES_RECEIPT,
@@ -52,6 +52,15 @@ import { MAX_INPUT_MB, fileToBase64 } from '@/shared/lib/imageCompress';
 import { userMessage, AppError } from '@/shared/lib/errors';
 import { trackEvent } from '@/shared/lib/analytics';
 import { formatBs, usdToBs, cleanAmountBs } from '@/shared/lib/format';
+import {
+  coberturaCompleta,
+  fechaHoyCaracas,
+  isValidReferenciaBdv,
+  pagoMovilAutoDisponible,
+  restanteBs,
+  vueltoBs,
+  type PagoBdvEvidence,
+} from '@/shared/lib/pagoMovilAuto';
 import { copyText } from '@/shared/lib/clipboard';
 import { useBcvRate } from '@/shared/hooks/useBcvRate';
 import type { CreateOrderResponse, QuoteResponse, ReservationResponse, FulfillmentMode } from '../types';
@@ -110,6 +119,19 @@ export default function CheckoutPage() {
   const [receipt, setReceipt] = useState<ReceiptReady | null>(null);
   const [receiptBusy, setReceiptBusy] = useState(false);
   const receiptInputRef = useRef<HTMLInputElement>(null);
+  // 5.113 · VALIDACIÓN AUTOMÁTICA BDV: suiche del dueño + teléfono de recaudo
+  // (Ajustes → Operación). OFF = nada cambia: comprobante + cajero como siempre.
+  const [autoPago, setAutoPago] = useState<{ on: boolean; telefono: string }>({ on: false, telefono: '' });
+  // Pagos ya validados por el banco en esta sesión (soporta parciales: faltante).
+  const [validaciones, setValidaciones] = useState<PagoBdvEvidence[]>([]);
+  const [validando, setValidando] = useState(false);
+  // Tras un rechazo del banco: declarar el monto REAL pagado (el banco lo
+  // coteja — declarar mal lo que pagaste no confirma nada).
+  const [modoDeclarado, setModoDeclarado] = useState(false);
+  const [importeDeclarado, setImporteDeclarado] = useState('');
+  // Camino de siempre como red de emergencia: subir comprobante y que el
+  // personal lo revise (BDV caído, referencias que no cuadran, etc.).
+  const [manualFallback, setManualFallback] = useState(false);
   // POLÍTICA DEL DUEÑO (5.26): cancelar solo en el paso Pago y solo SIN
   // comprobante. Tras pagar (comprobante adjunto) y tras confirmar el pedido
   // NO existe cancelación para el cliente, ni aviso de WhatsApp.
@@ -178,6 +200,9 @@ export default function CheckoutPage() {
           // 5.112-B: la franja viaja en la MISMA lectura de settings/general
           // que ya se hace para el retiro: cero lecturas extra a Firestore.
           setFranja({ start: g.deliveryStart, end: g.deliveryEnd });
+          // 5.113: suiche + teléfono de la validación automática BDV (misma
+          // lectura de settings/general: cero lecturas extra).
+          setAutoPago({ on: g.pagoMovilAuto === true, telefono: g.pagoMovilTelefono });
         }
       })
       .catch(() => {
@@ -301,6 +326,31 @@ export default function CheckoutPage() {
    *  venta) no: se cobra al recibir y no se pide foto ni formulario. */
   const needsReceipt = PAYMENT_REQUIRES_RECEIPT[payment.method];
 
+  // 5.113 · ¿validación automática BDV para ESTA cuenta? El conciliador del
+  // banco solo ve los pagos de la cuenta BDV del dueño: el teléfono de la
+  // cuenta elegida debe coincidir con el guardado en Ajustes. Sin cotización
+  // lista no hay validación (el importe a validar sale de ella).
+  const autoActivo = useMemo(
+    () =>
+      pagoMovilAutoDisponible(autoPago.on, autoPago.telefono, zoneAccount) &&
+      quoteState === 'ok' &&
+      !!quote &&
+      quote.rateUsed > 0,
+    [autoPago, zoneAccount, quoteState, quote],
+  );
+  const restante = autoActivo && quote ? restanteBs(quote.totalVes, validaciones) : 0;
+  const vuelto = autoActivo && quote ? vueltoBs(quote.totalVes, validaciones) : 0;
+  const coberturaOk = autoActivo && quote ? coberturaCompleta(quote.totalVes, validaciones) : false;
+
+  // 5.113: la fecha del pago por defecto es HOY en Venezuela (el conciliador
+  // busca el movimiento de hoy; editable si pagó cerca de medianoche).
+  useEffect(() => {
+    if (autoActivo && !payment.fecha) {
+      setPayment((p) => ({ ...p, fecha: fechaHoyCaracas() }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoActivo]);
+
   // GPS del cliente: OBLIGATORIO en delivery — el mensajero recibe el punto
   // exacto para llegar. En retiro en tienda no se pide (no aplica).
   const captureGps = () => {
@@ -415,11 +465,73 @@ export default function CheckoutPage() {
     // Zelle/Binance) viven en paymentMethods.validatePaymentForm (5.79).
     // Contra entrega (5.80): sin formulario ni comprobante — solo avanzar.
     const e = validatePaymentForm(payment);
-    // FLUJO ESTRICTO (5i-k): sin comprobante no se avanza — SOLO en las formas
-    // electrónicas. Efectivo y punto de venta se cobran al recibir (5.80).
-    if (needsReceipt && !receipt) e['receipt'] = 'Adjunta la foto del comprobante de pago.';
+    // 5.113: en automático la referencia va COMPLETA (el conciliador BDV
+    // busca el movimiento completo, no los últimos 6 dígitos).
+    if (autoActivo) {
+      delete e['referencia'];
+      if (!isValidReferenciaBdv(payment.referencia)) {
+        e['referencia'] = 'Referencia completa del pago (todos los dígitos que muestra tu banco).';
+      }
+      // Cobertura: con la validación del banco NO hace falta comprobante.
+      // Sin cobertura, o se valida el faltante o se elige el camino manual.
+      if (!coberturaOk && !receipt) {
+        e['pago'] =
+          restante > 0
+            ? `Valida tu pago o el faltante de Bs ${restante.toFixed(2)} — o sube el comprobante para revisión manual.`
+            : 'Valida tu pago con el banco — o sube el comprobante para revisión manual.';
+      }
+    } else if (needsReceipt && !receipt) {
+      // FLUJO ESTRICTO (5i-k): sin comprobante no se avanza — SOLO en las
+      // formas electrónicas. Efectivo y punto de venta se cobran al recibir (5.80).
+      e['receipt'] = 'Adjunta la foto del comprobante de pago.';
+    }
     setErrors(e);
     return Object.values(e).every((x) => !x);
+  };
+
+  /* ── 5.113: validar el pago contra el banco (API Conciliación BDV) ── */
+  const validarPagoBdv = async (importe: number) => {
+    const e: Record<string, string | null> = {};
+    if (!payment.banco) e['banco'] = 'Selecciona el banco del pago.';
+    if (!isValidCedulaVE(payment.cedula)) e['cedula'] = 'Cédula del pagador: solo los números.';
+    if (!isValidPhoneVE(payment.telefono)) e['telefono'] = 'Teléfono móvil del pago.';
+    if (!isValidReferenciaBdv(payment.referencia)) e['referencia'] = 'Referencia completa del pago.';
+    if (!payment.fecha) e['fecha'] = 'Fecha del pago.';
+    if (Object.values(e).some((x) => x)) {
+      setErrors((prev) => ({ ...prev, ...e }));
+      return;
+    }
+    setValidando(true);
+    try {
+      const res = await checkPagoMovil({
+        referencia: payment.referencia,
+        cedulaPagador: payment.cedula,
+        telefonoPagador: payment.telefono,
+        bancoOrigen: payment.banco,
+        fechaPago: payment.fecha,
+        importe,
+      });
+      setValidaciones((v) =>
+        v.some((x) => x.referencia === res.evidencia.referencia) ? v : [...v, res.evidencia],
+      );
+      setModoDeclarado(false);
+      setImporteDeclarado('');
+      setErrors((prev) => ({ ...prev, pago: null, referencia: null }));
+      toast.success('El banco confirmó tu pago.');
+    } catch (err) {
+      // 5.113.3 · Contrato por códigos: la rama de «declarar el monto real»
+      // SOLO se abre cuando el banco RESPONDIÓ y dijo «no encontrado»
+      // ('pago-no-visto'). Si el banco no respondió ('banco-no-responde') o
+      // falló cualquier otra cosa NO se abre: antes CUALQUIER error la
+      // abría y el cliente creía que el banco había dicho «no existe»
+      // (con timeout veía la rama; con «no existe» veía «No tienes acceso»).
+      if (err instanceof AppError && err.code === 'pago-no-visto') {
+        setModoDeclarado(true);
+      }
+      toast.error(userMessage(err));
+    } finally {
+      setValidando(false);
+    }
   };
 
   /* ── Confirmación: crea la orden vía Cloud Function ── */
@@ -428,7 +540,8 @@ export default function CheckoutPage() {
     if (!user) return;
     // Guard de doble llave: en formas electrónicas, sin comprobante no se
     // llama al servidor (5i-k). Contra entrega no necesita foto (5.80).
-    if (needsReceipt && !receipt) {
+    // 5.113: en automático, la cobertura BDV sustituye al comprobante.
+    if (needsReceipt && !receipt && !(autoActivo && coberturaOk)) {
       toast.error('Adjunta la foto del comprobante de pago.');
       setStep(2);
       return;
@@ -514,6 +627,9 @@ export default function CheckoutPage() {
           // nada (la imagen sigue aquí, lista para reenviar).
           // Contra entrega (5.80): vacío — el servidor NO pide imagen.
           receiptImage: needsReceipt && receipt ? receipt.base64 : '',
+          // 5.113: las evidencias BDV viajan con la orden — el servidor las
+          // cobra (pagoRefs) y nace «pagado» directo cuando cubren el total.
+          ...(autoActivo && validaciones.length > 0 ? { pagosBdv: validaciones } : {}),
         },
       );
 
@@ -596,7 +712,10 @@ export default function CheckoutPage() {
           <div className="mt-6 rounded-brand border-2 border-line bg-ink p-4 text-left">
             <p className="spot-label mb-1">Siguiente paso</p>
             <p className="text-body-base text-paper">
-              {needsReceipt ? (
+              {autoActivo && coberturaCompleta(created.totals.totalVes, validaciones) ? (
+                <>El banco confirmó tu pago automáticamente: tu pedido entra derecho a preparación.
+                Te avisamos apenas esté listo.</>
+              ) : needsReceipt ? (
                 <>Recibimos tu comprobante ({PAYMENT_METHOD_LABELS[payment.method]}): tu pedido ya está en la cola de
                 verificación. Te avisamos con una notificación apenas confirmemos el pago.</>
               ) : (
@@ -935,7 +1054,18 @@ export default function CheckoutPage() {
                         </Select>
                         <Input label="Cédula del pagador (solo números)" value={payment.cedula} onChange={(e) => setPayment((p) => ({ ...p, cedula: e.target.value }))} placeholder="12345678" inputMode="numeric" error={errors['cedula']} required />
                         <Input label="Teléfono del pago" type="tel" value={payment.telefono} onChange={(e) => setPayment((p) => ({ ...p, telefono: e.target.value }))} placeholder="04241234567" error={errors['telefono']} required />
-                        <Input label="Referencia (últimos 6 dígitos)" value={payment.referencia} onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.replace(/\D/g, '').slice(0, 6) }))} error={errors['referencia']} inputMode="numeric" maxLength={6} placeholder="123456" required />
+                        {/* 5.113: en automático la referencia va COMPLETA (el
+                            conciliador del banco busca el movimiento entero). */}
+                        <Input
+                          label={autoActivo ? 'Referencia completa del pago' : 'Referencia (últimos 6 dígitos)'}
+                          value={payment.referencia}
+                          onChange={(e) => setPayment((p) => ({ ...p, referencia: e.target.value.replace(/\D/g, '').slice(0, autoActivo ? 12 : 6) }))}
+                          error={errors['referencia']}
+                          inputMode="numeric"
+                          maxLength={autoActivo ? 12 : 6}
+                          placeholder={autoActivo ? '123456789' : '123456'}
+                          required
+                        />
                         <Input label="Fecha del pago" type="date" value={payment.fecha} onChange={(e) => setPayment((p) => ({ ...p, fecha: e.target.value }))} error={errors['fecha']} required />
                       </div>
                     ) : payment.method === 'zelle' ? (
@@ -967,7 +1097,104 @@ export default function CheckoutPage() {
                   cobra al recibir (efectivo o terminal). El pedido nace con el
                   pago incluido y el cajero solo ve pedidos ya pagados: nadie
                   aprobará a ciegas ni llamará «para pedir el comprobante». */}
-              {needsReceipt ? (
+              {/* ── 5.113 · VALIDACIÓN AUTOMÁTICA (BDV) ──
+                  El suiche del dueño la activa; el teléfono de la cuenta
+                  elegida debe coincidir. OFF = esta sección ni existe. */}
+              {autoActivo && (
+                <section className="rounded-brand-lg border-2 border-signal bg-signal/10 p-6" aria-label="Validación automática del pago">
+                  <h2 className="font-display text-lg font-bold italic uppercase text-paper">Validación automática con el banco</h2>
+                  <p className="mt-2 text-sm text-paper">
+                    Paga el monto exacto, llena los datos de arriba y toca «Validar mi pago»: le preguntamos
+                    al banco en segundos. <strong>Sin comprobante que subir.</strong>
+                  </p>
+                  {validaciones.length > 0 && (
+                    <ul className="mt-3 space-y-1">
+                      {validaciones.map((v) => (
+                        <li key={v.referencia} className="text-sm font-semibold text-signal">
+                          ✓ Pago confirmado: Bs {v.importe.toFixed(2)} · ref {v.referencia}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {coberturaOk ? (
+                    <p className="mt-3 rounded-brand border-2 border-signal bg-ink p-3 text-sm font-semibold text-signal">
+                      {vuelto > 0
+                        ? `Pago completo confirmado. Vuelto a entregar: Bs ${vuelto.toFixed(2)}.`
+                        : 'Pago completo confirmado. Toca «Revisar y confirmar» y listo.'}
+                    </p>
+                  ) : (
+                    <>
+                      {validaciones.length > 0 && (
+                        <p className="mt-3 rounded-brand border-2 border-line bg-ink p-3 text-sm text-paper">
+                          Te falta pagar <strong className="text-signal">Bs {restante.toFixed(2)}</strong>: haz otro
+                          pago móvil por ese monto exacto y valida la nueva referencia.
+                        </p>
+                      )}
+                      <div className="mt-4">
+                        <Button size="lg" type="button" loading={validando} onClick={() => void validarPagoBdv(restante)}>
+                          {validaciones.length > 0
+                            ? `Validar el faltante (Bs ${restante.toFixed(2)})`
+                            : `Validar mi pago (Bs ${restante.toFixed(2)})`}
+                        </Button>
+                      </div>
+                      {modoDeclarado && (
+                        <div className="mt-4 rounded-brand border-2 border-line bg-ink p-4">
+                          <p className="text-sm text-paper">
+                            El banco no vio ese pago con el monto del pedido. ¿Pagaste un monto distinto?
+                            Escribe cuánto pagaste DE VERDAD y lo cotejamos (el banco decide — no se puede engañar).
+                          </p>
+                          <div className="mt-3 flex flex-wrap items-end gap-3">
+                            <Input
+                              label="Monto que pagaste (Bs)"
+                              inputMode="decimal"
+                              value={importeDeclarado}
+                              onChange={(e) => setImporteDeclarado(e.target.value.replace(/[^0-9.]/g, ''))}
+                              placeholder="100.00"
+                              hint="Ej.: 100.00 — si pagaste menos, luego te pedimos el faltante."
+                            />
+                            <Button
+                              variant="secondary"
+                              type="button"
+                              loading={validando}
+                              onClick={() => {
+                                const n = Number(importeDeclarado);
+                                if (!Number.isFinite(n) || n <= 0) {
+                                  toast.error('Escribe el monto que pagaste (mayor que cero).');
+                                  return;
+                                }
+                                void validarPagoBdv(Math.round(n * 100) / 100);
+                              }}
+                            >
+                              Validar ese monto
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                      {/* Red de emergencia: el camino de siempre, a un toque. */}
+                      <div className="mt-4 border-t border-line pt-3">
+                        {manualFallback ? (
+                          <Button variant="secondary" size="sm" type="button" onClick={() => setManualFallback(false)}>
+                            Ocultar la opción manual
+                          </Button>
+                        ) : (
+                          <>
+                            <p className="text-xs text-muted">
+                              ¿Problemas con la validación? Sube el comprobante y el personal lo revisa
+                              personalmente, como siempre.
+                            </p>
+                            <Button variant="ghost" size="sm" type="button" className="mt-2" onClick={() => setManualFallback(true)}>
+                              Prefiero subir mi comprobante (revisión manual)
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </>
+                  )}
+                  {errors['pago'] && <p className="mt-2 text-sm font-semibold text-signal">{errors['pago']}</p>}
+                </section>
+              )}
+
+              {needsReceipt && (!autoActivo || manualFallback) ? (
                 <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Comprobante de pago">
                   <h2 className="font-display text-lg font-bold italic uppercase text-paper">Comprobante de pago</h2>
                   <p className="mt-2 text-sm text-muted">
@@ -1030,7 +1257,9 @@ export default function CheckoutPage() {
                   <p className="mt-2 text-sm font-semibold text-signal">{errors['receipt']}</p>
                 )}
                 </section>
-              ) : (
+              ) : null}
+
+              {!needsReceipt && !autoActivo && (
                 <section className="rounded-brand-lg border-2 border-signal bg-signal/10 p-6" aria-label="Pago contra entrega">
                   <h2 className="font-display text-lg font-bold italic uppercase text-paper">Pago contra entrega</h2>
                   <p className="mt-2 text-sm text-paper">

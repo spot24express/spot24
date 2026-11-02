@@ -19,6 +19,7 @@ import { useAuth } from '@/features/auth/hooks/useAuth';
 import { userMessage } from '@/shared/lib/errors';
 import { formatBs, formatDateTime, usdToBs } from '@/shared/lib/format';
 import { unirConPuntos } from '@/shared/lib/lineaMeta';
+import { filtrarColaPorRol } from '../lib/colaDespacho';
 
 /**
  * Panel de despacho (5.5): cola de pedidos activos, cambio de estado con
@@ -77,6 +78,16 @@ import { unirConPuntos } from '@/shared/lib/lineaMeta';
  * · Para delivery: alternancia «Mías / Todas» (Mías = pedidos que él tomó y
  *   entregó). Los pedidos anteriores al reclamo 5.28 no llevan claim, así
  *   que solo aparecen bajo «Todas».
+ *
+ * Ronda 5.117 — DECISIÓN DEL DUEÑO: «el delivery solo tendría pedidos a
+ * domicilio». Los RETIROS EN TIENDA se ocultan de la vista del rol delivery
+ * (cola activa, historial «Entregadas» y chips de zona, que se derivan de
+ * la lista ya filtrada). El filtro es SOLO DE VISTA y vive en la libra pura
+ * features/admin/lib/colaDespacho (testeada): el backend ya le negaba al
+ * delivery cualquier acción sobre retiros (sin push de despacho, reclamo
+ * rechazado con «Es retiro en tienda: no requiere delivery»). admin,
+ * gerente y cajero siguen viendo TODO, intacto. El flujo pickup-aware
+ * 5.112.1 (cierre «→ Retirado en tienda» de caja/gerencia) queda intacto.
  */
 const QUEUE: OrderStatus[] = ['pagado', 'preparado', 'en_camino'];
 
@@ -129,14 +140,18 @@ export default function AdminDispatchPage() {
     setLoading(true);
     void adminListOrders([...QUEUE, 'pendiente', 'en_verificacion'])
       .then((o) => {
-        setOrders(o);
+        // 5.117: el delivery solo ve domicilios (retiros ocultos de su vista).
+        setOrders(filtrarColaPorRol(o, role));
         setError(false);
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
   };
 
-  useEffect(load, []);
+  /* 5.117 · [role] en deps: la cola se filtra por rol al cargar. El rol no
+   * cambia dentro de la sesión (GuardPanel ya lo garantiza al montar), así
+   * que en la práctica sigue siendo UNA carga al entrar. */
+  useEffect(load, [role]);
 
   /* 5.41 · Historial: MISMA forma de consulta que el resto del panel
    * (status + createdAt → el índice compuesto ya existe en producción).
@@ -145,7 +160,8 @@ export default function AdminDispatchPage() {
     setHistoryLoading(true);
     void adminListOrders(['entregado'])
       .then((o) => {
-        setDelivered(o);
+        // 5.117: mismo criterio en «Entregadas» — el delivery no ve retiros.
+        setDelivered(filtrarColaPorRol(o, role));
         setHistoryError(false);
       })
       .catch(() => setHistoryError(true))

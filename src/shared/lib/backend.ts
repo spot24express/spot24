@@ -54,7 +54,19 @@ function toAppError(code: string, serverMessage?: string): AppError {
     // diagnóstico imposible para el dueño.
     if (serverMessage?.startsWith('Reserva vencida')) mapped = 'reservation';
     else if (serverMessage?.startsWith('9 FAILED_PRECONDITION')) mapped = 'generic';
+    // 5.113.3 · PAGO MÓVIL BDV: el banco RESPONDIÓ y dijo «no existe» —
+    // no es un problema de permisos (antes: «No tienes acceso a esta área.»).
+    else if (serverMessage?.startsWith('El banco no encontró')) mapped = 'pago-no-visto';
+    // 5.113.3: suiche apagado o teléfono de recaudo sin configurar a mitad
+    // de vuelo (pagoMovil.ts). Tampoco es rol/permiso: es «pago».
+    else if (serverMessage?.startsWith('La validación automática')) mapped = 'payment';
     else mapped = 'forbidden';
+  }
+  else if (code.includes('already-exists')) {
+    // 5.113.3: la referencia ya fue validada/usada (pagoMovil.ts) — mensaje
+    // propio y accionable en vez del genérico «Algo salió fuera de línea».
+    if (serverMessage?.startsWith('Esta referencia')) mapped = 'pago-repetido';
+    else mapped = 'generic';
   }
   else if (code.includes('resource-exhausted')) mapped = 'rate-limit';
   else if (code.includes('out-of-range')) mapped = 'stock';
@@ -66,6 +78,10 @@ function toAppError(code: string, serverMessage?: string): AppError {
     // código 'images' → la UI muestra la verdad («El servicio de imágenes
     // está caído…») en vez del genérico «Algo salió fuera de línea».
     if (serverMessage?.startsWith('El servicio de imágenes está caído')) mapped = 'images';
+    // 5.113.3: el banco no respondió (timeout/red hacia el API Conciliación
+    // BDV). Verdad al cliente y NINGUNA rama de «declarar monto»: el banco
+    // no dijo nada (el checkout distingue por código, ver CheckoutPage).
+    else if (serverMessage?.startsWith('El banco no respondió')) mapped = 'banco-no-responde';
     else mapped = 'generic';
   }
   return new AppError(mapped, serverMessage);
@@ -121,9 +137,9 @@ export async function callFunction<TRes = unknown>(
     // consola serializa como
     // «{}» (inútil para diagnosticar). Motivo legible:
     // · TimeoutError/AbortError → el servidor no respondió a tiempo. En
-    //   netlify dev la 1ª llamada tras reiniciar (arranque en frío) puede
-    //   tardar 10-30 s y el servidor SÍ la procesa: la respuesta 200 llegó a
-    //   un cliente que ya había colgado. Reintentar es seguro.
+    // netlify dev la 1ª llamada tras reiniciar (arranque en frío) puede
+    // tardar 10-30 s y el servidor SÍ la procesa: la respuesta 200 llegó a
+    // un cliente que ya había colgado. Reintentar es seguro.
     // · Cualquier otro → red caída/offline.
     const err = e as { name?: string; message?: string };
     const esTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError';

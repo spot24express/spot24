@@ -65,6 +65,16 @@
  *    en vivo (pulso del catálogo); este globo cubre la app CERRADA.
  *  · Tag propia spot24-stock-{producto}-{variante} y destino /carrito
  *    (espejo exacto en el SW 5.74).
+ *
+ * Ronda 5.114 · EL CAJERO SE ENTERA DEL PAGO AUTOMÁTICO (halla del dueño en
+ * la prueba de producción del pago móvil BDV: «no se le avisa al cajero que
+ * tiene un pedido pagado para que lo prepare»): el pago automático nace
+ * PAGADO sin pasar por la cola de verificación, así que el aviso 5.71
+ * («Pago por verificar») nunca se dispara y NINGÚN radar del personal lo
+ * ve. sendPaidAlert(orderCode): «Pedido pagado — listo para preparar» al
+ * CAJERO (con gerencia/admin como respaldo) cada vez que un pedido nace
+ * pagado por el banco. El CTA abre /admin/despacho (aud 'dispatch'), donde
+ * la cola ya lista los 'pagado' y el cajero los marca PREPARADO.
  */
 import admin from 'firebase-admin';
 
@@ -109,6 +119,9 @@ const DISPATCH_TITLE = 'SPOT 24 · Pedido listo para salir';
 
 /** 5.71 · Aviso de pagos: un pedido entró a la cola de verificación del cajero. */
 const PAYMENT_TITLE = 'SPOT 24 · Pago por verificar';
+
+/** 5.114 · Aviso de pedido pagado por el banco: nace listo para preparar. */
+const PAID_TITLE = 'SPOT 24 · Pedido pagado — listo para preparar';
 
 /** 5.74 · Avisos de inventario al dueño del carrito afectado. */
 const STOCK_OUT_TITLE = 'SPOT 24 · Se agotó';
@@ -381,6 +394,28 @@ export const ORDER_NOTIFICATIONS = {
       await sendAndCleanup(staff, PAYMENT_TITLE, `${code}. Revísalo en el panel de pagos.`, {
         aud: 'pagos',
         status: 'en_verificacion',
+        orderCode: code,
+      });
+    } catch (e) {
+      // 5.73 · Log visible en Netlify (best-effort: jamás interrumpe la operación).
+      console.warn('[notificaciones] push de personal fallido (best-effort)', e);
+    }
+  },
+
+  /** 5.114 · «Pedido pagado — listo para preparar»: el pago móvil automático
+   *  nace PAGADO (sin cola de verificación) y el cajero no se enteraba.
+   *  VA AL CAJERO (con gerencia/admin como respaldo), igual que el aviso de
+   *  pagos 5.71. El CTA abre el panel de despacho (aud 'dispatch' →
+   *  /admin/despacho): la cola ya lista los 'pagado' y ahí se marca
+   *  PREPARADO (pickup y delivery). Best-effort igual que todos los avisos:
+   *  jamás interrumpe la creación del pedido. */
+  async sendPaidAlert(orderCode: string): Promise<void> {
+    const code = orderCode.slice(0, 40);
+    try {
+      const staff = await tokenRefsForRoles(['cajero', 'gerente', 'admin']);
+      await sendAndCleanup(staff, PAID_TITLE, `${code}. Pago confirmado por el banco: prepáralo.`, {
+        aud: 'dispatch',
+        status: 'pagado',
         orderCode: code,
       });
     } catch (e) {
