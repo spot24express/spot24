@@ -991,6 +991,13 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
         phone: req.contact['phone'],
         phoneMasked: `•••••${req.contact['phone'].slice(-4)}`,
         phoneEncrypted: encContact.phone,
+        // 5.121 (pedido del dueño): cédula COMPLETA en claro — la cajera la
+        // usa para cotejar el pago en el banco, mismo criterio del teléfono
+        // desde 5.9 (dato que el cliente escribió; el doc solo lo lee el
+        // personal). cedulaMasked queda de fallback; cedulaEncrypted sigue
+        // igual para los procesos del backend que leían el valor cifrado.
+        cedula: req.contact['cedula'],
+        cedulaMasked: `••••${req.contact['cedula'].slice(-4)}`,
         cedulaEncrypted: encContact.cedula,
       },
       notes: req.notes,

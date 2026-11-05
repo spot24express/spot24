@@ -133,7 +133,7 @@ export function ProductCard({ product }: ProductCardProps) {
       const currentQty =
         items.find((i) => i.productId === product.id && i.variantId === v.id)?.qty ?? 0;
       if (!validateAdd(v.stock, currentQty, 1).ok) {
-        toast.info('Ya tienes el tope disponible de esta pieza en el carrito.');
+        toast.info('Ya tienes el tope disponible de este artículo en el carrito.');
         return;
       }
       const ok = addItem(
@@ -158,7 +158,7 @@ export function ProductCard({ product }: ProductCardProps) {
       }
     } catch (e) {
       logger.warn('agregado rápido desde tarjeta falló', e);
-      toast.error('No pudimos agregar la pieza. Intenta de nuevo.');
+      toast.error('No pudimos agregar el artículo. Intenta de nuevo.');
     } finally {
       setAdding(false);
     }
@@ -205,7 +205,7 @@ export function ProductCard({ product }: ProductCardProps) {
             nativo del teléfono y, en PC, copia el enlace de la ficha. */}
         <BotonCompartir
           titulo={product.name}
-          texto={`Mira esta pieza en SPOT 24: ${displayName}`}
+          texto={`Mira este artículo en SPOT 24: ${displayName}`}
           url={`${TITULAR.sitio}catalogo/${product.slug}`}
           tipo="producto"
           itemId={product.id}
@@ -299,18 +299,26 @@ export function ProductCard({ product }: ProductCardProps) {
         {/* 5.108b · min-h-10 reserva SIEMPRE el alto de 2 líneas (2 × 20 px):
             nombre de 1 línea deja el espacio en blanco y la tarjeta no se
             encoge (lo visto en Recién llegados). line-clamp-2 sigue cortando
-            los nombres que excedan 2 líneas. */}
-        <h3 className="min-h-10 font-display text-base font-bold italic uppercase leading-tight text-paper line-clamp-2">
+            los nombres que excedan 2 líneas.
+            5.120 (pedido del dueño): un punto más pequeña en móvil
+            (text-sm → text-base desde sm) para que respire mejor en 2 columnas;
+            min-h-10 SE CONSERVA: las tarjetas siguen parejas. */}
+        <h3 className="min-h-10 font-display text-sm font-bold italic uppercase leading-tight text-paper line-clamp-2 sm:text-base">
           {displayName}
         </h3>
         {/* 5.98 · Solo con reseñas visibles: la tarjeta de siempre, con una fila
             fina de rating encima del precio cuando ya hay opiniones. */}
         <RatingLine avg={product.ratingAvg ?? 0} count={product.ratingCount ?? 0} compact />
         {/* 5.108b · mt-auto fija el precio ABAJO en todas las tarjetas: aunque
-            una tenga rating y la otra no, los precios quedan alineados. */}
-        <p className="mt-auto font-display text-xl font-extrabold italic leading-tight text-signal">
+            una tenga rating y la otra no, los precios quedan alineados.
+            5.120 (pedido del dueño): un punto más pequeño en móvil
+            (text-lg → text-xl desde sm) y la nota fiscal bajo el precio. */}
+        <p className="mt-auto font-display text-lg font-extrabold italic leading-tight text-signal sm:text-xl">
           {bs !== null ? formatBs(bs) : 'Bs. —'}
         </p>
+        {/* 5.120 (pedido del dueño): nota fiscal visible en la tarjeta; el
+            desglose de IVA está en el checkout. */}
+        <p className="text-[11px] leading-snug text-muted">Precios no incluyen IVA</p>
       </Link>
     </article>
   );

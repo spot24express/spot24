@@ -8,4 +8,5 @@ export { fnVerifyPayment } from './payments';
 export { fnUpdateOrderStatus } from './dispatch';
 export { fnAdjustStock } from './catalog';
 export { fnSetUserRole, fnRevokeUserSessions, fnGetAdminMetrics } from './admin';
+export { fnTransferDeviceTokens } from './deviceTokens';
 export { updateBcvRate, fnGetBcvRate } from './rates';

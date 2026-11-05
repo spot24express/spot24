@@ -14,7 +14,7 @@ const copyTextMock = vi.mocked(copyText);
 
 const DATOS = {
   title: 'Freno de balata',
-  text: 'Mira esta pieza en SPOT 24: Freno de balata',
+  text: 'Mira este artículo en SPOT 24: Freno de balata',
   url: 'https://spot24express.netlify.app/catalogo/freno-de-balata',
   tipo: 'producto' as const,
   itemId: 'p1',

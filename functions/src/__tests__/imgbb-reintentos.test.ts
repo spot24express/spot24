@@ -7,9 +7,19 @@
  * agotarse (prefijo contrato con backend.ts → código 'images').
  *
  * Pruebas 100% node: se sustituye fetch global — no toca red ni emulador.
- * Los reintentos usan temporizadores reales de 500 ms/1,5 s: con
- * shouldAdvanceTime el reloj simulado avanza solo y la suite no pierde
- * determinismo (se cuenta CUÁNTAS veces se llamó a fetch, no cuánto tardó).
+ *
+ * 5.125 · RELOJ 100% SIMULADO Y AVANZADO A MANO: las pausas de reintento
+ * (500 ms y 1,5 s) NO se esperan en tiempo real. Antes se usaba
+ * shouldAdvanceTime (el reloj simulado avanzaba solo al ritmo del reloj
+ * real) y cada test de reintento ESPERABA de verdad su pausa dentro del
+ * tope de 5 s de vitest: en una corrida cargada (suite completa, la PC
+ * ocupada con los pdfjs) el test «agotados los 3 intentos» —que necesita
+ * ~2 s reales de pausas— cruzó ese tope y vitest lo mató por timeout SIN
+ * que la lógica hubiera fallado (falso positivo por carga del equipo).
+ * Ahora el reloj arranca QUIETO y cada pausa se avanza a mano con
+ * vi.advanceTimersByTimeAsync: el test no espera ni 1 ms real, sigue
+ * contando CUÁNTAS veces se llamó a fetch (no cuánto tardó) y el
+ * resultado deja de depender de lo ocupada que esté la máquina.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpsError } from 'firebase-functions/v2/https';
@@ -34,7 +44,9 @@ const fetchMock = vi.fn();
 beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal('fetch', fetchMock);
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  // Reloj 100% simulado y QUIETO (5.125): el tiempo solo avanza cuando un
+  // test lo avanza a mano. Nada de este archivo espera tiempo real.
+  vi.useFakeTimers();
 });
 
 afterEach(() => {
@@ -54,7 +66,10 @@ describe('imgbbConReintentos (5.112-C · subida con reintentos)', () => {
   it('un 503 se reintenta y sale en el 2º intento', async () => {
     fetchMock.mockResolvedValueOnce(resJson({}, 503));
     fetchMock.mockResolvedValueOnce(resJson(OK_BODY));
-    const r = await imgbbConReintentos('clave', 'QUJD');
+    const pendiente = imgbbConReintentos('clave', 'QUJD');
+    // 5.125: pausa 1 (500 ms) avanzada a mano → arranca el 2º intento y sale.
+    await vi.advanceTimersByTimeAsync(1_000);
+    const r = await pendiente;
     expect(r.url).toBe('https://i.ibb.co/foto.jpg');
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -63,7 +78,11 @@ describe('imgbbConReintentos (5.112-C · subida con reintentos)', () => {
     fetchMock.mockRejectedValueOnce(new Error('ECONNRESET'));
     fetchMock.mockRejectedValueOnce(new Error('ECONNRESET'));
     fetchMock.mockResolvedValueOnce(resJson(OK_BODY));
-    const r = await imgbbConReintentos('clave', 'QUJD');
+    const pendiente = imgbbConReintentos('clave', 'QUJD');
+    // 5.125: pausa 1 (500 ms) → 2º intento; pausa 2 (1,5 s) → 3º intento: sale.
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const r = await pendiente;
     expect(r.url).toBe('https://i.ibb.co/foto.jpg');
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
@@ -71,14 +90,22 @@ describe('imgbbConReintentos (5.112-C · subida con reintentos)', () => {
   it('un 429 (límite de tasa) se trata como caída y se reintenta', async () => {
     fetchMock.mockResolvedValueOnce(resJson({}, 429));
     fetchMock.mockResolvedValueOnce(resJson(OK_BODY));
-    const r = await imgbbConReintentos('clave', 'QUJD');
+    const pendiente = imgbbConReintentos('clave', 'QUJD');
+    // 5.125: pausa 1 (500 ms) avanzada a mano → 2º intento: sale.
+    await vi.advanceTimersByTimeAsync(1_000);
+    const r = await pendiente;
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(r.url.startsWith('https://')).toBe(true);
   });
 
   it('agotados los 3 intentos lanza el mensaje HONESTO de caída (contrato con backend.ts)', async () => {
     fetchMock.mockResolvedValue(resJson({}, 503));
-    const err = await imgbbConReintentos('clave', 'QUJD').catch((e) => e);
+    const pendiente = imgbbConReintentos('clave', 'QUJD').catch((e) => e);
+    // 5.125: las dos pausas (500 ms y 1,5 s) avanzadas a mano. Tras la 2ª,
+    // el 3º intento agota y lanza — sin pausas extra: el mensaje sale YA.
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const err = await pendiente;
     expect(err).toBeInstanceOf(HttpsError);
     expect((err as HttpsError).code).toBe('unavailable');
     expect((err as HttpsError).message).toBe(MSG_IMGBB_CAIDO);

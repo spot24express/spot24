@@ -30,6 +30,7 @@ import { loadFirebase } from '@/shared/lib/firebase';
 import { logger } from '@/shared/lib/logger';
 import { AppError } from '@/shared/lib/errors';
 import { sanitizeText, sanitizeDigits, sanitizeMultiline, isValidEmail, isValidPhoneVE, normalizePhoneVE } from '@/shared/lib/validation';
+import { transferDeviceOnLogin } from '@/features/delivery/services/notifications.service';
 import type { SpotUser } from '../types';
 
 /* ── Mensajes de error genéricos: el detalle técnico solo a logs (6.9) ── */
@@ -150,6 +151,10 @@ export async function signUpEmail(
       },
       { merge: true },
     );
+    // 5.122 · Igual que en el login: si la cuenta nació en un equipo que otro
+    // personal ya registró, el traspaso deja el dispositivo en manos de quien
+    // entra (fire-and-forget; el registro de clientes sigue igual).
+    void transferDeviceOnLogin();
     return mapUser(cred.user, { name: sanitizeText(name, 80), cedula: ced, address: addr, sessionEpoch: nowMs });
   } catch (e) {
     logger.warn('signUp falló', e);
@@ -165,6 +170,11 @@ export async function signInEmail(email: string, password: string): Promise<Spot
   if (!fb) throw new AppError('generic', 'Firebase no configurado');
   try {
     const cred = await signInWithEmailAndPassword(fb.auth, email.trim(), password);
+    // 5.122 (pedido del dueño) · Equipo compartido por turnos: al entrar, el
+    // dispositivo queda «de la cajera en turno» — el backend mueve a esta
+    // cuenta los docs fcmTokens que otro personal haya registrado en ESTE
+    // navegador. Best-effort y fire-and-forget: JAMÁS bloquea el login.
+    void transferDeviceOnLogin();
     return await fetchProfile(cred.user);
   } catch (e) {
     logger.warn('signIn falló', e);

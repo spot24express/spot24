@@ -315,8 +315,10 @@ export default function HomePage() {
           <h2 id="rep-title" className="spot-title mb-2">
             Vuelve a comprar
           </h2>
-          <p className="spot-subtitle mb-6">Tus piezas de siempre, a un toque.</p>
-          <ProductCarousel products={repurchase} label="Piezas que ya compraste" />
+          {/* 5.123 (pedido del dueño): «artículos» en vez de «piezas», mismo
+              criterio del buscador en 5.120. */}
+          <p className="spot-subtitle mb-6">Tus artículos de siempre, a un toque.</p>
+          <ProductCarousel products={repurchase} label="Artículos que ya compraste" />
         </section>
       )}
 

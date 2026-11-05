@@ -156,7 +156,7 @@ export default function TerminosPage() {
             antes de confirmar el pedido, en la sección 7 se explica su tratamiento.
           </p>
           <p>
-            Las fotografías y descripciones del catálogo son referenciales; las piezas reales
+            Las fotografías y descripciones del catálogo son referenciales; los artículos reales
             pueden variar en presentación o empaques del fabricante sin alterar su función o
             compatibilidad. La disponibilidad mostrada refleja el inventario en tiempo real, pero
             la separación definitiva de la mercancía ocurre con la reserva de la sección 5:
@@ -167,7 +167,7 @@ export default function TerminosPage() {
           <p>
             Puede haber errores de precio, texto o compatibilidad en el catálogo. Si detectamos un
             error manifiesto en un pedido ya confirmado (por ejemplo, un precio claramente errado
-            o una pieza imposible de surtir), te lo comunicaremos a la brevedad por los datos de
+            o un artículo imposible de surtir), te lo comunicaremos a la brevedad por los datos de
             contacto de tu cuenta y podrás elegir entre la corrección del pedido o su anulación con
             devolución íntegra de lo pagado, según la sección 8.
           </p>
@@ -291,7 +291,7 @@ export default function TerminosPage() {
               </>,
               <>
                 Adjunta <strong className="text-paper">fotografías o video</strong> donde se
-                aprecie el defecto, y describe brevemente qué ocurre al instalar o usar la pieza.
+                aprecie el defecto, y describe brevemente qué ocurre al instalar o usar el artículo.
               </>,
               <>
                 El producto debe estar <strong className="text-paper">sin instalar</strong> (o con
@@ -300,7 +300,7 @@ export default function TerminosPage() {
               </>,
               <>
                 Recibida la evidencia, el equipo evaluará el caso; podrá solicitarse la devolución
-                física de la pieza para inspección. Aprobado el reclamo, a elección del titular y
+                física del artículo para inspección. Aprobado el reclamo, a elección del titular y
                 según disponibilidad se aplicará:{' '}
                 <strong className="text-paper">cambio por el mismo producto</strong>,{' '}
                 <strong className="text-paper">crédito para otra compra</strong> o{' '}
@@ -310,9 +310,9 @@ export default function TerminosPage() {
             ]}
           />
           <p>
-            Las piezas eléctricas y electrónicas (sensores, módulos, cornetas, cargadores y
+            Los artículos eléctricos y electrónicos (sensores, módulos, cornetas, cargadores y
             similares) se rigen por la misma regla: solo cambio por defecto de fábrica documentado,
-            dado que una instalación o conexión incorrecta puede dañarlas de forma indistinguible
+            dado que una instalación o conexión incorrecta puede dañarlos de forma indistinguible
             del defecto original. Los productos perecederos (alimentos y bebidas) se revisan al
             momento de la entrega: cualquier reclamo por estado o vencimiento debe plantearse
             inmediatamente al recibir y, de ser procedente, se resolverá en el acto con cambio o
@@ -393,7 +393,7 @@ export default function TerminosPage() {
           <p>
             La responsabilidad máxima del titular frente a ti, por cualquier concepto, se limita al
             monto que hayas pagado por el pedido objeto de la reclamación. No respondemos por: la
-            instalación de piezas realizada por talleres o terceros; daños derivados del uso
+            instalación de artículos realizada por talleres o terceros; daños derivados del uso
             indebido de los productos; lucro cesante o daños indirectos; ni por consecuencias de
             información ingresada errada por el cliente (dirección, teléfono, referencias o modelo
             de vehículo). Nada en esta sección limita responsabilidades que la ley impida limitar.

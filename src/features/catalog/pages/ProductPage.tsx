@@ -103,7 +103,7 @@ export default function ProductPage() {
     return (
       <div className="spot-container py-16">
         <EmptyState
-          title="No encontramos esa pieza"
+          title="No encontramos ese artículo"
           message={VOICE.emptySearch}
           action={{ label: 'Volver al catálogo', onClick: () => window.history.back() }}
         />
@@ -270,6 +270,10 @@ export default function ProductPage() {
               {bs !== null ? formatBs(bs) : 'Bs. —'}
             </p>
             <p className="mt-1 spot-label">Precio en bolívares</p>
+            {/* 5.120 (pedido del dueño) · la misma letra chica fiscal que la
+                tarjeta: el precio grande cambia con la variante elegida, así
+                que la nota cubre todas. */}
+            <p className="mt-0.5 text-[11px] leading-snug text-muted">Precios no incluyen IVA</p>
           </div>
 
           {/* 5.108 (aprobado por el dueño) · COMPARTIR la ficha: mismo mecanismo
@@ -278,7 +282,7 @@ export default function ProductPage() {
           <div className="mt-3">
             <BotonCompartir
               titulo={product.name}
-              texto={`Mira esta pieza en SPOT 24: ${displayName}`}
+              texto={`Mira este artículo en SPOT 24: ${displayName}`}
               url={`${TITULAR.sitio}catalogo/${product.slug}`}
               tipo="producto"
               itemId={product.id}

@@ -23,7 +23,9 @@ export const BRAND = {
 export const VOICE = {
   emptyCart: 'Tu carrito espera. Para. Resuelve. Sigue.',
   emptyOrders: 'Sin pedidos todavía. Tu primera parada empieza aquí.',
-  emptySearch: 'No encontramos esa pieza. Prueba con otra palabra.',
+  // 5.120 (pedido del dueño): «ese artículo» en vez de «esa pieza» —
+  // cubre el buscador del Home, la búsqueda vacía del catálogo y la ficha.
+  emptySearch: 'No encontramos ese artículo. Prueba con otra palabra.',
   emptyCatalog: 'Categoría en preparación. Volvemos al rato.',
   errorRetry: 'No salió. Reintenta y seguimos.',
   offline: 'Sin conexión. Lo que ya viste sigue disponible.',

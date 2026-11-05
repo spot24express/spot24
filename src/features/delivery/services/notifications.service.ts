@@ -54,6 +54,7 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { loadFirebase } from '@/shared/lib/firebase';
+import { callFunction } from '@/shared/lib/backend';
 import { logger } from '@/shared/lib/logger';
 
 export async function isPushSupported(): Promise<boolean> {
@@ -283,5 +284,52 @@ export async function hasRegisteredToken(uid: string): Promise<boolean> {
   } catch (e) {
     logger.warn('FCM: no se pudo verificar el token', e);
     return false;
+  }
+}
+
+/** 5.122 · Traspaso del dispositivo al iniciar sesión (pedido del dueño).
+ *  Tres cajeras comparten un equipo por turnos: el token FCM es del
+ *  navegador, pero el doc vive por usuario. Al entrar, el backend MUEVE a
+ *  la cuenta que entra los docs fcmTokens de este navegador registrados por
+ *  OTRO personal: el equipo queda «de la cajera en turno», sin duplicados y
+ *  SIN volver a activar nada (el doc traspasado mantiene el toggle
+ *  encendido). SOLO ENTRE PERSONAL: si quien entra es un cliente (p. ej.
+ *  lo atienden en el equipo de la tienda), el backend no mueve nada y el
+ *  panel sigue sonando con quien quedó en turno. Best-effort: el login la
+ *  llama fire-and-forget y cualquier fallo NO lo bloquea — queda el
+ *  comportamiento de siempre.
+ *  Si el usuario nunca concedió permiso en este navegador, el token viaja
+ *  vacío (getToken sin permiso podría pedirlo — JAMÁS pedimos permiso
+ *  aquí) y el traspaso opera por deviceId; si no hay nada registrado,
+ *  el backend responde no-op. El UID no viaja en el payload: el backend
+ *  usa el de la sesión Bearer (fuente de verdad, no falsificable). */
+export async function transferDeviceOnLogin(): Promise<void> {
+  try {
+    const deviceId = readOrCreateDeviceId();
+    let token = '';
+    const permisoConcedido =
+      typeof Notification !== 'undefined' && Notification.permission === 'granted';
+    if (permisoConcedido && (await isPushSupported())) {
+      try {
+        const fb = await loadFirebase();
+        const { getMessaging, getToken, isSupported } = await import('firebase/messaging');
+        if (fb && (await isSupported())) {
+          const messaging = getMessaging(fb.app);
+          const registration = await getMessagingRegistration();
+          if (registration) {
+            token = (await getToken(messaging, {
+              vapidKey: import.meta.env.VITE_FCM_VAPID_KEY,
+              serviceWorkerRegistration: registration,
+            })) || '';
+          }
+        }
+      } catch {
+        token = ''; // sin token: el traspaso opera solo por deviceId
+      }
+    }
+    if (!deviceId && !token) return; // navegador sin identidad ni push: nada que traspasar
+    await callFunction('fn-transferDeviceTokens', { deviceId: deviceId ?? '', token });
+  } catch (e) {
+    logger.warn('FCM: traspaso de dispositivo omitido', e);
   }
 }

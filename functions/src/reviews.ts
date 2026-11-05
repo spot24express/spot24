@@ -3,7 +3,7 @@
  * cupones, decisión del dueño). Core agnóstico del runtime + wrapper Netlify.
  *
  * Reglas del juego (aprobadas por el dueño):
- *  · SOLO puede reseñar quien COMPRÓ la pieza y ya la RECIBIÓ (hay pedido
+ *  · SOLO puede reseñar quien COMPRÓ el artículo y ya lo RECIBIÓ (hay pedido
  *    entregado con esa línea). Se valida SERVER-SIDE (el cliente no manda
  *    «yo compré»: el backend lo comprueba contra sus pedidos).
  *  · UNA reseña por cliente por producto (re-intento = error amable).
@@ -81,14 +81,14 @@ export async function coreAddReview(ctx: CoreCtx): Promise<unknown> {
 
   const pRef = db().collection('products').doc(productId);
   const pSnap = await pRef.get();
-  if (!pSnap.exists) throw new HttpsError('not-found', 'Esa pieza ya no existe.');
+  if (!pSnap.exists) throw new HttpsError('not-found', 'Ese artículo ya no existe.');
 
-  // ¿Ya reseñó esta pieza? (1 reseña por cliente/producto)
+  // ¿Ya reseñó este artículo? (1 reseña por cliente/producto)
   const previas = Array.isArray(pSnap.data()?.['reviews'])
     ? (pSnap.data()!['reviews'] as ReviewEntry[])
     : [];
   if (previas.some((r) => r && r.uid === uid)) {
-    throw new HttpsError('failed-precondition', 'Ya dejaste tu reseña de esta pieza. ¡Gracias!');
+    throw new HttpsError('failed-precondition', 'Ya dejaste tu reseña de este artículo. ¡Gracias!');
   }
 
   // Compra entregada comprobada server-side: recorremos los pedidos del
@@ -110,7 +110,7 @@ export async function coreAddReview(ctx: CoreCtx): Promise<unknown> {
   if (!compro) {
     throw new HttpsError(
       'failed-precondition',
-      'Solo puedes reseñar piezas que compraste y ya recibiste.',
+      'Solo puedes reseñar artículos que compraste y ya recibiste.',
     );
   }
 

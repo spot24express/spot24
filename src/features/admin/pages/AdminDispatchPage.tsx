@@ -14,7 +14,7 @@ import {
 } from '../services/admin.service';
 import { cancelOrder } from '@/features/orders/services/orders.service';
 import type { Order, OrderStatus } from '@/features/orders/types';
-import { STATUS_LABELS, STATUS_TRANSITIONS } from '@/shared/constants/orders';
+import { PAYMENT_METHOD_LABELS, STATUS_LABELS, STATUS_TRANSITIONS } from '@/shared/constants/orders';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { userMessage } from '@/shared/lib/errors';
 import { formatBs, formatDateTime, usdToBs } from '@/shared/lib/format';
@@ -63,8 +63,8 @@ import { filtrarColaPorRol } from '../lib/colaDespacho';
  *
  * Ronda 5.41 — HISTORIAL DE ENTREGAS (a pedido del dueño): admin, gerente y
  * delivery ya pueden ver qué pedidos se entregaron, a qué zona, quién los
- * llevó y cuándo. Pestaña «Entregadas» (el cajero no la ve: su trabajo
- * termina en Preparado):
+ * llevó y cuándo. Pestaña «Entregadas» (la decisión 5.41 excluía al cajero;
+ * 5.121 se la abrió también a él, solo lectura):
  * · Consulta directa de Firestore con la MISMA forma de consulta que ya
  *   funciona en producción (status + createdAt) → sin índices nuevos ni
  *   backend nuevo (las reglas ya dejan leer orders al personal). Tope 60
@@ -91,8 +91,10 @@ import { filtrarColaPorRol } from '../lib/colaDespacho';
  */
 const QUEUE: OrderStatus[] = ['pagado', 'preparado', 'en_camino'];
 
-/** Roles que ven la pestaña «Entregadas» (5.41, a pedido del dueño). */
-const HISTORY_ROLES: ReadonlyArray<string> = ['admin', 'gerente', 'delivery'];
+/** Roles que ven la pestaña «Entregadas» (5.41; 5.121 la abrió también al
+ *  cajero, a pedido del dueño: SOLO lectura — en el historial no hay botones
+ *  de acción, el flujo del cajero sigue terminando en Preparado). */
+const HISTORY_ROLES: ReadonlyArray<string> = ['admin', 'gerente', 'cajero', 'delivery'];
 
 /** Botones visibles por rol además de las transiciones válidas. */
 const ROLE_MOVES: Partial<Record<string, ReadonlyArray<readonly [OrderStatus, OrderStatus]>>> = {
@@ -447,6 +449,19 @@ export default function AdminDispatchPage() {
                     {o.contact.name} · {o.contact.phone || o.contact.phoneMasked}
                     {o.delivery.mode !== 'pickup' ? ` · ${o.delivery.zoneName}` : ''}
                   </p>
+                  {/* 5.121 (pedido del dueño) · la fila para COTEJAR EL PAGO sin
+                      abrir el panel de pagos: CI del cliente + método +
+                      referencia COMPLETA (en claro desde 5.9). Órdenes viejas
+                      sin cédula/referencia en claro: esa parte cae sola
+                      (unirConPuntos) y la línea queda igual que siempre. */}
+                  <p className="mt-0.5 break-words text-sm text-muted">
+                    {unirConPuntos(
+                      o.contact.cedula && `CI: ${o.contact.cedula}`,
+                      PAYMENT_METHOD_LABELS[o.payment.method],
+                      (o.payment.reference || o.payment.referenceMasked) &&
+                        `Ref.: ${o.payment.reference || o.payment.referenceMasked}`,
+                    )}
+                  </p>
                   {o.delivery.mode === 'pickup' ? (
                     <p className="mt-1 text-sm font-semibold text-paper">
                       El cliente pasa a buscar por tienda.
@@ -497,6 +512,29 @@ export default function AdminDispatchPage() {
                       </li>
                     ))}
                   </ul>
+
+                  {/* 5.121 (pedido del dueño) · DESGLOSE OFICIAL en Bs, el
+                      congelado al crear la orden: la cajera coteja el pago con
+                      los MISMOS números que pagó el cliente (subtotal + envío +
+                      IVA sobre base en Bs, tasa exacta de la orden). Las líneas
+                      opcionales caen solas en órdenes viejas sin desglose VES;
+                      el Total usa el fallback de siempre (igual que Entregadas). */}
+                  <div className="mt-3 space-y-0.5 border-t-2 border-line pt-3 text-sm">
+                    {o.totals.subtotalVes ? (
+                      <p className="text-muted">Subtotal: {formatBs(o.totals.subtotalVes)}</p>
+                    ) : null}
+                    {o.totals.shippingVes ? (
+                      <p className="text-muted">Envío: {formatBs(o.totals.shippingVes)}</p>
+                    ) : null}
+                    {o.totals.ivaVes ? (
+                      <p className="text-muted">
+                        IVA ({String(o.totals.ivaPercent ?? 0).replace('.', ',')}%): {formatBs(o.totals.ivaVes)}
+                      </p>
+                    ) : null}
+                    <p className="font-bold text-paper">
+                      Total: {o.totals.totalVes > 0 ? formatBs(o.totals.totalVes) : lineBs(o, o.totals.totalUsd)}
+                    </p>
+                  </div>
 
                   {/* Notas del cliente (instrucciones de entrega, referencias). */}
                   {o.notes && (

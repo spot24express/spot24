@@ -78,6 +78,11 @@ export interface Order {
     /** Teléfono COMPLETO (ronda 5.9). Órdenes viejas: undefined → phoneMasked. */
     phone?: string;
     phoneMasked: string;
+    /** Cédula COMPLETA en claro (ronda 5.121, pedido del dueño): la cajera la
+     *  usa para cotejar el pago en el banco, igual que el teléfono desde 5.9.
+     *  Órdenes anteriores a 5.121: undefined (solo está cifrada). */
+    cedula?: string;
+    cedulaMasked?: string;
   };
   notes: string;
   riskFlags: string[];

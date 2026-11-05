@@ -75,7 +75,7 @@ export function ResenasProducto({ productId }: { productId: string }) {
             Reseñas <span className="text-muted">({reviews.length})</span>
           </h2>
           <p className="spot-subtitle mt-2">
-            Opiniones de clientes que compraron y recibieron esta pieza.
+            Opiniones de clientes que compraron y recibieron este artículo.
           </p>
         </div>
         <RatingLine avg={promedio} count={reviews.length} />
@@ -103,7 +103,7 @@ export function ResenasProducto({ productId }: { productId: string }) {
       {/* Formulario: solo con sesión. Quien ya reseñó ve el agradecimiento. */}
       {user ? (
         yaResenio ? (
-          <p className="mt-6 spot-label">Ya dejaste tu reseña de esta pieza. ¡Gracias!</p>
+          <p className="mt-6 spot-label">Ya dejaste tu reseña de este artículo. ¡Gracias!</p>
         ) : formOpen ? (
           <div className="mt-6 rounded-brand-lg border-2 border-line bg-surface-1 p-5">
             <p className="font-display text-base font-bold italic uppercase text-paper">Tu reseña</p>
@@ -127,7 +127,7 @@ export function ResenasProducto({ productId }: { productId: string }) {
               onChange={(e) => setText(e.target.value.slice(0, 400))}
               rows={3}
               maxLength={400}
-              placeholder="¿Cómo te fue con la pieza? (máx. 400 letras)"
+              placeholder="¿Cómo te fue con el artículo? (máx. 400 letras)"
               className="mt-3 w-full rounded-brand border-2 border-line bg-ink px-3 py-2 text-body-base text-paper placeholder:text-muted focus:border-signal focus:outline-none"
             />
             <div className="mt-3 flex gap-3">
@@ -151,7 +151,7 @@ export function ResenasProducto({ productId }: { productId: string }) {
           <Link to="/cuenta/login" className="text-signal hover:underline">
             Inicia sesión
           </Link>{' '}
-          para dejar tu reseña (solo piezas compradas y recibidas).
+          para dejar tu reseña (solo artículos comprados y recibidos).
         </p>
       )}
     </section>
