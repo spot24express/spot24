@@ -42,6 +42,9 @@ interface BotonCompartirProps {
   tipo: 'app' | 'producto';
   /** Id interno del producto (analytics). */
   itemId?: string;
+  /** 5.124 · Foto que viaja en el panel nativo (ruta /… o URL https).
+   *  Opcional: si no se puede bajar, se comparte como siempre. */
+  imagen?: string;
   /** Etiqueta visible junto al icono (ficha); sin ella, solo icono. */
   label?: string;
   ariaLabel?: string;
@@ -57,6 +60,7 @@ export function BotonCompartir({
   url,
   tipo,
   itemId,
+  imagen,
   label,
   ariaLabel,
   iconSize = 20,
@@ -66,7 +70,9 @@ export function BotonCompartir({
     <button
       type="button"
       aria-label={ariaLabel ?? `Compartir ${titulo}`}
-      onClick={() => void compartirYavisar({ title: titulo, text: texto, url, tipo, itemId })}
+      onClick={() =>
+        void compartirYavisar({ title: titulo, text: texto, url, tipo, itemId, imagenUrl: imagen })
+      }
       className={className}
     >
       <ShareIcon size={iconSize} />

@@ -16,6 +16,7 @@ import { cancelOrder } from '@/features/orders/services/orders.service';
 import type { Order, OrderStatus } from '@/features/orders/types';
 import { PAYMENT_METHOD_LABELS, STATUS_LABELS, STATUS_TRANSITIONS } from '@/shared/constants/orders';
 import { useAuth } from '@/features/auth/hooks/useAuth';
+import { copyText } from '@/shared/lib/clipboard';
 import { userMessage } from '@/shared/lib/errors';
 import { formatBs, formatDateTime, usdToBs } from '@/shared/lib/format';
 import { unirConPuntos } from '@/shared/lib/lineaMeta';
@@ -108,6 +109,52 @@ const ROLE_MOVES: Partial<Record<string, ReadonlyArray<readonly [OrderStatus, Or
 function lineBs(o: Order, usd: number): string {
   const r = o.totals.rateUsed ?? 0;
   return r > 0 ? formatBs(usdToBs(usd, r)) : 'Bs. —';
+}
+
+/** Ícono de copiar (dos hojas superpuestas) — mismo trazo del checkout (5.79). */
+function CopiarIcono() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="9" y="9" width="12" height="12" rx="2.5" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
+}
+
+/** Micro-ronda · Cotejo en despacho (pedido del dueño): botón ícono para
+ *  copiar la referencia COMPLETA de pago y pegarla en la app bancaria.
+ *  Misma mecánica probada del checkout: copyText (5.75, con respaldo
+ *  execCommand para WebViews viejos) + feedback por toast (5.79), del mismo
+ *  tamaño táctil (h-8 w-8). Solo reporta éxito si el texto REALMENTE llegó
+ *  al portapapeles. El llamador decide cuándo mostrarlo: SOLO con la
+ *  referencia en claro — copiar una enmascarada no sirve de nada. */
+function CopiarReferencia({ referencia }: { referencia: string }) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void copyText(referencia).then((ok) => {
+          if (ok) toast.success('Referencia copiada.');
+          else toast.error('No se pudo copiar. Cópialo a mano.');
+        });
+      }}
+      className="grid h-8 w-8 shrink-0 place-items-center rounded-brand border border-line text-signal transition hover:bg-signal/10 active:scale-95"
+      aria-label="Copiar referencia de pago"
+      title="Copiar referencia de pago"
+    >
+      <CopiarIcono />
+    </button>
+  );
 }
 
 /** Pestañas del despacho. */
@@ -453,15 +500,36 @@ export default function AdminDispatchPage() {
                       abrir el panel de pagos: CI del cliente + método +
                       referencia COMPLETA (en claro desde 5.9). Órdenes viejas
                       sin cédula/referencia en claro: esa parte cae sola
-                      (unirConPuntos) y la línea queda igual que siempre. */}
-                  <p className="mt-0.5 break-words text-sm text-muted">
-                    {unirConPuntos(
-                      o.contact.cedula && `CI: ${o.contact.cedula}`,
-                      PAYMENT_METHOD_LABELS[o.payment.method],
-                      (o.payment.reference || o.payment.referenceMasked) &&
-                        `Ref.: ${o.payment.reference || o.payment.referenceMasked}`,
-                    )}
-                  </p>
+                      (unirConPuntos) y la línea queda igual que siempre.
+                      Micro-ronda cotejo: el ⧉ copia la referencia COMPLETA
+                      (solo aparece si la orden la trae en claro; con la
+                      enmascarada no hay nada útil que copiar). */}
+                  <div className="mt-0.5 flex items-start justify-between gap-2">
+                    <p className="min-w-0 break-words text-sm text-muted">
+                      {unirConPuntos(
+                        o.contact.cedula && `CI: ${o.contact.cedula}`,
+                        PAYMENT_METHOD_LABELS[o.payment.method],
+                        (o.payment.reference || o.payment.referenceMasked) &&
+                          `Ref.: ${o.payment.reference || o.payment.referenceMasked}`,
+                      )}
+                    </p>
+                    {o.payment.reference && <CopiarReferencia referencia={o.payment.reference} />}
+                  </div>
+                  {/* Micro-ronda cotejo · Tasa EXACTA congelada al crear la
+                      orden (rateUsed): la misma que pagó el cliente, en Bs/USD
+                      bajo la línea de cotejo (a pedido del dueño). Espejo de
+                      la fila «Tasa BCV aplicada» del modal Revisar de Pagos.
+                      Órdenes viejas sin tasa: la línea cae sola, sin error. */}
+                  {o.totals.rateUsed > 0 && (
+                    <p className="mt-0.5 break-words text-sm text-muted">
+                      Tasa BCV aplicada:{' '}
+                      {o.totals.rateUsed.toLocaleString('es-VE', {
+                        minimumFractionDigits: 2,
+                        maximumFractionDigits: 2,
+                      })}{' '}
+                      Bs/USD
+                    </p>
+                  )}
                   {o.delivery.mode === 'pickup' ? (
                     <p className="mt-1 text-sm font-semibold text-paper">
                       El cliente pasa a buscar por tienda.

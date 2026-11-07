@@ -106,7 +106,9 @@ const EMPTY_FORM_FIELDS = {
 
 interface GeneralForm {
   ivaPercent: string;
-  whatsappNumber: string;
+  /** 5.132 · Dos líneas de WhatsApp: Soporte Atención al Cliente y Soporte de Ventas. */
+  whatsappAtencion: string;
+  whatsappVentas: string;
   pickupAddress: string;
   pickupHours: string;
   deliveryHours: string;
@@ -121,7 +123,8 @@ interface GeneralForm {
 
 const EMPTY_GENERAL: GeneralForm = {
   ivaPercent: '0',
-  whatsappNumber: '',
+  whatsappAtencion: '',
+  whatsappVentas: '',
   pickupAddress: '',
   pickupHours: '',
   deliveryHours: GENERAL_SEED.deliveryHours,
@@ -164,7 +167,10 @@ export default function AdminSettingsPage() {
         const g = gen ?? GENERAL_SEED;
         setGeneral({
           ivaPercent: String(g.ivaPercent),
-          whatsappNumber: g.whatsappNumber,
+          // 5.132: dos líneas. El servicio ya rescató el whatsappNumber viejo
+          // como Soporte Atención al Cliente: lo guardado sigue apareciendo aquí.
+          whatsappAtencion: g.whatsappAtencion,
+          whatsappVentas: g.whatsappVentas,
           pickupAddress: g.pickupAddress,
           pickupHours: g.pickupHours,
           // Docs guardados antes de 5.75 vienen sin deliveryHours: mostramos
@@ -191,9 +197,14 @@ export default function AdminSettingsPage() {
     const ivaRaw = general.ivaPercent.trim().replace(',', '.');
     const ivaN = Number(ivaRaw === '' ? '0' : ivaRaw);
     if (!Number.isFinite(ivaN) || ivaN < 0 || ivaN > 100) e['ivaPercent'] = 'IVA entre 0 y 100 (0 = sin IVA).';
-    const wa = general.whatsappNumber.trim();
-    if (wa && !isValidPhoneVE(wa) && !/^\+?58\d{10}$/.test(wa.replace(/[\s-]/g, ''))) {
-      e['whatsappNumber'] = 'WhatsApp: 04241234567 (o vacío para ocultar el botón).';
+    // 5.132: validación de las DOS líneas de WhatsApp (vacío = línea oculta).
+    const waA = general.whatsappAtencion.trim();
+    if (waA && !isValidPhoneVE(waA) && !/^\+?58\d{10}$/.test(waA.replace(/[\s-]/g, ''))) {
+      e['whatsappAtencion'] = 'WhatsApp Atención: 04241234567 (o vacío para ocultar la línea).';
+    }
+    const waV = general.whatsappVentas.trim();
+    if (waV && !isValidPhoneVE(waV) && !/^\+?58\d{10}$/.test(waV.replace(/[\s-]/g, ''))) {
+      e['whatsappVentas'] = 'WhatsApp Ventas: 04241234567 (o vacío para ocultar la línea).';
     }
     // 5.112-B: franja del delivery. Reglas: ambas vacías = sin restricción;
     // si se llena una, van las dos (HH:MM) y no pueden ser la misma hora.
@@ -221,7 +232,8 @@ export default function AdminSettingsPage() {
     try {
       await saveGeneralSettings({
         ivaPercent: Math.round(ivaN * 100) / 100,
-        whatsappNumber: wa.replace(/[\s-]/g, ''),
+        whatsappAtencion: waA.replace(/[\s-]/g, ''),
+        whatsappVentas: waV.replace(/[\s-]/g, ''),
         pickupAddress: sanitizeText(general.pickupAddress, 200),
         pickupHours: sanitizeText(general.pickupHours, 60),
         deliveryHours: sanitizeText(general.deliveryHours, 60),
@@ -555,13 +567,26 @@ export default function AdminSettingsPage() {
                 inputMode="decimal"
                 error={errors['ivaPercent']}
               />
+              {/* 5.132 · Dos líneas de WhatsApp. Con una sola llena el globo
+                  abre ese chat directo (igual que producción); con las dos,
+                  el globo despliega el panel con ambas opciones. */}
               <Input
-                label="WhatsApp de soporte (vacío = botón oculto)"
+                label="WhatsApp Soporte Atención al Cliente (vacío = línea oculta)"
                 type="tel"
-                value={general.whatsappNumber}
-                onChange={(ev) => setGeneral((g) => ({ ...g, whatsappNumber: ev.target.value }))}
+                value={general.whatsappAtencion}
+                onChange={(ev) => setGeneral((g) => ({ ...g, whatsappAtencion: ev.target.value }))}
                 placeholder="04241234567"
-                error={errors['whatsappNumber']}
+                hint="Aparece como «Soporte Atención al Cliente» en el globo de WhatsApp."
+                error={errors['whatsappAtencion']}
+              />
+              <Input
+                label="WhatsApp Soporte de Ventas (vacío = línea oculta)"
+                type="tel"
+                value={general.whatsappVentas}
+                onChange={(ev) => setGeneral((g) => ({ ...g, whatsappVentas: ev.target.value }))}
+                placeholder="04141234567"
+                hint="Aparece como «Soporte de Ventas». Déjalo vacío si aún no lo usas."
+                error={errors['whatsappVentas']}
               />
               <Input
                 label="Dirección del local para retiro"
@@ -588,17 +613,34 @@ export default function AdminSettingsPage() {
                 </p>
               )}
             </div>
-            {waHref(general.whatsappNumber) && (
-              <p className="mt-4 text-sm text-muted">
-                Enlace que verá el cliente:{' '}
-                <a
-                  href={waHref(general.whatsappNumber) ?? '#'}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-signal underline"
-                >
-                  probar WhatsApp
-                </a>
+            {(waHref(general.whatsappAtencion) || waHref(general.whatsappVentas)) && (
+              <p className="mt-4 flex flex-wrap gap-x-5 text-sm text-muted">
+                {waHref(general.whatsappAtencion) && (
+                  <span>
+                    Soporte Atención al Cliente:{' '}
+                    <a
+                      href={waHref(general.whatsappAtencion) ?? '#'}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-signal underline"
+                    >
+                      probar WhatsApp
+                    </a>
+                  </span>
+                )}
+                {waHref(general.whatsappVentas) && (
+                  <span>
+                    Soporte de Ventas:{' '}
+                    <a
+                      href={waHref(general.whatsappVentas) ?? '#'}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-signal underline"
+                    >
+                      probar WhatsApp
+                    </a>
+                  </span>
+                )}
               </p>
             )}
           </section>

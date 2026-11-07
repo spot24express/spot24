@@ -286,6 +286,7 @@ export default function ProductPage() {
               url={`${TITULAR.sitio}catalogo/${product.slug}`}
               tipo="producto"
               itemId={product.id}
+              imagen={gallery[0] ?? '/og-cover.jpg'}
               label="Compartir"
               ariaLabel={`Compartir ${product.name}`}
               iconSize={16}

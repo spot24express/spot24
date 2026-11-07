@@ -209,6 +209,7 @@ export function ProductCard({ product }: ProductCardProps) {
           url={`${TITULAR.sitio}catalogo/${product.slug}`}
           tipo="producto"
           itemId={product.id}
+          imagen={gallery[0] ?? '/og-cover.jpg'}
           ariaLabel={`Compartir ${product.name}`}
           iconSize={16}
           className="absolute left-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-full border-2 border-line bg-ink/50 text-paper backdrop-blur transition-colors hover:border-signal hover:text-signal"

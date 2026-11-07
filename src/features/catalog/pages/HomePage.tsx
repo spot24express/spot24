@@ -223,6 +223,7 @@ export default function HomePage() {
           texto={APP_COMPARTIR.texto}
           url={APP_COMPARTIR.url}
           tipo="app"
+          imagen="/og-cover.jpg"
           ariaLabel="Compartir SPOT 24"
           iconSize={20}
           className="absolute right-3 top-3 z-10 inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-brand border-2 border-line bg-ink/60 text-paper backdrop-blur transition-colors hover:border-signal hover:text-signal"

@@ -10,7 +10,8 @@ import { NewOrderAlert } from '@/features/admin/components/NewOrderAlert';
 import { InstalarEnIphone } from '@/shared/components/pwa/InstalarEnIphone';
 import { BRAND } from '@/shared/constants/brand';
 import { getGeneralSettingsCached } from '@/shared/services/settings.service';
-import { waHref } from '@/shared/lib/whatsapp';
+import { lineasWhatsapp } from '@/shared/lib/whatsapp';
+import type { LineaWhatsapp } from '@/shared/lib/whatsapp';
 
 function TopBar() {
   const { count } = useCart();
@@ -196,27 +197,115 @@ function ShieldBadge({ active, children }: { active: boolean; children: React.Re
   );
 }
 
-/**
- * Botón flotante de WhatsApp de soporte. El número lo fija el admin en
- * /admin/ajustes (settings/general). Sin número guardado: el botón no se muestra.
- */
-function WhatsAppFab({ href }: { href: string }) {
+/** Icono oficial de WhatsApp (el mismo dibujo del globo de producción). */
+function WaIcon({ size = 28 }: { size?: number }) {
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      aria-label="Escribirnos por WhatsApp"
-      className="fixed bottom-[76px] right-4 z-30 flex h-14 w-14 items-center justify-center rounded-full border-2 border-ink bg-[#25D366] shadow-lg transition hover:scale-105 active:scale-95 sm:bottom-6 sm:right-6"
-    >
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-        <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21 5.46 0 9.91-4.45 9.91-9.91S17.5 2 12.04 2zm0 18.15c-1.48 0-2.93-.4-4.2-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.26 8.26 0 0 1-1.26-4.38c0-4.54 3.7-8.24 8.25-8.24 4.54 0 8.24 3.7 8.24 8.24s-3.7 8.24-8.24 8.24zm4.52-6.16c-.25-.12-1.47-.72-1.69-.81-.23-.08-.39-.12-.56.13-.17.25-.64.81-.78.97-.14.17-.29.19-.54.06-.25-.12-1.05-.39-2-1.23-.74-.66-1.23-1.47-1.38-1.72-.14-.25-.02-.38.11-.51.11-.11.25-.29.37-.43.12-.14.17-.25.25-.41.08-.17.04-.31-.02-.43-.06-.12-.56-1.35-.77-1.85-.2-.48-.41-.42-.56-.43h-.48c-.17 0-.43.06-.66.31-.23.25-.87.85-.87 2.07s.89 2.4 1.02 2.57c.12.17 1.75 2.67 4.23 3.74.59.26 1.05.41 1.41.52.59.19 1.13.16 1.56.1.48-.07 1.47-.6 1.67-1.18.21-.58.21-1.07.14-1.18-.06-.1-.23-.16-.48-.29z" />
-      </svg>
-    </a>
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91c0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38c1.45.79 3.08 1.21 4.79 1.21 5.46 0 9.91-4.45 9.91-9.91S17.5 2 12.04 2zm0 18.15c-1.48 0-2.93-.4-4.2-1.15l-.3-.18-3.12.82.83-3.04-.2-.31a8.26 8.26 0 0 1-1.26-4.38c0-4.54 3.7-8.24 8.25-8.24 4.54 0 8.24 3.7 8.24 8.24s-3.7 8.24-8.24 8.24zm4.52-6.16c-.25-.12-1.47-.72-1.69-.81-.23-.08-.39-.12-.56.13-.17.25-.64.81-.78.97-.14.17-.29.19-.54.06-.25-.12-1.05-.39-2-1.23-.74-.66-1.23-1.47-1.38-1.72-.14-.25-.02-.38.11-.51.11-.11.25-.29.37-.43.12-.14.17-.25.25-.41.08-.17.04-.31-.02-.43-.06-.12-.56-1.35-.77-1.85-.2-.48-.41-.42-.56-.43h-.48c-.17 0-.43.06-.66.31-.23.25-.87.85-.87 2.07s.89 2.4 1.02 2.57c.12.17 1.75 2.67 4.23 3.74.59.26 1.05.41 1.41.52.59.19 1.13.16 1.56.1.48-.07 1.47-.6 1.67-1.18.21-.58.21-1.07.14-1.18-.06-.1-.23-.16-.48-.29z" />
+    </svg>
   );
 }
 
-function Footer({ waLink }: { waLink: string | null }) {
+/** X para cerrar el panel de dos líneas (trazo, igual que los iconos de nav). */
+function XIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.4"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      <path d="M6 6l12 12" />
+      <path d="M18 6L6 18" />
+    </svg>
+  );
+}
+
+/**
+ * Globo flotante de WhatsApp (5.132). Los números los fija el admin en
+ * /admin/ajustes (settings/general). Sin números guardados: no se muestra.
+ * · 1 línea  → EXACTAMENTE el botón de producción: mismo enlace wa.me y
+ *   misma apertura de siempre (sin pantallas blancas nuevas ni efectos).
+ * · 2 líneas → el MISMO globo despliega un panel con las dos opciones;
+ *   cada tarjeta abre SU chat por la misma vía wa.me de producción.
+ */
+function WhatsAppFab({ lineas }: { lineas: LineaWhatsapp[] }) {
+  const [abierto, setAbierto] = useState(false);
+  const claseGlobo =
+    'flex h-14 w-14 items-center justify-center rounded-full border-2 border-ink bg-[#25D366] shadow-lg transition hover:scale-105 active:scale-95';
+
+  const unica = lineas[0];
+  if (lineas.length === 1 && unica) {
+    return (
+      <a
+        href={unica.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Escribirnos por WhatsApp"
+        className={`fixed bottom-[76px] right-4 z-30 sm:bottom-6 sm:right-6 ${claseGlobo}`}
+      >
+        <WaIcon />
+      </a>
+    );
+  }
+
+  // Cierre diferido: la navegación del enlace arranca PRIMERO (target _blank)
+  // y el panel se cierra 200 ms después — desmontar la tarjeta en el mismo
+  // clic cancelaba la apertura del chat.
+  const cerrar = () => {
+    window.setTimeout(() => setAbierto(false), 200);
+  };
+
+  return (
+    <>
+      {abierto && <div className="fixed inset-0 z-[45]" onClick={cerrar} aria-hidden="true" />}
+      <div className="fixed bottom-[76px] right-4 z-[46] flex flex-col items-end gap-3 sm:bottom-6 sm:right-6">
+        {abierto && (
+          <div
+            role="menu"
+            aria-label="Elegir línea de WhatsApp"
+            className="w-60 overflow-hidden rounded-brand border-2 border-line bg-ink shadow-xl"
+          >
+            {lineas.map((l) => (
+              <a
+                key={l.rol}
+                href={l.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                role="menuitem"
+                onClick={cerrar}
+                className="flex min-h-[60px] items-center gap-3 border-b border-line px-4 py-3 last:border-b-0 hover:bg-surface-2"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#25D366] text-ink">
+                  <WaIcon size={20} />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-bold text-paper">{l.nombre}</span>
+                  <span className="block text-xs text-muted">WhatsApp · {l.etiqueta}</span>
+                </span>
+              </a>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => setAbierto((v) => !v)}
+          aria-expanded={abierto}
+          aria-label={abierto ? 'Cerrar WhatsApp' : 'Escribirnos por WhatsApp'}
+          className={claseGlobo}
+        >
+          {abierto ? <XIcon /> : <WaIcon />}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function Footer({ waLineas }: { waLineas: LineaWhatsapp[] }) {
   return (
     <footer className="mt-16 border-t border-line bg-surface-1 pb-20 pt-8 sm:pb-8">
       <div className="spot-container">
@@ -226,16 +315,32 @@ function Footer({ waLink }: { waLink: string | null }) {
         <p className="mt-4 text-sm text-muted">
           {BRAND.supportPhone} · {BRAND.supportEmail}
         </p>
-        {waLink && (
+        {waLineas.length > 0 && (
           <p className="mt-2">
-            <a
-              href={waLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm font-semibold text-signal hover:underline"
-            >
-              Escríbenos por WhatsApp
-            </a>
+            {/* 5.132 · Con las dos líneas llenas, un enlace por línea con su
+                nombre; con una sola, el enlace de producción de siempre. */}
+            {waLineas.length === 1 ? (
+              <a
+                href={waLineas[0]?.href ?? '#'}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-sm font-semibold text-signal hover:underline"
+              >
+                Escríbenos por WhatsApp
+              </a>
+            ) : (
+              waLineas.map((l) => (
+                <a
+                  key={l.rol}
+                  href={l.href}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mr-5 text-sm font-semibold text-signal hover:underline"
+                >
+                  {l.nombre}
+                </a>
+              ))
+            )}
           </p>
         )}
         {/* 5.106 · Páginas legales: enlaces discretos en el pie (decisión del
@@ -265,20 +370,21 @@ export function RootLayout() {
   // y re-suscripciones gratis). Los ?query no tocan el pathname: filtros
   // y búsquedas NO remontan.
   const routeKey = location.pathname.startsWith('/admin') ? 'admin' : location.pathname;
-  // WhatsApp de soporte: número fijado por el admin en /admin/ajustes.
+  // WhatsApp de soporte (5.132): líneas fijadas por el admin en /admin/ajustes
+  // (Soporte Atención al Cliente y/o Soporte de Ventas).
   // 5.75: promesa COMPARTIDA (getGeneralSettingsCached) — el Home (horario de
   // deliverys) y este layout consumen la MISMA lectura: 1 doc leído por carga.
-  const [waLink, setWaLink] = useState<string | null>(null);
+  const [waLineas, setWaLineas] = useState<LineaWhatsapp[]>([]);
   // Registra el service worker de la PWA (autoUpdate, sin inline script).
   useEffect(() => {
     registerSW({ immediate: true });
     let alive = true;
     void getGeneralSettingsCached()
       .then((g) => {
-        if (alive && g) setWaLink(waHref(g.whatsappNumber));
+        if (alive) setWaLineas(lineasWhatsapp(g));
       })
       .catch(() => {
-        /* sin ajustes: botón oculto */
+        /* sin ajustes: globo oculto */
       });
     return () => {
       alive = false;
@@ -303,8 +409,8 @@ export function RootLayout() {
           <Outlet />
         </div>
       </main>
-      <Footer waLink={waLink} />
-      {waLink && <WhatsAppFab href={waLink} />}
+      <Footer waLineas={waLineas} />
+      {waLineas.length > 0 && <WhatsAppFab lineas={waLineas} />}
       <BottomNav />
       {/* Alerta visual de pedidos por verificar (solo se activa para
           admin/gerente/cajero; el resto de los roles no la ve ni consume

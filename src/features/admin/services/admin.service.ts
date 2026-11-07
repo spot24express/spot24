@@ -272,23 +272,17 @@ export async function adminSetProductImages(productId: string, images: string[])
 }
 
 /**
- * Elimina un producto (solo admin, con confirmación en el panel).
- * 5.92c · Borrado COMPLETO en UN lote atómico: TODAS las variantes + la
- * ficha se borran juntos — si algo falla no se borra nada. Antes solo se
- * borraba la ficha y las variantes quedaban colgando en la base (Firestore
- * no borra subcolecciones en cascada): esa basura tomaba al importador por
- * sorpresa y abortó la 1ª importación real con «No document to update».
- * Un producto solo tiene variantes como subcolección (verificado), así que
- * con esto no queda nada huérfano.
+ * Elimina un producto (admin Y gerente, con confirmación en el panel).
+ * 5.124 (pedido del dueño): la eliminación pasa por fn-deleteProduct
+ * (Admin SDK). Hasta ahora el borrado DIRECTO del cliente fallaba SIEMPRE:
+ * las reglas pedían admin para borrar la ficha y, además, la regla de
+ * variantes evaluaba request.resource.data en un DELETE (donde no existe)
+ * → permission-denied garantizado para todos, con el lote atómico abortado.
+ * El backend verifica el rol, borra TODO atómico (variantes + ficha, 5.92c),
+ * rechaza si hay reservas activas del artículo y deja registro en auditLog.
  */
 export async function adminDeleteProduct(productId: string): Promise<void> {
-  const fb = await loadFirebase();
-  if (!fb) throw new AppError('generic');
-  const varsSnap = await getDocs(collection(fb.db, 'products', productId, 'variants'));
-  const batch = writeBatch(fb.db);
-  varsSnap.forEach((v) => batch.delete(v.ref));
-  batch.delete(doc(fb.db, 'products', productId));
-  await batch.commit();
+  await callFunction('fn-deleteProduct', { productId });
 }
 
 /* ── Pedidos (colas de pagos y despacho) ── */

@@ -7,9 +7,9 @@
  *   activo/inactivo — el dueño gestiona en /admin/ajustes cuáles ve el
  *   cliente en el paso de pago del checkout. Se edita desde /admin/ajustes y
  *   aplica al instante para todos los checkout nuevos — sin deploy.
- * · settings/general: operación de la tienda — IVA %, número de WhatsApp de
- *   soporte, datos del retiro en tienda y horario de los deliverys (Home).
- *   Editable desde /admin/ajustes.
+ * · settings/general: operación de la tienda — IVA %, WhatsApp de Soporte
+ *   Atención al Cliente y Soporte de Ventas (5.132), datos del retiro en
+ *   tienda y horario de los deliverys (Home). Editable desde /admin/ajustes.
  * · Reglas Firestore: lectura pública, escritura SOLO admin (claim role).
  */
 import { doc, getDoc, setDoc } from 'firebase/firestore';
@@ -52,8 +52,12 @@ export async function savePaymentAccounts(accounts: PaymentAccount[]): Promise<v
 export interface GeneralSettings {
   /** IVA en % (0–100). 0 = sin IVA. El backend lo aplica sobre subtotal + envío. */
   ivaPercent: number;
-  /** WhatsApp de soporte (formato local o internacional). '' = botón oculto. */
-  whatsappNumber: string;
+  /** 5.132 · WhatsApp Soporte Atención al Cliente (formato local o
+   *  internacional). '' = línea oculta. Respaldo: si el doc solo trae
+   *  whatsappNumber (rondas anteriores), ese valor sigue siendo esta línea. */
+  whatsappAtencion: string;
+  /** 5.132 · WhatsApp Soporte de Ventas. '' = línea oculta. */
+  whatsappVentas: string;
   /** Dirección del local para retiro (se muestra en checkout y queda en la orden). */
   pickupAddress: string;
   /** Horario del local para retiro (texto libre, p. ej. "Lun–Sáb 8:00–20:00"). */
@@ -81,7 +85,8 @@ export interface GeneralSettings {
 /** Valores por defecto mientras el admin no guarda nada. */
 export const GENERAL_SEED: GeneralSettings = {
   ivaPercent: 0,
-  whatsappNumber: '',
+  whatsappAtencion: '',
+  whatsappVentas: '',
   pickupAddress: '',
   pickupHours: '',
   deliveryHours: 'de 8:00 am a 8:00 pm',
@@ -97,9 +102,16 @@ export const GENERAL_SEED: GeneralSettings = {
 function sanitizeGeneral(raw: Record<string, unknown>): GeneralSettings {
   const ivaRaw = Number(raw['ivaPercent'] ?? 0);
   const iva = Number.isFinite(ivaRaw) && ivaRaw > 0 ? Math.min(100, ivaRaw) : 0;
+  // 5.132: dos líneas de WhatsApp. Atención conserva el RESPALDO del campo
+  // viejo (whatsappNumber) — el número ya guardado en producción sigue
+  // apareciendo sin volver a escribirlo. Al guardar, el doc queda con los
+  // campos nuevos y el respaldo deja de hacer falta.
+  const atencion =
+    String(raw['whatsappAtencion'] ?? '').trim() || String(raw['whatsappNumber'] ?? '').trim();
   return {
     ivaPercent: Math.round(iva * 100) / 100,
-    whatsappNumber: String(raw['whatsappNumber'] ?? '').trim().slice(0, 20),
+    whatsappAtencion: atencion.slice(0, 20),
+    whatsappVentas: String(raw['whatsappVentas'] ?? '').trim().slice(0, 20),
     pickupAddress: String(raw['pickupAddress'] ?? '').trim().slice(0, 200),
     pickupHours: String(raw['pickupHours'] ?? '').trim().slice(0, 60),
     deliveryHours: String(raw['deliveryHours'] ?? '').trim().slice(0, 60),

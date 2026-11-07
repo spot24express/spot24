@@ -8,8 +8,15 @@
  * El punto rojo de la lista se congela con el umbral de lectura DEL MOMENTO
  * de abrir: aunque markAllRead() adelante la marca, el cliente sigue viendo
  * cuáles avisos eran nuevos en esta visita (la próxima ya salen limpios).
+ *
+ * Ronda 5.127 · El congelado del umbral usa un REF (una sola vez por
+ * visita, a prueba de todo) en vez de estado: así el efecto NO puede
+ * volver a disparar setUmbral/markAllRead nunca más — immune al bucle
+ * «Maximum update depth exceeded» que se vio en campo al abrir la
+ * pantalla (el guardia viejo dependía de estados que el store podía
+ * cambiar debajo de los pies del componente).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDocumentTitle } from '@/shared/hooks/useDocumentTitle';
 import { EmptyState, ErrorState } from '@/shared/components/ui/States';
 import { Button } from '@/shared/components/ui/Button';
@@ -28,18 +35,22 @@ export default function NotificationsPage() {
   const lastReadMs = useNotifsStore((s) => s.lastReadMs);
   const lastReadLoaded = useNotifsStore((s) => s.lastReadLoaded);
   const [umbral, setUmbral] = useState<number | null>(null);
-  const [marcadas, setMarcadas] = useState(false);
+  /** Congelado del umbral con REF, no con estado: un ref no provoca
+   *  re-renders ni se reinicia solo, así que setUmbral y markAllRead se
+   *  ejecutan UNA sola vez por visita aunque el store cambie lastReadMs/
+   *  lastReadLoaded en pleno vuelo (ronda 5.127, anti-bucle). */
+  const umbralCongeladoRef = useRef(false);
 
   useEffect(() => {
     // Umbral congelado UNA vez, cuando la marca de lectura ya cargó del doc
     // del usuario: los avisos posteriores a la ÚLTIMA VISITA llevan punto
     // rojo en ESTA visita. Detrás (y solo una vez) se adelanta la marca a
     // AHORA → la campana se apaga al instante en toda la app.
-    if (umbral !== null || !lastReadLoaded || marcadas) return;
+    if (!lastReadLoaded || umbralCongeladoRef.current) return;
+    umbralCongeladoRef.current = true;
     setUmbral(lastReadMs);
-    setMarcadas(true);
     void markAllRead();
-  }, [umbral, lastReadLoaded, lastReadMs, marcadas, markAllRead]);
+  }, [lastReadLoaded, lastReadMs, markAllRead]);
 
   const haySinLeer = umbral !== null && notifs.some((n) => n.createdAtMs > umbral);
 
