@@ -1,10 +1,11 @@
 /**
- * SPOT 24 · Tests del MODO PRECIOS (5.138, a pedido del dueño): con la
+ * SPOT 24 · Tests del MODO PRECIOS (5.138/5.141, a pedido del dueño): con la
  * «REPORTE LISTA DE PRECIOS» del ERP, a cada código que YA EXISTE en la
  * tienda se le fija el precio de la columna «Precio REF c/Imp» (USD con
- * impuesto = precio final desde el modelo de IVA incluido 5.120) SIN
- * DECIMALES (125.81 → 125). Los códigos que solo están en el PDF no se
- * tocan ni se crean.
+ * impuesto = precio final desde el modelo de IVA incluido 5.120) CON SUS
+ * DECIMALES (5.141: 125.81 → 125.81; la 5.138 lo truncaba a 125). Los
+ * códigos que solo están en el PDF no se tocan ni se crean, y un precio 0
+ * o ilegible NO se aplica (un precio 0 sería un producto gratis).
  *
  * El fixture usa las coordenadas REALES del PDF del dueño (pdfjs):
  * cabecera completa de 6 etiquetas en la página 1 (y=660.4), cabecera CORTA
@@ -18,7 +19,7 @@ import {
   type InvItem,
 } from '../lib/inventarioPdf';
 import {
-  precioEnteroDe, existenciaEnteraDe, planPrecios, modoDe, ensayoDe,
+  precioDecimalesDe, existenciaEnteraDe, planPrecios, modoDe, ensayoDe,
 } from '../importInventory';
 
 const it_ = (s: string, x: number, y: number, w: number): InvItem => ({ s, x, y, w });
@@ -200,22 +201,26 @@ describe('parseListaPrecios (formato «REPORTE LISTA DE PRECIOS»)', () => {
   });
 });
 
-describe('precioEnteroDe (5.138 · sin los decimales, pedido literal del dueño)', () => {
-  it('trunca los decimales: 125.81 → 125', () => {
-    expect(precioEnteroDe(125.81)).toBe(125);
-    expect(precioEnteroDe(15)).toBe(15);
-    expect(precioEnteroDe(17.0)).toBe(17);
-    expect(precioEnteroDe(1154.41)).toBe(1154);
-    expect(precioEnteroDe(2.99)).toBe(2);
+describe('precioDecimalesDe (5.141 · CON los decimales, pedido del dueño)', () => {
+  it('conserva los decimales: 125.81 → 125.81', () => {
+    expect(precioDecimalesDe(125.81)).toBe(125.81);
+    expect(precioDecimalesDe(15)).toBe(15);
+    expect(precioDecimalesDe(17.0)).toBe(17);
+    expect(precioDecimalesDe(1154.41)).toBe(1154.41);
+    expect(precioDecimalesDe(2.99)).toBe(2.99);
   });
-  it('por debajo de $1 queda en 0 (el modo precios NO lo aplica: blindaje gratis)', () => {
-    expect(precioEnteroDe(0.75)).toBe(0);
-    expect(precioEnteroDe(0.13)).toBe(0);
+  it('los menores de $1 YA se aplican (desde la 5.141 no se pierden)', () => {
+    expect(precioDecimalesDe(0.75)).toBe(0.75);
+    expect(precioDecimalesDe(0.13)).toBe(0.13);
+  });
+  it('redondea a 2 decimales (nunca más de 2 centavos)', () => {
+    expect(precioDecimalesDe(10.999)).toBe(11);
+    expect(precioDecimalesDe(10.994)).toBe(10.99);
   });
   it('basura → 0 (jamás NaN ni negativos)', () => {
-    expect(precioEnteroDe(Number.NaN)).toBe(0);
-    expect(precioEnteroDe(-5)).toBe(0);
-    expect(precioEnteroDe(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(precioDecimalesDe(Number.NaN)).toBe(0);
+    expect(precioDecimalesDe(-5)).toBe(0);
+    expect(precioDecimalesDe(Number.POSITIVE_INFINITY)).toBe(0);
   });
 });
 
@@ -257,31 +262,36 @@ describe('planPrecios (clasificación pura del modo precios)', () => {
     ['D22-850', { pid: 'p1', nombre: 'BATERIA DUNCAN 850', precioActual: 110, vid: 'p1-v1' }],
     ['IGUAL1', { pid: 'p2', nombre: 'YA TIENE ESE PRECIO', precioActual: 20, vid: 'p2-v1' }],
     ['BARATO1', { pid: 'p3', nombre: 'POR DEBAJO DE 1', precioActual: 0.9, vid: 'p3-v1' }],
+    ['CERO1', { pid: 'p4', nombre: 'PRECIO CERO EN EL PDF', precioActual: 5, vid: 'p4-v1' }],
   ]);
 
   const plan = planPrecios(
     [
-      filaDe('D22-850', 125.81),   // cambia 110 → 125
+      filaDe('D22-850', 125.81),   // cambia 110 → 125.81 (5.141: CON decimales)
       filaDe('IGUAL1', 20),        // ya era 20: sin cambio
-      filaDe('BARATO1', 0.75),     // sin decimales → 0: blindaje, no se toca
+      filaDe('BARATO1', 0.75),     // menor de $1: SÍ se aplica (5.141), 0.9 → 0.75
+      filaDe('CERO1', 0),          // precio 0 en el PDF: blindaje, no se toca
       filaDe('NUEVO1', 15),        // no está en la tienda: sin match
       filaDe('SINPRECIO', undefined), // fila del parser sin precio (defensa)
     ],
     existentes,
   );
 
-  it('el cambio lleva antes → después entero y la referencia de variante', () => {
-    expect(plan.cambios).toHaveLength(1);
+  it('el cambio lleva antes → después CON decimales y la referencia de variante', () => {
+    expect(plan.cambios).toHaveLength(2);
     expect(plan.cambios[0]).toMatchObject({
-      codigo: 'D22-850', antes: 110, despues: 125, pid: 'p1', vid: 'p1-v1',
+      codigo: 'D22-850', antes: 110, despues: 125.81, pid: 'p1', vid: 'p1-v1',
+    });
+    expect(plan.cambios[1]).toMatchObject({
+      codigo: 'BARATO1', antes: 0.9, despues: 0.75, pid: 'p3', vid: 'p3-v1',
     });
   });
   it('los códigos que no están en la tienda caen en sinMatch (no se crean nada)', () => {
     expect(plan.sinMatch).toEqual(['NUEVO1', 'SINPRECIO']);
   });
-  it('los que quedarían en 0 quedan fuera (blindaje gratis) y se listan', () => {
-    expect(plan.sinPrecio).toEqual(['BARATO1']);
-    expect(plan.cambios.find((c) => c.codigo === 'BARATO1')).toBeUndefined();
+  it('precio 0 o ilegible queda fuera (blindaje) y se lista', () => {
+    expect(plan.sinPrecio).toEqual(['CERO1']);
+    expect(plan.cambios.find((c) => c.codigo === 'CERO1')).toBeUndefined();
   });
   it('el precio idéntico no genera escritura (sinCambio)', () => {
     expect(plan.sinCambio).toEqual(['IGUAL1']);

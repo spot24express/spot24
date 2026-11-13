@@ -608,9 +608,9 @@ function ProductModal({
  *    (entero, sin decimales); los códigos nuevos se crean INACTIVOS, sin
  *    categoría ni precio.
  *  · «Solo precios» (precios): con la LISTA DE PRECIOS del ERP — fija el
- *    precio de la columna «Precio REF c/Imp» SIN decimales a los códigos que
- *    YA existen (125.81 → 125); no crea nada ni toca el stock; los que
- *    quedarían en 0 (menores de $1) NO se tocan y quedan listados.
+ *    precio de la columna «Precio REF c/Imp» CON sus decimales a los códigos
+ *    que YA existen (5.141: 125.81 → 125.81); no crea nada ni toca el stock;
+ *    los que traen precio 0 o ilegible en el PDF NO se tocan y quedan listados.
  *  · MODO ENSAYO (marcado por defecto): calcula TODO y NO guarda nada — el
  *    dueño revisa el resumen y después importa de verdad.
  * Mapeo fijo: código ← Codigo/Código · nombre ← Descripcion/Descripción ·
@@ -631,7 +631,7 @@ const MODOS_IMPORTACION: Array<{ valor: ModoImportacion; titulo: string; detalle
   {
     valor: 'precios',
     titulo: 'Solo precios (lista de precios)',
-    detalle: 'Fija el precio de la columna «Precio REF c/Imp» SIN decimales a los códigos que YA existen. No crea nada ni toca stock.',
+    detalle: 'Fija el precio de la columna «Precio REF c/Imp» CON sus decimales a los códigos que YA existen. No crea nada ni toca stock.',
   },
 ];
 
@@ -749,7 +749,7 @@ function ImportarInventarioModal({
           <p className="rounded-brand border-2 border-line bg-ink p-3 text-xs text-muted">
             Este modo NO crea productos y NO toca el stock: solo fija precios de los códigos que ya
             están en la tienda. Los códigos que falten en la tienda quedan fuera (verás cuáles en el
-            resumen) y los artículos de menos de $1 NO se tocan: sin decimales su precio sería 0.
+            resumen) y los que traigan precio 0 o ilegible en el PDF NO se tocan: un precio 0 sería un producto gratis.
           </p>
         )}
 
@@ -836,8 +836,8 @@ function ImportarInventarioModal({
                 <ul className="mt-1 list-inside list-disc space-y-1 text-xs text-muted">
                   {resultado.cambiosPrecio!.map((c) => (
                     <li key={c.codigo}>
-                      <span className="text-paper">{c.codigo}</span> · {c.nombre.slice(0, 42)} · ${c.antes} →{' '}
-                      <span className="font-semibold text-signal">${c.despues}</span>
+                      <span className="text-paper">{c.codigo}</span> · {c.nombre.slice(0, 42)} · ${c.antes.toFixed(2)} →{' '}
+                      <span className="font-semibold text-signal">${c.despues.toFixed(2)}</span>
                     </li>
                   ))}
                 </ul>
@@ -847,11 +847,11 @@ function ImportarInventarioModal({
               </div>
             )}
 
-            {/* 5.138 · modo precios: los que quedarían en 0 (blindaje gratis). */}
+            {/* 5.138 · modo precios: los que traen precio 0 o ilegible (blindaje). */}
             {(resultado.sinPrecio?.length ?? 0) > 0 && (
               <p className="mt-2 text-xs text-muted">
-                <span className="font-semibold text-paper">{resultado.sinPrecio!.length} artículo(s) de menos de $1 NO se tocan</span> (sin
-                decimales su precio quedaría en 0): {resultado.sinPrecio!.slice(0, 12).join(', ')}
+                <span className="font-semibold text-paper">{resultado.sinPrecio!.length} artículo(s) NO se tocan</span> (su precio en el
+                PDF es 0 o ilegible): {resultado.sinPrecio!.slice(0, 12).join(', ')}
                 {resultado.sinPrecio!.length > 12 ? '…' : ''}.
               </p>
             )}

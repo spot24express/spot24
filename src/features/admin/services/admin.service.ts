@@ -236,7 +236,7 @@ export interface ImportInventarioCambioPrecio {
   nombre: string;
   /** Precio actual (2 decimales). */
   antes: number;
-  /** Precio nuevo SIN decimales (entero). */
+  /** Precio nuevo CON decimales (redondeado a 2, 5.141). */
   despues: number;
 }
 
@@ -273,11 +273,11 @@ export interface ImportInventarioResult {
   omitidasHuerfanas?: number;
   /** 5.138 modo precios: códigos del PDF que NO están en la tienda (no se tocan). */
   sinMatch?: string[];
-  /** 5.138 modo precios: quedarían en 0 al quitar decimales → se conserva el precio actual. */
+  /** 5.141 modo precios: precio 0 o ilegible en el PDF → se conserva el precio actual. */
   sinPrecio?: string[];
   /** 5.138 modo precios: el precio ya era ese (nada que escribir). */
   sinCambio?: number;
-  /** 5.138 modo precios: precio anterior → nuevo entero (tope 50). */
+  /** 5.138 modo precios: precio anterior → nuevo CON decimales (tope 50). */
   cambiosPrecio?: ImportInventarioCambioPrecio[];
   /** 5.137 modo stock: altas — códigos nuevos creados (o que se crearían en ensayo). */
   altas?: ImportInventarioAlta[];
@@ -293,8 +293,9 @@ export interface ImportInventarioResult {
  *    stock entero; los códigos nuevos se crean INACTIVOS, sin categoría ni
  *    precio (el dueño los completa desde el panel antes de activarlos).
  *  · modo 'precios' (LISTA DE PRECIOS del ERP): fija el precio de la columna
- *    «Precio REF c/Imp» SIN decimales a los códigos que YA existen; no crea
- *    nada y no toca el stock. Los que quedarían en 0 no se tocan.
+ *    «Precio REF c/Imp» CON sus decimales (5.141: 125.81 → 125.81) a los
+ *    códigos que YA existen; no crea nada y no toca el stock. Los que
+ *    traen precio 0 o ilegible no se tocan.
  *  · ensayo: true → NO guarda nada, solo devuelve el resumen de lo que haría.
  */
 export async function adminImportInventory(

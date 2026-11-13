@@ -57,17 +57,21 @@
  *   que pasaría (altas, cambios stock/precio, sin match, problemas) para
  *   que el dueño lo revise; después ejecuta de verdad con ensayo: false.
  *
- * ── 5.138 · MODO PRECIOS (a pedido del dueño, con la LISTA DE PRECIOS) ──
+ * ── 5.138/5.141 · MODO PRECIOS (a pedido del dueño, con la LISTA DE PRECIOS) ──
  * · Con la «REPORTE LISTA DE PRECIOS» del ERP (columna final «Precio REF
  *   c/Imp» = USD CON impuesto, el precio final de la tienda desde el modelo
  *   de IVA incluido 5.120): a cada código que YA EXISTE en la tienda se le
- *   fija el precio de esa columna SIN DECIMALES (pedido literal: 125.81 →
- *   125). NO se crea nada y NO se toca el stock: los códigos que solo están
- *   en el PDF quedan fuera (lista «sin match» del resumen).
- * · BLINDAJE GRATIS: si al quitar los decimales el precio quedaría en 0
- *   (artículos por debajo de $1: 0.75, 0.13…), la fila NO se toca y queda
- *   listada en el resumen («quedarían en 0») para que el dueño decida — un
- *   precio 0 en la tienda sería un producto gratis.
+ *   fija el precio de esa columna. 5.138 lo fijaba SIN decimales (125.81 →
+ *   125); la 5.141 lo deja CON sus decimales (pedido del dueño: la
+ *   importación ya funciona en producción, pero debe respetar los
+ *   decimales → 125.81 se guarda como 125.81, redondeado a 2).
+ *   NO se crea nada y NO se toca el stock: los códigos que solo están en el
+ *   PDF quedan fuera (lista «sin match» del resumen).
+ * · BLINDAJE GRATIS (5.141): si el precio del PDF es 0 o ilegible, la fila
+ *   NO se toca y queda listada en el resumen («sin precio válido») para que
+ *   el dueño decida — un precio 0 en la tienda sería un producto gratis.
+ *   (Desde la 5.141 los precios menores de $1 SÍ se aplican: 0.75 queda
+ *   0.75, ya no se pierden por el truncado de la 5.138.)
  *
  * ── 5.140 · FIX TIMEOUT — «Task timed out after 30.00 seconds» ──
  * · La terminal de netlify dev mostró el timeout en fn-importInventory y la
@@ -218,13 +222,14 @@ export function ensayoDe(data: unknown): boolean {
 }
 
 /**
- * 5.138 · Precio de la lista SIN decimales (pedido literal del dueño:
- * «colocas precio que sale en la columna Precio REF c/imp sin los
- * decimales»): 125.81 → 125 · 15.00 → 15 · 0.75 → 0 (el modo precios NO
- * aplica los que caen a 0: ver planPrecios).
+ * 5.141 · Precio de la lista CON decimales (pedido del dueño: «cuando
+ * importo para actualizar los precios necesito que tome en cuenta los
+ * decimales»): 125.81 → 125.81 · 15.00 → 15 · 0.75 → 0.75 · basura → 0
+ * (jamás NaN: el modo precios NO aplica un precio 0, ver planPrecios).
+ * Redondeo a 2 decimales, el mismo que escribe el panel.
  */
-export function precioEnteroDe(n: number): number {
-  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+export function precioDecimalesDe(n: number): number {
+  return Number.isFinite(n) ? redondearPrecio(n) : 0;
 }
 
 /** 5.137 · Existencia SIN decimales: 12.9 → 12 (truncada, no redondeada). */
@@ -237,7 +242,7 @@ export interface CambioPrecioInfo {
   nombre: string;
   /** Precio actual de la variante (2 decimales). */
   antes: number;
-  /** Precio nuevo SIN decimales (entero). */
+  /** Precio nuevo CON decimales (redondeado a 2). */
   despues: number;
 }
 
@@ -258,16 +263,16 @@ export interface PlanPrecios {
   cambios: Array<CambioPrecioInfo & { pid: string; vid: string }>;
   /** El precio ya era ese: nada que escribir. */
   sinCambio: string[];
-  /** Quedaría en 0 al quitar decimales → se conserva el precio actual. */
+  /** 5.141 · Precio 0 o ilegible en el PDF → se conserva el precio actual. */
   sinPrecio: string[];
   /** Código del PDF que NO está en la tienda (modo precios no crea nada). */
   sinMatch: string[];
 }
 
 /**
- * 5.138 · Clasificación PURA del modo precios: qué códigos cambian de
- * precio (antes → después entero), cuáles no están en la tienda, cuáles
- * quedarían en 0 y cuáles ya tenían ese precio.
+ * 5.138/5.141 · Clasificación PURA del modo precios: qué códigos cambian de
+ * precio (antes → después CON decimales), cuáles no están en la tienda,
+ * cuáles traen precio 0/ilegible y cuáles ya tenían ese precio.
  */
 export function planPrecios(
   filas: FilaInventario[],
@@ -283,15 +288,16 @@ export function planPrecios(
       sinMatch.push(fila.codigo);
       continue;
     }
-    const entero = precioEnteroDe(fila.precioConImp ?? Number.NaN);
-    if (entero < 1) {
-      // «Sin los decimales» dejaría el precio en 0 (artículos por debajo de
-      // $1): un producto gratis en la tienda. NO se toca y queda listado.
+    // 5.141 · CON decimales (antes se truncaba con precioEnteroDe).
+    const nuevo = precioDecimalesDe(fila.precioConImp ?? Number.NaN);
+    if (nuevo <= 0) {
+      // Precio 0 o ilegible: un precio 0 en la tienda sería un producto
+      // gratis. NO se toca y queda listado para que el dueño decida.
       sinPrecio.push(fila.codigo);
       continue;
     }
     const antes = Math.round(blanco.precioActual * 100) / 100;
-    if (entero === antes) {
+    if (nuevo === antes) {
       sinCambio.push(fila.codigo);
       continue;
     }
@@ -299,7 +305,7 @@ export function planPrecios(
       codigo: fila.codigo,
       nombre: blanco.nombre,
       antes,
-      despues: entero,
+      despues: nuevo,
       pid: blanco.pid,
       vid: blanco.vid,
     });
@@ -392,11 +398,11 @@ export interface ResumenImportacion {
   problemas: string[];
   /** Modo precios: códigos del PDF que NO están en la tienda (no se tocan). */
   sinMatch: string[];
-  /** Modo precios: quedarían en 0 sin decimales → se conserva el precio actual. */
+  /** Modo precios: precio 0 o ilegible en el PDF → se conserva el precio actual. */
   sinPrecio: string[];
   /** Modo precios: el precio ya era ese (nada que escribir). */
   sinCambio: number;
-  /** Modo precios: precio anterior → nuevo entero (tope 50). */
+  /** Modo precios: precio anterior → nuevo CON decimales (tope 50). */
   cambiosPrecio: CambioPrecioInfo[];
   /** Modo stock (y ensayo de completo): altas — códigos que se crearían/crearon. */
   altas: AltaInfo[];
@@ -671,7 +677,7 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
     tiempos: { msPdf: 0, msLecturas: 0, msEscrituras: 0 },
   };
 
-  /* ── 5.138 · MODO PRECIOS: solo códigos que EXISTEN; precio entero de «Precio REF c/Imp» ── */
+  /* ── 5.138/5.141 · MODO PRECIOS: solo códigos que EXISTEN; precio de «Precio REF c/Imp» CON decimales ── */
   if (modo === 'precios') {
     const existentes = new Map<string, { pid: string; nombre: string; precioActual: number; vid: string }>();
     const pidsMatch = new Set<string>();
@@ -752,7 +758,7 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
         adminUid,
         targetId: 'solo-precios',
         note: `${parseo.formato} · modo precios · ${parseo.filas.length} filas · ~${actualizados} precios fijados`
-          + ` · ${plan.sinMatch.length} sin match · ${plan.sinPrecio.length} quedarían en 0`,
+          + ` · ${plan.sinMatch.length} sin match · ${plan.sinPrecio.length} sin precio válido`,
       });
     }
     console.log(`[fn-importInventory] modo ${modo}${ensayo ? ' · ENSAYO' : ''} · tiempos ms: pdf=${resumen.tiempos.msPdf} lecturas=${resumen.tiempos.msLecturas} escrituras=${resumen.tiempos.msEscrituras}`);

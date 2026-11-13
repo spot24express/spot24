@@ -441,8 +441,10 @@ const ANCLAS_PRECIOS = [
   'Precio REF c/Imp',
 ] as const;
 
-/** Códigos de la lista de precios: dígito o letra inicial + [A-Z0-9./'-]. */
-const RE_CODIGO_PRECIOS = /^[A-Z0-9][A-Z0-9./'\-]{1,}$/;
+/** Códigos de la lista de precios: dígito o letra inicial + [A-Z0-9./'-].
+ *  5.144b · Sin el escape sobrante `\-` (eslint no-useless-escape): el `-`
+ *  al FINAL de la clase ya es literal — misma regex, mismo comportamiento. */
+const RE_CODIGO_PRECIOS = /^[A-Z0-9][A-Z0-9./'-]{1,}$/;
 
 /** Hueco fijo fin(«Precio c/Imp») → límite de la columna REF (px, PDF real). */
 const HUECO_CIMP_A_REF = 9.2;
