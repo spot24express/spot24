@@ -211,7 +211,15 @@ export default function OrderDetailPage() {
           <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6">
             <h2 className="font-display text-lg font-bold italic uppercase text-paper">Totales</h2>
             <dl className="mt-4 space-y-2">
-              <Row label="Subtotal" value={toBs(order.totals.subtotalUsd, order.totals.subtotalVes)} />
+              {/* B1 (ronda 5.120) · IVA INCLUIDO en el precio publicado: la fila
+                  muestra la BASE IMPONIBLE (precio sin la parte del IVA, extraída
+                  en el servidor). Base + envío + IVA = Total, exacto. Órdenes
+                  anteriores a B1 (sin baseVes): caen a subtotalVes, que en el
+                  modelo anterior YA era la base — el desglose sigue cuadrando. */}
+              <Row
+                label="Base imponible"
+                value={toBs(order.totals.subtotalUsd, order.totals.baseVes ?? order.totals.subtotalVes)}
+              />
               <Row
                 label="Envío"
                 value={
@@ -310,8 +318,23 @@ export default function OrderDetailPage() {
                   trae `phone` en claro desde la ronda 5.9; las órdenes viejas,
                   que no lo traen, caen al enmascarado sin romper nada. */}
               <Row label="Teléfono" value={order.contact.phone ?? order.contact.phoneMasked} />
+              {/* 5.135 · Envió a otra persona: quién recibe. El pagador sigue
+                  siendo el comprador (filas de arriba); esto es a quien el
+                  mensajero le entrega. Órdenes viejas y compras normales: los
+                  campos no existen → no se pintan nada. */}
+              {order.envioTercero && order.destinatario && (
+                <>
+                  <Row label="Recibe" value={order.destinatario.nombre} />
+                  <Row label="Teléfono de quien recibe" value={order.destinatario.telefono} />
+                </>
+              )}
             </dl>
-            {order.delivery.location && (
+            {/* 5.135-B · Con GPS: el enlace de Maps de siempre. Sin GPS (envío
+                a tercero con «No tengo la ubicación del destinatario»): se lo
+                decimos claro al comprador — el punto exacto se coordina por
+                teléfono con quien recibe. Pickup y órdenes viejas: nada nuevo
+                (pickup no lleva location ni es envío a tercero). */}
+            {order.delivery.location ? (
               <a
                 className="mt-3 inline-block text-sm font-semibold text-signal underline"
                 href={`https://maps.google.com/?q=${order.delivery.location.lat},${order.delivery.location.lng}`}
@@ -320,7 +343,11 @@ export default function OrderDetailPage() {
               >
                 Abrir ubicación GPS en Google Maps
               </a>
-            )}
+            ) : order.envioTercero ? (
+              <p className="mt-3 rounded-brand border-2 border-dashed border-line bg-ink p-3 text-sm text-muted">
+                Sin GPS del destinatario: el mensajero coordinará el punto exacto por teléfono con quien recibe.
+              </p>
+            ) : null}
             {order.notes && <p className="mt-3 text-sm text-muted">Nota: {order.notes}</p>}
           </section>
 

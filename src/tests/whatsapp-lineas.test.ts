@@ -1,5 +1,7 @@
 /**
  * Tests de WhatsApp de dos líneas (5.132).
+ * 5.134: la línea de atención se llama «Atención al Cliente» (antes «Soporte
+ * Atención al Cliente») — solo cambia el texto visible, ni números ni enlaces.
  *
  * Garantías clave:
  * · waHref normaliza cualquier formato local/internacional de Venezuela a
@@ -78,7 +80,7 @@ describe('lineasWhatsapp — dos líneas configurables', () => {
       whatsappVentas: '04147654321',
     });
     expect(lineas.map((l) => `${l.rol}:${l.nombre}:${l.etiqueta}`)).toEqual([
-      'atencion:Soporte Atención al Cliente:Atención',
+      'atencion:Atención al Cliente:Atención',
       'ventas:Soporte de Ventas:Ventas',
     ]);
   });
@@ -87,7 +89,7 @@ describe('lineasWhatsapp — dos líneas configurables', () => {
     const lineas = lineasWhatsapp({ whatsappAtencion: '04241234567' });
     expect(lineas).toHaveLength(1);
     expect(lineas[0]?.rol).toBe('atencion');
-    expect(lineas[0]?.nombre).toBe('Soporte Atención al Cliente');
+    expect(lineas[0]?.nombre).toBe('Atención al Cliente');
   });
 
   it('solo Ventas llena → UNA línea de ventas', () => {

@@ -331,7 +331,15 @@ function VerifyBody({
       <div className="rounded-brand border-2 border-line bg-surface-1 p-4">
         <p className="spot-label mb-2">Desglose</p>
         <div className="space-y-1 text-sm text-paper">
-          <Row label="Subtotal" value={bs(order.totals.subtotalUsd, order.totals.subtotalVes)} />
+          {/* B1 (ronda 5.120) · IVA INCLUIDO en el precio publicado: la fila
+              muestra la BASE IMPONIBLE (precio sin la parte del IVA, extraída
+              en el servidor). Base + envío + IVA = Total, exacto. Órdenes
+              anteriores a B1 (sin baseVes): caen a subtotalVes, que en el
+              modelo anterior YA era la base — el desglose sigue cuadrando. */}
+          <Row
+            label="Base imponible"
+            value={bs(order.totals.subtotalUsd, order.totals.baseVes ?? order.totals.subtotalVes)}
+          />
           <Row
             label="Envío"
             value={order.totals.shippingUsd === 0 ? 'Gratis' : bs(order.totals.shippingUsd, order.totals.shippingVes)}

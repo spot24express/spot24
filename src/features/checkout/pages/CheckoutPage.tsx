@@ -12,6 +12,15 @@
  * · 5.112-B: «Envío a domicilio» obedece la franja del delivery guardada en
  *   Ajustes (deliveryStart/deliveryEnd, HORA DE VENEZUELA): fuera de la
  *   franja solo se ofrece RETIRO EN TIENDA, con aviso y auto-cambio.
+ * · 5.135: «ENVIAR A OTRA PERSONA» — en delivery el pedido puede llegar a
+ *   un destinatario distinto del comprador: su zona cotiza el envío (su
+ *   tarifa), su GPS guía al mensajero y su teléfono va al panel para
+ *   llamar/WhatsApp. El pagador y el antifraude NO cambian.
+ * · 5.135-B: GPS OPCIONAL del destinatario — checkbox «No tengo la
+ *   ubicación del destinatario» para cuando quien recibe no sabe compartir
+ *   su punto (la abuela): el pedido viaja sin GPS, la dirección escrita
+ *   (≥ 8 caracteres) es la única referencia y el mensajero coordina por
+ *   teléfono. Sin la marca, el punto exacto sigue obligatorio (5.135).
  */
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -28,6 +37,13 @@ import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useZones } from '@/features/delivery/hooks/useZones';
 import { reserveStock, quoteTotals, createOrder, checkPagoMovil } from '../services/checkout.service';
 import { buildIdempotencyKey } from '../lib/idempotency';
+import {
+  ENTREGA_TERCERO_VACIO,
+  construirEntregaTercero,
+  parsearUbicacionTexto,
+  validarEntregaTercero,
+  type EntregaTerceroForm,
+} from '../lib/destinatario';
 import {
   PAYMENT_METHOD_LABELS, PAYMENT_INSTRUCTIONS, PAYMENT_REQUIRES_RECEIPT,
   type PaymentMethod,
@@ -102,6 +118,16 @@ export default function CheckoutPage() {
   const [contact, setContact] = useState<ContactForm>({ name: '', cedula: '', phone: '' });
   const [address, setAddress] = useState<AddressForm>({ zoneId: '', details: '', notes: '' });
   const [gps, setGps] = useState<{ lat: number; lng: number } | null>(null);
+  // 5.135 · ENVIAR A OTRA PERSONA: suiche + formulario de quien recibe.
+  // Solo existe en delivery (pickup se entrega en el mostrador y el backend
+  // también lo rechaza). `terceroActivo` se deriva abajo: si el delivery
+  // cierra y el pedido vuela a retiro (5.112-B), el modo tercero queda
+  // dormido solo, sin estados huérfanos.
+  const [envioTercero, setEnvioTercero] = useState(false);
+  const [tercero, setTercero] = useState<EntregaTerceroForm>(ENTREGA_TERCERO_VACIO);
+  // 5.135 · Enlace/coordenadas que el destinatario compartió (WhatsApp o
+  // Google Maps), pegadas en el campo. Se conservan para poder ajustar.
+  const [terceroGpsTexto, setTerceroGpsTexto] = useState('');
   const [payment, setPayment] = useState<PaymentFormState>(EMPTY_PAYMENT_FORM);
   const [pickupInfo, setPickupInfo] = useState<{ address: string; hours: string }>({ address: '', hours: '' });
   // 5.112-B: franja REAL del delivery (settings/general) + reloj de Venezuela.
@@ -248,15 +274,23 @@ export default function CheckoutPage() {
 
   // Cotización autoritativa: al elegir zona (delivery) o de una vez (pickup).
   // Con estado visible: loading → montos; error → Reintentar (no cuelga).
-  const zone = zones?.find((z) => z.id === address.zoneId) ?? null;
+  // 5.135 · Zona de ENTREGA REAL: la del DESTINATARIO cuando el pedido va a
+  // otra persona (decisión del dueño: se cobra SU tarifa — el mensajero
+  // viaja adonde va el paquete), la del comprador en lo demás. Es la ÚNICA
+  // zona viva en el checkout: cotización, franja de entregas y revisión
+  // salen de aquí (la variable `zone` del comprador ya no existe: en modo
+  // tercero sus campos quedan guardados intactos pero fuera del flujo).
+  const terceroActivo = envioTercero && fulfillment === 'delivery';
+  const zoneEntregaId = terceroActivo ? tercero.zoneId : address.zoneId;
+  const zoneEntrega = zones?.find((z) => z.id === zoneEntregaId) ?? null;
   useEffect(() => {
     if (isEmpty) return;
-    if (fulfillment === 'delivery' && !address.zoneId) return;
+    if (fulfillment === 'delivery' && !zoneEntregaId) return;
     let alive = true;
     setQuoteState('loading');
     void quoteTotals({
       fulfillment,
-      zoneId: fulfillment === 'pickup' ? '' : address.zoneId,
+      zoneId: fulfillment === 'pickup' ? '' : zoneEntregaId,
       items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
     })
       .then((q) => {
@@ -273,7 +307,7 @@ export default function CheckoutPage() {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fulfillment, address.zoneId, quoteAttempt]);
+  }, [fulfillment, zoneEntregaId, quoteAttempt]);
 
   // Formas de pago: primero Firestore (el dueño activa/desactiva desde
   // /admin/ajustes sin deploy); si aún no hay documento o falla la red, se
@@ -353,7 +387,9 @@ export default function CheckoutPage() {
 
   // GPS del cliente: OBLIGATORIO en delivery — el mensajero recibe el punto
   // exacto para llegar. En retiro en tienda no se pide (no aplica).
-  const captureGps = () => {
+  // 5.135: el mismo botón sirve para el punto del DESTINATARIO (destino
+  // 'tercero') — útil si el comprador está parado en esa dirección.
+  const captureGps = (destino: 'comprador' | 'tercero' = 'comprador') => {
     if (!navigator.geolocation) {
       toast.error('Tu navegador no permite GPS. Prueba desde otro navegador.');
       return;
@@ -361,10 +397,12 @@ export default function CheckoutPage() {
     setGpsBusy(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setGps({
+        const punto = {
           lat: Number(pos.coords.latitude.toFixed(6)),
           lng: Number(pos.coords.longitude.toFixed(6)),
-        });
+        };
+        if (destino === 'tercero') setTercero((t) => ({ ...t, gps: punto }));
+        else setGps(punto);
         setGpsBusy(false);
         toast.success('Ubicación capturada. El mensajero la usará para llegar exacto.');
       },
@@ -374,6 +412,20 @@ export default function CheckoutPage() {
       },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
     );
+  };
+
+  // 5.135 · Segunda vía para el punto del destinatario: pegar el enlace o las
+  // coordenadas que él compartió (WhatsApp/Google Maps). Si no se puede
+  // leer, error honesto (el GPS sigue siendo obligatorio).
+  const aplicarUbicacionTercero = () => {
+    const punto = parsearUbicacionTexto(terceroGpsTexto);
+    if (!punto) {
+      toast.error('No pudimos leer coordenadas ahí. Pega el enlace completo de Google Maps o «lat, lng».');
+      return;
+    }
+    setTercero((t) => ({ ...t, gps: punto }));
+    setErrors((e) => ({ ...e, terceroGps: null }));
+    toast.success('Punto de entrega listo: el mensajero llegará a ese punto.');
   };
 
   /* ── FLUJO ESTRICTO: comprobante de pago (5i-k) ──
@@ -453,9 +505,15 @@ export default function CheckoutPage() {
       return true;
     }
     const e: Record<string, string | null> = {};
-    if (!address.zoneId) e['zoneId'] = 'Elige tu zona de entrega.';
-    if (!gps) e['gps'] = 'Captura tu ubicación GPS: el mensajero la necesita para llegar.';
-    if (sanitizeMultiline(address.details, 500).length < 8) e['details'] = 'Dirección con urbanización, calle y casa/piso.';
+    if (terceroActivo) {
+      // 5.135: los datos de QUIEN RECIBE sustituyen a los del comprador —
+      // su zona cotiza el envío y su punto GPS guía al mensajero.
+      Object.assign(e, validarEntregaTercero(tercero));
+    } else {
+      if (!address.zoneId) e['zoneId'] = 'Elige tu zona de entrega.';
+      if (!gps) e['gps'] = 'Captura tu ubicación GPS: el mensajero la necesita para llegar.';
+      if (sanitizeMultiline(address.details, 500).length < 8) e['details'] = 'Dirección con urbanización, calle y casa/piso.';
+    }
     setErrors(e);
     return Object.values(e).every((x) => !x);
   };
@@ -567,9 +625,11 @@ export default function CheckoutPage() {
         address: {
           state: ZONE_STATE,
           city: ZONE_CITY,
-          zoneId: fulfillment === 'pickup' ? '' : address.zoneId,
-          zoneName: fulfillment === 'pickup' ? 'Retiro en tienda' : zone?.name ?? '',
-          details: fulfillment === 'pickup' ? pickupAddress : sanitizeMultiline(address.details, 500),
+          // 5.135: la huella de idempotencia usa la dirección de ENTREGA REAL
+          // (la del destinatario cuando el pedido va a otra persona).
+          zoneId: fulfillment === 'pickup' ? '' : zoneEntregaId,
+          zoneName: fulfillment === 'pickup' ? 'Retiro en tienda' : zoneEntrega?.name ?? '',
+          details: fulfillment === 'pickup' ? pickupAddress : sanitizeMultiline(terceroActivo ? tercero.details : address.details, 500),
         },
         paymentMethod: payment.method,
         now: Date.now(),
@@ -608,15 +668,21 @@ export default function CheckoutPage() {
             : {
                 state: ZONE_STATE,
                 city: ZONE_CITY,
-                zoneId: address.zoneId,
-                zoneName: zone?.name ?? '',
-                details: sanitizeMultiline(address.details, 500),
-                location: gps,
+                // 5.135: con envío a otra persona la dirección que viaja ES
+                // la del destinatario — el backend cobra la tarifa de SU zona
+                // (decisión 1) y SU punto GPS guía al mensajero (decisión 2).
+                zoneId: zoneEntregaId,
+                zoneName: zoneEntrega?.name ?? '',
+                details: sanitizeMultiline(terceroActivo ? tercero.details : address.details, 500),
+                // 5.135-B: con la marca «No tengo la ubicación del
+                // destinatario» el punto NO viaja — la dirección escrita es
+                // la única referencia y la entrega se coordina por teléfono.
+                location: terceroActivo ? (tercero.sinUbicacion ? null : tercero.gps) : gps,
               },
           deliveryWindow: fulfillment === 'pickup'
             ? { start: '08:00', end: '20:00' }
-            : zone?.windows[0]
-              ? { start: zone.windows[0].start, end: zone.windows[0].end }
+            : zoneEntrega?.windows[0]
+              ? { start: zoneEntrega.windows[0].start, end: zoneEntrega.windows[0].end }
               : { start: '12:00', end: '23:59' },
           notes: sanitizeMultiline(address.notes, 300),
           paymentMethod: payment.method,
@@ -630,6 +696,10 @@ export default function CheckoutPage() {
           // 5.113: las evidencias BDV viajan con la orden — el servidor las
           // cobra (pagoRefs) y nace «pagado» directo cuando cubren el total.
           ...(autoActivo && validaciones.length > 0 ? { pagosBdv: validaciones } : {}),
+          // 5.135 · Quien RECIBE (nombre + teléfono). El pagador sigue siendo
+          // el comprador (contact arriba, intacto — decisión 3): el backend
+          // guarda el destinatario en claro para cajera y mensajero.
+          ...(terceroActivo ? { entregaTercero: construirEntregaTercero(tercero) } : {}),
         },
       );
 
@@ -820,55 +890,192 @@ export default function CheckoutPage() {
                   </p>
                 </div>
               ) : (
-                <>  {/* DOMICILIO: zona + dirección */}
-                  <Select
-                    label="Zona de cobertura"
-                    value={address.zoneId}
-                    onChange={(e) => setAddress((a) => ({ ...a, zoneId: e.target.value }))}
-                    error={errors['zoneId']}
-                    required
+                <>  {/* DOMICILIO: zona + dirección (del comprador o del destinatario) */}
+                  {/* 5.135 · ENVIAR A OTRA PERSONA: el pedido llega a quien el
+                      comprador diga. El pago y el antifraude siguen siendo del
+                      comprador (decisión 3); la tarifa sale de la zona del
+                      destinatario (decisión 1) y su teléfono llega al panel
+                      para llamar/WhatsApp (decisión 2). */}
+                  <button
+                    type="button"
+                    aria-pressed={envioTercero}
+                    onClick={() => setEnvioTercero((v) => !v)}
+                    className={`rounded-brand border-2 p-4 text-left transition ${envioTercero ? 'border-signal bg-signal/10' : 'border-line hover:border-muted'}`}
                   >
-                    <option value="">Selecciona tu zona…</option>
-                    {zones?.filter((z) => z.active).map((z) => (
-                      <option key={z.id} value={z.id}>
-                        {z.name} · Envío {liveRate ? formatBs(usdToBs(z.feeUsd, liveRate.rate)) : 'por zona'} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
-                      </option>
-                    ))}
-                  </Select>
-                  <Textarea
-                    label="Dirección completa"
-                    value={address.details}
-                    onChange={(e) => setAddress((a) => ({ ...a, details: e.target.value }))}
-                    placeholder="Urbanización, calle, casa/apto, piso, punto de referencia"
-                    error={errors['details']}
-                    required
-                  />
-                  {/* Ubicación GPS: OBLIGATORIA en delivery — viaja al mensajero. */}
-                  <div className="rounded-brand border-2 border-dashed border-line bg-ink p-4">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <Button variant="secondary" type="button" loading={gpsBusy} onClick={captureGps}>
-                        {gps ? 'Capturar de nuevo' : 'Capturar mi ubicación'}
-                      </Button>
-                      {gps && (
-                        <span className="spot-label text-signal">Ubicación capturada ✓</span>
-                      )}
-                    </div>
-                    <p className="mt-2 text-xs text-muted">
-                      Obligatoria: el mensajero recibe tu punto exacto para llegar sin llamadas.
+                    <p className={`font-display text-sm font-bold italic uppercase ${envioTercero ? 'text-signal' : 'text-paper'}`}>
+                      Enviar a otra persona
                     </p>
-                    {errors['gps'] && (
-                      <p className="mt-1 text-sm font-semibold text-signal">{errors['gps']}</p>
-                    )}
-                  </div>
+                    <p className="mt-1 text-xs text-muted">
+                      {envioTercero
+                        ? 'Llenas los datos de quien recibe: SU zona define el costo de envío y tú pagas todo como siempre.'
+                        : '¿Es un regalo o va a otra dirección? Entregamos donde tú digas; tú pagas como siempre.'}
+                    </p>
+                  </button>
+
+                  {terceroActivo ? (
+                    <>
+                      {/* 5.135 · Datos de QUIEN RECIBE: sustituyen a la dirección
+                          del comprador mientras el suiche esté encendido. */}
+                      <Input
+                        label="Nombre de quien recibe"
+                        value={tercero.nombre}
+                        onChange={(e) => setTercero((t) => ({ ...t, nombre: e.target.value }))}
+                        placeholder="Nombre y apellido"
+                        error={errors['terceroNombre']}
+                        required
+                      />
+                      <Input
+                        label="Teléfono de quien recibe"
+                        type="tel"
+                        inputMode="numeric"
+                        value={tercero.telefono}
+                        onChange={(e) => setTercero((t) => ({ ...t, telefono: e.target.value }))}
+                        placeholder="04243036024"
+                        hint="La cajera y el mensajero lo usan para coordinar la entrega con esa persona."
+                        error={errors['terceroTelefono']}
+                        required
+                      />
+                      <Select
+                        label="Zona de entrega del destinatario"
+                        value={tercero.zoneId}
+                        onChange={(e) => setTercero((t) => ({ ...t, zoneId: e.target.value }))}
+                        error={errors['terceroZoneId']}
+                        required
+                      >
+                        <option value="">Selecciona su zona…</option>
+                        {zones?.filter((z) => z.active).map((z) => (
+                          <option key={z.id} value={z.id}>
+                            {z.name} · Envío {liveRate ? formatBs(usdToBs(z.feeUsd, liveRate.rate)) : 'por zona'} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
+                          </option>
+                        ))}
+                      </Select>
+                      <Textarea
+                        label="Dirección completa del destinatario"
+                        value={tercero.details}
+                        onChange={(e) => setTercero((t) => ({ ...t, details: e.target.value }))}
+                        placeholder="Urbanización, calle, casa/apto, piso, punto de referencia"
+                        error={errors['terceroDetails']}
+                        required
+                      />
+                      {/* 5.135-B · GPS OPCIONAL del destinatario: hay casos
+                          donde quien recibe no sabe compartir su ubicación.
+                          Con la marca el pedido viaja sin punto exacto: la
+                          dirección escrita (≥ 8 caracteres) es la única
+                          referencia y el mensajero coordina por teléfono.
+                          Marcarla limpia cualquier punto capturado antes. */}
+                      <label className="flex cursor-pointer items-start gap-3 rounded-brand border-2 border-dashed border-line bg-ink p-3">
+                        <input
+                          type="checkbox"
+                          className="mt-0.5 h-4 w-4 accent-signal"
+                          checked={tercero.sinUbicacion}
+                          onChange={(e) => {
+                            const marcado = e.target.checked;
+                            setTercero((t) => ({ ...t, sinUbicacion: marcado, gps: marcado ? null : t.gps }));
+                            if (marcado) {
+                              setTerceroGpsTexto('');
+                              setErrors((prev) => ({ ...prev, terceroGps: null }));
+                            }
+                          }}
+                        />
+                        <span>
+                          <span className="block text-sm font-semibold text-paper">
+                            No tengo la ubicación del destinatario
+                          </span>
+                          <span className="mt-0.5 block text-xs text-muted">
+                            Sin punto exacto: el mensajero llamará a quien recibe para coordinar la entrega.
+                          </span>
+                        </span>
+                      </label>
+                      {/* Punto exacto del destinatario: GPS propio o enlace pegado.
+                          5.135-B: se OCULTA cuando la marca «sin ubicación» está
+                          puesta — no hay nada que capturar ni error que mostrar. */}
+                      {!tercero.sinUbicacion ? (
+                        <div className="rounded-brand border-2 border-dashed border-line bg-ink p-4">
+                          <p className="spot-label mb-2">Punto exacto de entrega</p>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <Button variant="secondary" type="button" loading={gpsBusy} onClick={() => captureGps('tercero')}>
+                              {tercero.gps ? 'Capturar de nuevo' : 'Usar mi ubicación (si estoy allí)'}
+                            </Button>
+                            {tercero.gps && (
+                              <span className="spot-label text-signal">Ubicación capturada ✓</span>
+                            )}
+                          </div>
+                          <div className="mt-3">
+                            <Input
+                              label="O pega el enlace / coordenadas que te mandó"
+                              value={terceroGpsTexto}
+                              onChange={(e) => setTerceroGpsTexto(e.target.value)}
+                              placeholder="https://maps.google.com/?q=10.2546,-67.5912"
+                            />
+                            <Button variant="secondary" size="sm" type="button" className="mt-2" onClick={aplicarUbicacionTercero}>
+                              Usar esa ubicación
+                            </Button>
+                          </div>
+                          <p className="mt-2 text-xs text-muted">
+                            Pídele a esa persona que comparta su ubicación por WhatsApp o Google Maps; copia el enlace y pégalo aquí. Los enlaces cortos (maps.app.goo.gl) no traen coordenadas: usa el enlace completo o «copiar coordenadas».
+                          </p>
+                          {errors['terceroGps'] && (
+                            <p className="mt-1 text-sm font-semibold text-signal">{errors['terceroGps']}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="rounded-brand border-2 border-dashed border-line bg-ink p-3 text-sm text-muted">
+                          Sin GPS: la dirección escrita arriba es la única referencia y el mensajero coordinará el punto exacto por teléfono con quien recibe.
+                        </p>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <Select
+                        label="Zona de cobertura"
+                        value={address.zoneId}
+                        onChange={(e) => setAddress((a) => ({ ...a, zoneId: e.target.value }))}
+                        error={errors['zoneId']}
+                        required
+                      >
+                        <option value="">Selecciona tu zona…</option>
+                        {zones?.filter((z) => z.active).map((z) => (
+                          <option key={z.id} value={z.id}>
+                            {z.name} · Envío {liveRate ? formatBs(usdToBs(z.feeUsd, liveRate.rate)) : 'por zona'} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
+                          </option>
+                        ))}
+                      </Select>
+                      <Textarea
+                        label="Dirección completa"
+                        value={address.details}
+                        onChange={(e) => setAddress((a) => ({ ...a, details: e.target.value }))}
+                        placeholder="Urbanización, calle, casa/apto, piso, punto de referencia"
+                        error={errors['details']}
+                        required
+                      />
+                      {/* Ubicación GPS: OBLIGATORIA en delivery — viaja al mensajero. */}
+                      <div className="rounded-brand border-2 border-dashed border-line bg-ink p-4">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Button variant="secondary" type="button" loading={gpsBusy} onClick={() => captureGps('comprador')}>
+                            {gps ? 'Capturar de nuevo' : 'Capturar mi ubicación'}
+                          </Button>
+                          {gps && (
+                            <span className="spot-label text-signal">Ubicación capturada ✓</span>
+                          )}
+                        </div>
+                        <p className="mt-2 text-xs text-muted">
+                          Obligatoria: el mensajero recibe tu punto exacto para llegar sin llamadas.
+                        </p>
+                        {errors['gps'] && (
+                          <p className="mt-1 text-sm font-semibold text-signal">{errors['gps']}</p>
+                        )}
+                      </div>
+                    </>
+                  )}
                   <Textarea
                     label="Nota para el mensajero (opcional)"
                     value={address.notes}
                     onChange={(e) => setAddress((a) => ({ ...a, notes: e.target.value }))}
                     rows={2}
                   />
-                  {zone && (
+                  {zoneEntrega && (
                     <p className="spot-label">
-                      Horario de entregas: {zone.windows.map((w) => w.label).join(' · ')}
+                      Horario de entregas: {zoneEntrega.windows.map((w) => w.label).join(' · ')}
                     </p>
                   )}
                 </>
@@ -893,12 +1100,19 @@ export default function CheckoutPage() {
                   quote.rateUsed > 0 ? (
                     <>
                       <dl className="mt-4 space-y-2">
+                        {/* B1 (ronda 5.120) · IVA INCLUIDO en el precio publicado:
+                            la fila muestra la BASE IMPONIBLE (el precio sin la parte
+                            del IVA, extraída del monto en el servidor). Base + IVA +
+                            envío = Total, exacto. Órdenes/replays anteriores a B1:
+                            caen a subtotalVes, que en el modelo anterior YA era la base. */}
                         <Row
-                          label="Subtotal"
+                          label="Base imponible"
                           value={
-                            quote.subtotalVes && quote.subtotalVes > 0
-                              ? formatBs(quote.subtotalVes)
-                              : formatBs(usdToBs(quote.subtotalUsd, quote.rateUsed))
+                            quote.baseVes && quote.baseVes > 0
+                              ? formatBs(quote.baseVes)
+                              : quote.subtotalVes && quote.subtotalVes > 0
+                                ? formatBs(quote.subtotalVes)
+                                : formatBs(usdToBs(quote.subtotalUsd, quote.rateUsed))
                           }
                         />
                         <Row
@@ -1313,8 +1527,16 @@ export default function CheckoutPage() {
                   <Row label="Teléfono" value={normalizePhoneVE(contact.phone)} />
                   <Row
                     label="Entrega"
-                    value={fulfillment === 'pickup' ? 'Retiro en tienda' : (zone?.name ?? address.zoneId)}
+                    value={fulfillment === 'pickup' ? 'Retiro en tienda' : (zoneEntrega?.name ?? address.zoneId)}
                   />
+                  {/* 5.135: en envío a otra persona, la revisión muestra quién
+                      recibe — el comprador confirma a quién le va a llegar. */}
+                  {terceroActivo && (
+                    <Row
+                      label="Recibe"
+                      value={`${tercero.nombre} · ${normalizePhoneVE(tercero.telefono)}`}
+                    />
+                  )}
                   <Row label="Método de pago" value={PAYMENT_METHOD_LABELS[payment.method]} />
                   <Row
                     label={needsReceipt ? 'Comprobante' : 'Pago'}

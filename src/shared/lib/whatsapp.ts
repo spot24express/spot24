@@ -2,9 +2,9 @@
  * SPOT 24 · Enlaces de WhatsApp de soporte — dos líneas (5.132).
  *
  * Los números los fija el admin en /admin/ajustes (settings/general):
- * · whatsappAtencion → «Soporte Atención al Cliente» (con respaldo del campo
- *   viejo whatsappNumber: el número ya guardado en producción sigue sirviendo
- *   sin volver a escribirlo).
+ * · whatsappAtencion → «Atención al Cliente» (5.134: antes «Soporte Atención
+ *   al Cliente»; con respaldo del campo viejo whatsappNumber: el número ya
+ *   guardado en producción sigue sirviendo sin volver a escribirlo).
  * · whatsappVentas   → «Soporte de Ventas».
  *
  * Acepta formatos locales y los normaliza a formato internacional de
@@ -33,7 +33,7 @@ export interface LineaWhatsapp {
   rol: 'atencion' | 'ventas';
   /** Etiqueta corta (Atención / Ventas). */
   etiqueta: string;
-  /** Nombre completo (Soporte Atención al Cliente / Soporte de Ventas). */
+  /** Nombre completo (Atención al Cliente / Soporte de Ventas). */
   nombre: string;
   /** Enlace wa.me con el mensaje prellenado, listo para el cliente. */
   href: string;
@@ -83,7 +83,7 @@ export function lineasWhatsapp(g: AjustesWhatsapp | null | undefined): LineaWhat
     lineas.push({
       rol: 'atencion',
       etiqueta: 'Atención',
-      nombre: 'Soporte Atención al Cliente',
+      nombre: 'Atención al Cliente',
       href: atencion,
     });
   }

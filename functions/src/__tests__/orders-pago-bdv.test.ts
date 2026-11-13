@@ -177,8 +177,10 @@ describe('5.113 · createOrder con evidencias BDV que cubren el total', () => {
 
     // Push al cliente «Pago confirmado» + aviso al cajero 5.114 (nació pagado
     // por el banco) — y NUNCA por la cola de verificación (no aplica).
+    // 5.135-B: el aviso lleva el «Para: …» (2º parámetro, undefined en compra
+    // normal) y el flag «Sin GPS» (3º parámetro, false porque no hay tercero).
     expect(fns.send).toHaveBeenCalledWith('cli-1', res.code, 'pagado');
-    expect(fns.sendPaidAlert).toHaveBeenCalledWith(res.code);
+    expect(fns.sendPaidAlert).toHaveBeenCalledWith(res.code, undefined, false);
     expect(fns.sendPaymentReviewAlert).not.toHaveBeenCalled();
 
     // Stock descontado como en cualquier venta (lo que ya funcionaba, intacto).
@@ -245,8 +247,10 @@ describe('5.113 · evidencias que NO cubren el total (tasa que se movió entre c
     expect(Array.isArray(payment['bdvValidaciones'])).toBe(true);
 
     // Cadena de nacimiento de SIEMPRE: cliente + cola del cajero.
+    // 5.135-B: «Para: …» (2º parámetro, undefined en compra normal) y flag
+    // «Sin GPS» (3º parámetro, false porque no hay tercero).
     expect(fns.send).toHaveBeenCalledWith('cli-1', res.code, 'en_verificacion');
-    expect(fns.sendPaymentReviewAlert).toHaveBeenCalledWith(res.code);
+    expect(fns.sendPaymentReviewAlert).toHaveBeenCalledWith(res.code, undefined, false);
   });
 
   it('más de 3 pagos parciales → invalid-argument (sin agujeros de abuso)', async () => {

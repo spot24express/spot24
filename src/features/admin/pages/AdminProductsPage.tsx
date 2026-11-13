@@ -10,13 +10,9 @@ import {
   adminListProducts, adminSaveProduct, adminDeleteProduct,
   adminGetVariants, adminSetProductImages, adminImportInventory,
   adminCountAllProducts,
-  type ImportInventarioResult,
+  type ImportInventarioResult, type ModoImportacion,
 } from '../services/admin.service';
 import { filtrarProductosAdmin } from '../lib/listaAdmin';
-import {
-  alternarRama, crearDocumentoPdf, nombreArchivoInventario,
-  prepararInventario, ramaCompleta, usd as usdFmt,
-} from '../lib/exportarInventario';
 import { adminUploadImage } from '../services/imageUpload.service';
 import { ResenasAdmin } from '../components/ResenasAdmin';
 import type { Product, ProductVariant } from '@/features/catalog/types';
@@ -40,8 +36,6 @@ export default function AdminProductsPage() {
   const [creating, setCreating] = useState(false);
   // 5.87 · importar inventario desde el PDF del POS.
   const [importing, setImporting] = useState(false);
-  // 5.105 · exportar el inventario a PDF (completo o por categorías).
-  const [exporting, setExporting] = useState(false);
   // 5.96 · cantidad TOTAL de productos (colección completa, activos e
   // inactivos). La búsqueda no la cambia: «M encontrados de N».
   const [total, setTotal] = useState<number | null>(null);
@@ -101,10 +95,6 @@ export default function AdminProductsPage() {
           <p className="spot-subtitle mt-1">Catálogo con precio y stock directos.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {/* 5.105 · Exportar inventario: PDF carta horizontal, todas o solo
-              las categorías que el dueño marque. Se genera en el momento con
-              la lista ya cargada (guardar → exportar = dato nuevo). */}
-          <Button variant="secondary" onClick={() => setExporting(true)}>Exportar PDF</Button>
           <Button variant="secondary" onClick={() => setImporting(true)}>Importar PDF</Button>
           <Button onClick={() => setCreating(true)}>Nuevo producto</Button>
         </div>
@@ -175,12 +165,6 @@ export default function AdminProductsPage() {
           load();
           refreshTotal();
         }}
-      />
-
-      <ExportarInventarioModal
-        open={exporting}
-        onClose={() => setExporting(false)}
-        products={products}
       />
 
       <ProductModal
@@ -617,13 +601,48 @@ function ProductModal({
 }
 
 /**
- * 5.87/5.92 · Importar inventario (PDF): el dueño sube el reporte del POS
- * o una «lista limpia» con doble precio; el servidor DETECTA el formato,
- * crea lo que falte — aun con existencia/precio 0 (los actualiza la
- * próxima importación) — y actualiza stock+precio de lo que ya existe.
+ * 5.87/5.92 · Importar inventario (PDF) — 5.137/5.138 · TRES MODOS + ENSAYO:
+ *  · «Actualizar todo» (completo, default): crea los que falten y actualiza
+ *    stock + precio de los existentes (comportamiento de siempre).
+ *  · «Solo stock» (stock): actualiza SOLO las existencias de los que existen
+ *    (entero, sin decimales); los códigos nuevos se crean INACTIVOS, sin
+ *    categoría ni precio.
+ *  · «Solo precios» (precios): con la LISTA DE PRECIOS del ERP — fija el
+ *    precio de la columna «Precio REF c/Imp» SIN decimales a los códigos que
+ *    YA existen (125.81 → 125); no crea nada ni toca el stock; los que
+ *    quedarían en 0 (menores de $1) NO se tocan y quedan listados.
+ *  · MODO ENSAYO (marcado por defecto): calcula TODO y NO guarda nada — el
+ *    dueño revisa el resumen y después importa de verdad.
  * Mapeo fijo: código ← Codigo/Código · nombre ← Descripcion/Descripción ·
- * precio ← Costo (POS) o Precio USD SIN impuesto (lista) · stock ← Existencia.
+ * precio ← Costo (POS) / Precio USD sin impuesto (lista) / Precio REF c/Imp
+ * (lista de precios) · stock ← Existencia.
  */
+const MODOS_IMPORTACION: Array<{ valor: ModoImportacion; titulo: string; detalle: string }> = [
+  {
+    valor: 'completo',
+    titulo: 'Actualizar todo',
+    detalle: 'Crea los que falten y actualiza stock + precio de los existentes (como siempre).',
+  },
+  {
+    valor: 'stock',
+    titulo: 'Solo stock',
+    detalle: 'Actualiza SOLO las existencias de los que existen; los nuevos nacen INACTIVOS, sin categoría ni precio.',
+  },
+  {
+    valor: 'precios',
+    titulo: 'Solo precios (lista de precios)',
+    detalle: 'Fija el precio de la columna «Precio REF c/Imp» SIN decimales a los códigos que YA existen. No crea nada ni toca stock.',
+  },
+];
+
+function formatoLegibleImport(f: string): string {
+  return f === 'lista-precios'
+    ? 'lista de precios (REF c/Imp)'
+    : f === 'lista-limpia'
+      ? 'lista con doble precio'
+      : 'reporte del POS';
+}
+
 function ImportarInventarioModal({
   open, onClose, onImported,
 }: {
@@ -636,6 +655,10 @@ function ImportarInventarioModal({
   const [archivo, setArchivo] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [resultado, setResultado] = useState<ImportInventarioResult | null>(null);
+  // 5.137/5.138 · Modo de la importación y bandera de ensayo (ENSAYO por
+  // defecto: el dueño revisa el plan ANTES de que se escriba algo).
+  const [modo, setModo] = useState<ModoImportacion>('completo');
+  const [ensayo, setEnsayo] = useState(true);
   // 5.87b · Motivo REAL del servidor en el último intento fallido: los
   // mensajes del backend son estáticos y en español (sin PII) — mostrarlos
   // aquí le dice al dueño QUÉ corregir (PDF ilegible, categoría, tamaño…)
@@ -648,13 +671,15 @@ function ImportarInventarioModal({
     setResultado(null);
     setArchivo(null);
     setErrorServidor('');
+    setEnsayo(true); // cada apertura vuelve al ensayo (no se escribe nada)
     void listCategories()
       .then((c) => setCategorias(sortAdminCategoryList(c)))
       .catch(() => setCategorias([]));
   }, [open]);
 
   const importar = async (): Promise<void> => {
-    if (!archivo || !catId || busy) return;
+    if (!archivo || busy) return;
+    if (modo === 'completo' && !catId) return;
     if (archivo.size > 4 * 1024 * 1024) {
       toast.error('El PDF pesa más de 4 MB. Exporta el reporte con menos páginas.');
       return;
@@ -668,10 +693,14 @@ function ImportarInventarioModal({
         r.onerror = () => reject(new Error('No se pudo leer el archivo.'));
         r.readAsDataURL(archivo);
       });
-      const res = await adminImportInventory(pdfBase64, catId);
+      const res = await adminImportInventory(pdfBase64, catId, { modo, ensayo });
       setResultado(res);
-      toast.success(`Importación lista: ${res.creados} nuevos · ${res.actualizados} actualizados.`);
-      onImported();
+      if (res.ensayo) {
+        toast.success(`Ensayo listo: ${res.filas} filas leídas. NADA se guardó.`);
+      } else {
+        toast.success(`Importación lista: ${res.creados} nuevos · ${res.actualizados} actualizados.`);
+        onImported();
+      }
     } catch (e) {
       // El motivo técnico del servidor solo se muestra en flujos de admin
       // (patrón de AdminPaymentsPage): el toast sigue siendo el genérico.
@@ -687,20 +716,61 @@ function ImportarInventarioModal({
     <Modal open={open} onClose={onClose} title="Importar inventario (PDF)">
       <div className="space-y-4">
         <p className="text-sm text-muted">
-          Sube tu PDF de inventario: sirve el reporte «Inventario disponible» del POS y también
-          listas con doble precio (sin/con impuesto — se usa el SIN impuesto). Lo que no exista se
-          CREA (aun con existencia o precio 0: la próxima importación los actualiza) y lo que ya
-          existe se ACTUALIZA (stock y precio). Los códigos repetidos de la lista quedan con
-          sufijo -2, -3… para no perder ningún producto.
+          Sube tu PDF: sirve el reporte «Inventario disponible» del POS, las listas con doble precio
+          (se usa el SIN impuesto) y la LISTA DE PRECIOS del sistema (se usa «Precio REF c/Imp»).
+          Primero corre el ENSAYO: calcula todo y no guarda nada.
         </p>
-        <Select label="Categoría donde caerán los productos NUEVOS" value={catId} onChange={(e) => setCatId(e.target.value)} required>
-          <option value="">Selecciona…</option>
-          {sortAdminCategoryList(categorias).map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.parentId ? `↳ ${c.name}` : c.name}
-            </option>
+
+        {/* 5.137/5.138 · Selector de modo (radio simple, una decisión clara). */}
+        <div role="radiogroup" aria-label="Qué hace la importación" className="space-y-2">
+          {MODOS_IMPORTACION.map((m) => (
+            <label
+              key={m.valor}
+              className={`flex cursor-pointer gap-3 rounded-brand border-2 p-3 transition-colors ${
+                modo === m.valor ? 'border-signal bg-signal/5' : 'border-line hover:border-line-strong'
+              }`}
+            >
+              <input
+                type="radio"
+                name="modo-importacion"
+                className="mt-1 accent-signal"
+                checked={modo === m.valor}
+                onChange={() => setModo(m.valor)}
+              />
+              <span>
+                <span className="block font-semibold text-paper">{m.titulo}</span>
+                <span className="mt-0.5 block text-xs text-muted">{m.detalle}</span>
+              </span>
+            </label>
           ))}
-        </Select>
+        </div>
+
+        {modo === 'precios' && (
+          <p className="rounded-brand border-2 border-line bg-ink p-3 text-xs text-muted">
+            Este modo NO crea productos y NO toca el stock: solo fija precios de los códigos que ya
+            están en la tienda. Los códigos que falten en la tienda quedan fuera (verás cuáles en el
+            resumen) y los artículos de menos de $1 NO se tocan: sin decimales su precio sería 0.
+          </p>
+        )}
+
+        {/* La categoría solo hace falta en «Actualizar todo» (los nuevos caen ahí). */}
+        {modo === 'completo' ? (
+          <Select label="Categoría donde caerán los productos NUEVOS" value={catId} onChange={(e) => setCatId(e.target.value)} required>
+            <option value="">Selecciona…</option>
+            {sortAdminCategoryList(categorias).map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.parentId ? `↳ ${c.name}` : c.name}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <p className="text-xs text-muted">
+            {modo === 'stock'
+              ? 'Sin categoría: los productos nuevos nacen INACTIVOS y sin categoría; los activas desde el panel cuando les pongas precio.'
+              : 'No se crean productos: la categoría no hace falta.'}
+          </p>
+        )}
+
         <div>
           <p className="mb-2 spot-label">Reporte en PDF (hasta 4 MB)</p>
           <input
@@ -725,21 +795,105 @@ function ImportarInventarioModal({
             )}
           </div>
         </div>
+
+        {/* 5.137 · MODO ENSAYO (marcado por defecto): nada se escribe. */}
+        <label className="flex cursor-pointer items-start gap-3 rounded-brand border-2 border-line p-3">
+          <input
+            type="checkbox"
+            className="mt-1 accent-signal"
+            checked={ensayo}
+            onChange={(e) => setEnsayo(e.target.checked)}
+          />
+          <span className="text-sm text-paper">
+            Modo ensayo — calcula todo y <span className="font-semibold">NO guarda nada</span>{' '}
+            <span className="block text-xs text-muted">Recomendado la primera vez: revisa el resumen y luego desmárcalo para importar de verdad.</span>
+          </span>
+        </label>
+
         {errorServidor && (
           <div role="alert" className="rounded-brand border-2 border-line bg-ink p-3 text-sm">
             <p className="font-semibold text-paper">El servidor no pudo importar</p>
             <p className="mt-1 text-xs text-muted">Motivo: {errorServidor}</p>
           </div>
         )}
+
         {resultado && (
           <div className="rounded-brand border-2 border-line bg-ink p-4 text-sm">
             <p className="font-semibold text-paper">
-              {resultado.filas} filas leídas · <span className="text-signal">{resultado.creados} creados</span> ·{' '}
-              {resultado.actualizados} actualizados
+              {resultado.ensayo && <span className="text-signal">ENSAYO — NADA SE GUARDÓ · </span>}
+              {resultado.filas} filas leídas · formato: {formatoLegibleImport(resultado.formato)}
             </p>
             <p className="mt-1 text-xs text-muted">
-              Formato detectado: {resultado.formato === 'pos' ? 'reporte «Inventario disponible» del POS' : 'lista con doble precio (usado: sin impuesto)'}.
+              Modo: {MODOS_IMPORTACION.find((m) => m.valor === resultado.modo)?.titulo ?? resultado.modo}
+              {' · '}{resultado.creados} nuevos · {resultado.actualizados} actualizados
+              {resultado.omitidasHuerfanas ? ` · ${resultado.omitidasHuerfanas} referencias huérfanas omitidas` : ''}
             </p>
+
+            {/* 5.138 · modo precios: tabla de cambios antes → después. */}
+            {(resultado.cambiosPrecio?.length ?? 0) > 0 && (
+              <div className="mt-3">
+                <p className="spot-label">Precios {resultado.ensayo ? 'que se fijarían' : 'fijados'} (antes → después)</p>
+                <ul className="mt-1 list-inside list-disc space-y-1 text-xs text-muted">
+                  {resultado.cambiosPrecio!.map((c) => (
+                    <li key={c.codigo}>
+                      <span className="text-paper">{c.codigo}</span> · {c.nombre.slice(0, 42)} · ${c.antes} →{' '}
+                      <span className="font-semibold text-signal">${c.despues}</span>
+                    </li>
+                  ))}
+                </ul>
+                {(resultado.sinCambio ?? 0) > 0 && (
+                  <p className="mt-1 text-xs text-muted">{resultado.sinCambio} producto(s) ya tenían ese precio (no se tocan).</p>
+                )}
+              </div>
+            )}
+
+            {/* 5.138 · modo precios: los que quedarían en 0 (blindaje gratis). */}
+            {(resultado.sinPrecio?.length ?? 0) > 0 && (
+              <p className="mt-2 text-xs text-muted">
+                <span className="font-semibold text-paper">{resultado.sinPrecio!.length} artículo(s) de menos de $1 NO se tocan</span> (sin
+                decimales su precio quedaría en 0): {resultado.sinPrecio!.slice(0, 12).join(', ')}
+                {resultado.sinPrecio!.length > 12 ? '…' : ''}.
+              </p>
+            )}
+
+            {/* 5.138 · modo precios: códigos que no están en la tienda. */}
+            {(resultado.sinMatch?.length ?? 0) > 0 && (
+              <p className="mt-2 text-xs text-muted">
+                <span className="font-semibold text-paper">{resultado.sinMatch!.length} código(s) del PDF no están en la tienda</span> (no se
+                crean en este modo): {resultado.sinMatch!.slice(0, 12).join(', ')}
+                {resultado.sinMatch!.length > 12 ? '…' : ''}.
+              </p>
+            )}
+
+            {/* 5.137 · modo stock: altas y cambios de existencia. */}
+            {(resultado.cambiosStock?.length ?? 0) > 0 && (
+              <div className="mt-3">
+                <p className="spot-label">Existencias {resultado.ensayo ? 'que se actualizarían' : 'actualizadas'} (antes → después)</p>
+                <ul className="mt-1 list-inside list-disc space-y-1 text-xs text-muted">
+                  {resultado.cambiosStock!.map((c) => (
+                    <li key={c.codigo}>
+                      <span className="text-paper">{c.codigo}</span> · {c.nombre.slice(0, 42)} · {c.antes} →{' '}
+                      <span className="font-semibold text-signal">{c.despues}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {(resultado.altas?.length ?? 0) > 0 && (
+              <div className="mt-2">
+                <p className="spot-label">
+                  {resultado.ensayo ? 'Productos que se crearían' : 'Productos creados'} (inactivos, sin categoría ni precio)
+                </p>
+                <ul className="mt-1 list-inside list-disc space-y-1 text-xs text-muted">
+                  {resultado.altas!.map((a) => (
+                    <li key={a.codigo}>
+                      <span className="text-paper">{a.codigo}</span> · {a.nombre} · stock {a.stock}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {resultado.problemas.length > 0 && (
               <ul className="mt-2 list-inside list-disc space-y-1 text-xs text-muted">
                 {resultado.problemas.map((p) => (
@@ -747,204 +901,25 @@ function ImportarInventarioModal({
                 ))}
               </ul>
             )}
-            <p className="mt-2 text-xs text-muted">
-              Los productos nuevos salen sin foto (usarán la imagen de la categoría):
-              súbeles foto desde Editar cuando quieras.
-            </p>
+
+            {resultado.ensayo && (
+              <p className="mt-3 rounded-brand border-2 border-signal/40 bg-signal/5 p-2 text-xs text-paper">
+                Si el resumen te cuadra: desmarca «Modo ensayo» y pulsa «Importar de verdad».
+              </p>
+            )}
           </div>
         )}
+
         <div className="flex justify-end gap-3 pt-2">
           <Button variant="secondary" onClick={onClose}>
-            {resultado ? 'Listo' : 'Cancelar'}
+            {resultado && !resultado.ensayo ? 'Listo' : 'Cancelar'}
           </Button>
-          <Button loading={busy} disabled={!archivo || !catId} onClick={() => void importar()}>
-            Importar
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-/**
- * 5.105 · Exportar inventario a PDF (CARTA horizontal): árbol de categorías
- * (todas o las que el dueño marque — pulsar una principal marca/quita su
- * rama entera), con o sin inactivos. Una fila por producto con código,
- * nombre, marca, categoría/sub, estado, precio USD, stock, descripción y
- * enlace de foto clickeable; subtotal por categoría. Se genera EN EL
- * MOMENTO con la lista que el panel ya tiene: guardar → exportar = dato
- * nuevo (jsPDF se descarga aparte, solo al exportar).
- */
-/** Conjunto nuevo con el id alternado (marcado ↔ desmarcado). */
-function alternarId(marcados: ReadonlySet<string>, id: string): Set<string> {
-  const out = new Set(marcados);
-  if (out.has(id)) out.delete(id);
-  else out.add(id);
-  return out;
-}
-
-function ExportarInventarioModal({
-  open, onClose, products,
-}: {
-  open: boolean;
-  onClose: () => void;
-  products: Product[];
-}) {
-  const [categorias, setCategorias] = useState<CategoryDef[]>([]);
-  const [marcadas, setMarcadas] = useState<Set<string>>(new Set());
-  const [incluirInactivos, setIncluirInactivos] = useState(true);
-  const [busy, setBusy] = useState(false);
-
-  // Al abrir: árbol vigente (respaldo local si Firestore falla) y TODO marcado.
-  useEffect(() => {
-    if (!open) return;
-    void listCategories()
-      .then((c) => {
-        const orden = sortAdminCategoryList(c);
-        setCategorias(orden);
-        setMarcadas(new Set(orden.map((x) => x.id)));
-      })
-      .catch(() => {
-        setCategorias([]);
-        setMarcadas(new Set());
-      });
-  }, [open]);
-
-  // Resumen EN VIVO con el mismo preparador del PDF: lo que ves es lo que sale.
-  const resumen = useMemo(
-    () => prepararInventario(products, categorias, marcadas, incluirInactivos),
-    [products, categorias, marcadas, incluirInactivos],
-  );
-
-  // Productos por categoryId (contador junto a cada casilla).
-  const conteo = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const p of products) m.set(p.categoryId, (m.get(p.categoryId) ?? 0) + 1);
-    return m;
-  }, [products]);
-
-  const generar = async (): Promise<void> => {
-    if (busy) return;
-    if (resumen.totalProductos === 0) {
-      toast.error('No hay productos con esa selección de categorías.');
-      return;
-    }
-    setBusy(true);
-    try {
-      const doc = await crearDocumentoPdf(resumen);
-      doc.save(nombreArchivoInventario(new Date()));
-      toast.success(`PDF listo: ${resumen.totalProductos} productos.`);
-      onClose();
-    } catch (e) {
-      toast.error(userMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const productosDeRama = (principalId: string): number => {
-    let n = conteo.get(principalId) ?? 0;
-    for (const c of categorias) {
-      if (c.parentId === principalId) n += conteo.get(c.id) ?? 0;
-    }
-    return n;
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title="Exportar inventario (PDF)" wide>
-      <div className="space-y-4">
-        <p className="text-sm text-muted">
-          PDF tamaño carta horizontal: una fila por producto con código, nombre, marca,
-          categoría/sub, estado, precio USD, stock, descripción y enlace de foto clickeable,
-          agrupado por categoría con su subtotal. Sale SIEMPRE con los datos de este momento
-          (si editaste algo, ya está incluido).
-        </p>
-
-        <div>
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="spot-label">Categorías a incluir</p>
-            <div className="flex gap-3">
-              <button
-                type="button"
-                className="text-xs font-semibold text-signal hover:underline"
-                onClick={() => setMarcadas(new Set(categorias.map((c) => c.id)))}
-              >
-                Todas
-              </button>
-              <button
-                type="button"
-                className="text-xs font-semibold text-muted hover:underline"
-                onClick={() => setMarcadas(new Set())}
-              >
-                Ninguna
-              </button>
-            </div>
-          </div>
-          <ul className="max-h-64 space-y-1.5 overflow-y-auto rounded-brand border-2 border-line bg-ink p-3">
-            {categorias.map((c) => {
-              const esPrincipal = !c.parentId;
-              const contado = esPrincipal
-                ? productosDeRama(c.id)
-                : (conteo.get(c.id) ?? 0);
-              return (
-                <li key={c.id} className={esPrincipal ? '' : 'pl-6'}>
-                  <label className="flex cursor-pointer items-center gap-2 text-sm text-paper">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 accent-signal"
-                      checked={esPrincipal
-                        ? ramaCompleta(categorias, marcadas, c.id)
-                        : marcadas.has(c.id)}
-                      onChange={() => {
-                        setMarcadas((prev) => esPrincipal
-                          ? alternarRama(categorias, prev, c.id)
-                          : alternarId(prev, c.id));
-                      }}
-                    />
-                    <span className={esPrincipal ? 'font-semibold' : ''}>
-                      {esPrincipal ? c.name : `↳ ${c.name}`}
-                      <span className="ml-1 text-xs text-muted">
-                        ({contado} {contado === 1 ? 'prod.' : 'prods.'})
-                      </span>
-                    </span>
-                  </label>
-                </li>
-              );
-            })}
-            {categorias.length === 0 && (
-              <li className="text-sm text-muted">No se pudieron leer las categorías.</li>
-            )}
-          </ul>
-        </div>
-
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-paper">
-          <input
-            type="checkbox"
-            className="h-4 w-4 accent-signal"
-            checked={incluirInactivos}
-            onChange={(e) => setIncluirInactivos(e.target.checked)}
-          />
-          Incluir también los INACTIVOS (la tabla marca el estado de cada uno)
-        </label>
-
-        <div className="rounded-brand border-2 border-line bg-ink p-3 text-sm">
-          <p className="font-semibold text-paper" aria-live="polite">
-            {resumen.totalProductos} producto(s) · stock {resumen.stockTotal}
-            {' '}· valor {usdFmt(resumen.valorUsdTotal)}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            El archivo se descarga como inventario-spot24-FECHA.pdf.
-          </p>
-        </div>
-
-        <div className="flex justify-end gap-3 pt-2">
-          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
           <Button
             loading={busy}
-            disabled={marcadas.size === 0 || resumen.totalProductos === 0}
-            onClick={() => void generar()}
+            disabled={!archivo || (modo === 'completo' && !catId)}
+            onClick={() => void importar()}
           >
-            Generar PDF
+            {ensayo ? 'Probar ensayo (no guarda)' : 'Importar de verdad'}
           </Button>
         </div>
       </div>

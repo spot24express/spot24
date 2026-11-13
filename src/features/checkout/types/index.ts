@@ -12,6 +12,27 @@ export interface CheckoutItem {
   qty: number;
 }
 
+/**
+ * 5.135 · ENVIAR A OTRA PERSONA: quién RECIBE el pedido. El pagador sigue
+ * siendo el comprador (contact queda intacto — decisión del dueño); el
+ * destinatario solo aporta nombre y teléfono (en claro para cajera y
+ * mensajero, mismo criterio de contact.phone desde la 5.9). Su DIRECCIÓN de
+ * entrega viaja en `address` (misma estructura de siempre) — por eso la
+ * tarifa sale de la zona del destinatario y el GPS guía al mensajero.
+ */
+export interface DestinatarioData {
+  nombre: string;
+  telefono: string;
+  /**
+   * 5.135-B · El comprador marcó «No tengo la ubicación del destinatario»:
+   * el pedido viaja SIN punto exacto (address.location null), los detalles
+   * escritos (≥ 8 caracteres) son la única referencia y el mensajero
+   * coordina por teléfono con quien recibe. Viaja SOLO con la marca puesta
+   * — compras de tercero normales ni lo traen (contrato limpio como 5.135).
+   */
+  sinUbicacion?: boolean;
+}
+
 /** Payload del callable createOrder — NUNCA incluye montos (6.3). */
 export interface CreateOrderPayload {
   idempotencyKey: string;
@@ -22,6 +43,16 @@ export interface CreateOrderPayload {
   items: CheckoutItem[];
   contact: ContactData;
   address: AddressData;
+  /**
+   * 5.135 · Solo en envío a domicilio: el pedido llega a otra persona.
+   * Omitido (o undefined) en compras normales y retiro en tienda — el
+   * backend lo rechaza si viaja con pickup y EXIGE el GPS del punto de
+   * entrega (address.location) cuando viaja con delivery.
+   * 5.135-B · SALVO sinUbicacion = true: entonces EXIGE address.details
+   * (≥ 8 caracteres) y address.location puede venir null — el mensajero
+   * coordina el punto por teléfono con quien recibe.
+   */
+  entregaTercero?: DestinatarioData;
   deliveryWindow: { start: string; end: string };
   notes: string;
   paymentMethod: PaymentMethod;
@@ -47,7 +78,9 @@ export interface OrderTotals {
   shippingUsd: number;
   /** IVA aplicado en % (0 = sin IVA). Órdenes antiguas: undefined. */
   ivaPercent?: number;
-  /** Monto del IVA en USD sobre subtotal + envío. Órdenes antiguas: undefined. */
+  /** Parte del IVA en USD (referencia del panel). Órdenes antiguas: undefined.
+   *  B1 (ronda 5.120): el IVA vive DENTRO del precio publicado — aquí viaja
+   *  ya extraído, no sumado. */
   ivaUsd?: number;
   totalUsd: number;
   /** Total en Bs con la tasa BCV del momento (oficial, calculado en el servidor). */
@@ -57,6 +90,11 @@ export interface OrderTotals {
   subtotalVes?: number;
   shippingVes?: number;
   ivaVes?: number;
+  /** B1 (ronda 5.120) · Base imponible en Bs: el precio publicado SIN la
+   *  parte del IVA (extraída del monto, no sumada). Con IVA 0 coincide con
+   *  subtotalVes. Órdenes anteriores a esta ronda: undefined → el cliente
+   *  cae a subtotalVes, que en el modelo anterior YA era la base. */
+  baseVes?: number;
 }
 
 export interface QuoteRequest {

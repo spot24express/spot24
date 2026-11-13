@@ -5,6 +5,26 @@ import type { OrderTotals } from '@/features/checkout/types';
 /** Re-exporta para consumidores del módulo. */
 export type { OrderStatus, PaymentMethod };
 
+/**
+ * 5.135 · Quien RECIBE cuando el comprador envía el pedido a otra persona.
+ * El pagador sigue siendo el comprador (contact queda igual); esto es SOLO
+ * la persona a la que el mensajero le entrega. Órdenes anteriores a 5.135
+ * y compras normales: el campo no existe en la orden (undefined).
+ */
+export interface Destinatario {
+  nombre: string;
+  /** Teléfono COMPLETO en claro (mismo criterio que contact.phone desde la
+   *  5.9): la cajera coordina y el mensajero llama a quien abre la puerta. */
+  telefono: string;
+  /**
+   * 5.135-B · true = pedido a tercero SIN punto exacto: la entrega se
+   * coordina por teléfono con quien recibe (badge «SIN GPS · coordinar por
+   * teléfono» en el panel y caja de coordinación en /pedido). Órdenes
+   * anteriores a 5.135-B: undefined.
+   */
+  sinUbicacion?: boolean;
+}
+
 export interface OrderLine {
   productId: string;
   variantId: string;
@@ -55,7 +75,9 @@ export interface OrderDelivery {
   trackingCode: string | null;
   /** Modalidad de entrega. Órdenes antiguas: undefined (= delivery). */
   mode?: 'delivery' | 'pickup';
-  /** Coordenadas GPS capturadas en el checkout (solo delivery). */
+  /** Coordenadas GPS capturadas en el checkout (solo delivery).
+   *  5.135-B · null cuando el pedido a tercero va «sin ubicación del
+   *  destinatario»: la entrega se coordina por teléfono. */
   location?: { lat: number; lng: number } | null;
   /** 5.28 · Reclamo de despacho: delivery que lo tomó (first-grab-wins).
    *  Solo existe desde que el pedido fue tomado hasta su reasignación. */
@@ -86,6 +108,13 @@ export interface Order {
   };
   notes: string;
   riskFlags: string[];
+  /** 5.135 · El comprador mandó el pedido a OTRA PERSONA: `destinatario`
+   *  trae quién recibe (nombre + teléfono) y la dirección de entrega vive
+   *  en delivery (addressPreview abre con «Para: …»). Órdenes viejas y
+   *  compras normales: undefined → todo se comporta exactamente como
+   *  siempre (patrón undefined → fallback de las rondas anteriores). */
+  envioTercero?: boolean;
+  destinatario?: Destinatario;
   reservationExpiresAt: number | null;
   createdAt: number;
   updatedAt: number;

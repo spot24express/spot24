@@ -317,9 +317,11 @@ export function ProductCard({ product }: ProductCardProps) {
         <p className="mt-auto font-display text-lg font-extrabold italic leading-tight text-signal sm:text-xl">
           {bs !== null ? formatBs(bs) : 'Bs. —'}
         </p>
-        {/* 5.120 (pedido del dueño): nota fiscal visible en la tarjeta; el
-            desglose de IVA está en el checkout. */}
-        <p className="text-[11px] leading-snug text-muted">Precios no incluyen IVA</p>
+        {/* 5.138 (pedido del dueño): la nota fiscal ahora dice «Precios incluyen
+            IVA» — con el modelo de IVA incluido (5.120), el precio publicado YA
+            trae el IVA dentro; el desglose (Base imponible + IVA) vive en el
+            checkout. */}
+        <p className="text-[11px] leading-snug text-muted">Precios incluyen IVA</p>
       </Link>
     </article>
   );

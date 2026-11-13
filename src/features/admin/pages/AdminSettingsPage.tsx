@@ -106,7 +106,8 @@ const EMPTY_FORM_FIELDS = {
 
 interface GeneralForm {
   ivaPercent: string;
-  /** 5.132 · Dos líneas de WhatsApp: Soporte Atención al Cliente y Soporte de Ventas. */
+  /** 5.132 · Dos líneas de WhatsApp: Atención al Cliente y Soporte de Ventas
+   *  (5.134: la primera se llama «Atención al Cliente», sin «Soporte»). */
   whatsappAtencion: string;
   whatsappVentas: string;
   pickupAddress: string;
@@ -168,7 +169,7 @@ export default function AdminSettingsPage() {
         setGeneral({
           ivaPercent: String(g.ivaPercent),
           // 5.132: dos líneas. El servicio ya rescató el whatsappNumber viejo
-          // como Soporte Atención al Cliente: lo guardado sigue apareciendo aquí.
+          // como Atención al Cliente: lo guardado sigue apareciendo aquí.
           whatsappAtencion: g.whatsappAtencion,
           whatsappVentas: g.whatsappVentas,
           pickupAddress: g.pickupAddress,
@@ -473,7 +474,9 @@ export default function AdminSettingsPage() {
             </h3>
             <p className="mt-1 text-sm text-muted">
               Estos valores los usa el checkout y toda la app al instante. IVA 0 = sin IVA
-              (los precios se muestran tal cual). Si activas IVA, se suma sobre subtotal + envío.
+              (los precios se muestran tal cual). Con IVA activo, tus precios YA lo
+              incluyen: la app desglosa la parte que corresponde (Base imponible + IVA)
+              y el cliente sigue pagando el precio publicado. El envío no lleva IVA.
             </p>
             <div className="mt-4 grid gap-4">
               <Input
@@ -560,7 +563,7 @@ export default function AdminSettingsPage() {
                 )}
               </div>
               <Input
-                label="IVA (%) — 0 para desactivado"
+                label="IVA (%) incluido en los precios — 0 para desactivado"
                 value={general.ivaPercent}
                 onChange={(ev) => setGeneral((g) => ({ ...g, ivaPercent: ev.target.value.replace(/[^0-9.,]/g, '') }))}
                 placeholder="16"
@@ -571,12 +574,12 @@ export default function AdminSettingsPage() {
                   abre ese chat directo (igual que producción); con las dos,
                   el globo despliega el panel con ambas opciones. */}
               <Input
-                label="WhatsApp Soporte Atención al Cliente (vacío = línea oculta)"
+                label="WhatsApp Atención al Cliente (vacío = línea oculta)"
                 type="tel"
                 value={general.whatsappAtencion}
                 onChange={(ev) => setGeneral((g) => ({ ...g, whatsappAtencion: ev.target.value }))}
                 placeholder="04241234567"
-                hint="Aparece como «Soporte Atención al Cliente» en el globo de WhatsApp."
+                hint="Aparece como «Atención al Cliente» en el globo de WhatsApp."
                 error={errors['whatsappAtencion']}
               />
               <Input
@@ -617,7 +620,7 @@ export default function AdminSettingsPage() {
               <p className="mt-4 flex flex-wrap gap-x-5 text-sm text-muted">
                 {waHref(general.whatsappAtencion) && (
                   <span>
-                    Soporte Atención al Cliente:{' '}
+                    Atención al Cliente:{' '}
                     <a
                       href={waHref(general.whatsappAtencion) ?? '#'}
                       target="_blank"

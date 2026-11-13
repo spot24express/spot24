@@ -7,8 +7,8 @@
  *   activo/inactivo — el dueño gestiona en /admin/ajustes cuáles ve el
  *   cliente en el paso de pago del checkout. Se edita desde /admin/ajustes y
  *   aplica al instante para todos los checkout nuevos — sin deploy.
- * · settings/general: operación de la tienda — IVA %, WhatsApp de Soporte
- *   Atención al Cliente y Soporte de Ventas (5.132), datos del retiro en
+ * · settings/general: operación de la tienda — IVA %, WhatsApp de Atención
+ *   al Cliente y Soporte de Ventas (5.132), datos del retiro en
  *   tienda y horario de los deliverys (Home). Editable desde /admin/ajustes.
  * · Reglas Firestore: lectura pública, escritura SOLO admin (claim role).
  */
@@ -52,7 +52,7 @@ export async function savePaymentAccounts(accounts: PaymentAccount[]): Promise<v
 export interface GeneralSettings {
   /** IVA en % (0–100). 0 = sin IVA. El backend lo aplica sobre subtotal + envío. */
   ivaPercent: number;
-  /** 5.132 · WhatsApp Soporte Atención al Cliente (formato local o
+  /** 5.132 · WhatsApp Atención al Cliente (formato local o
    *  internacional). '' = línea oculta. Respaldo: si el doc solo trae
    *  whatsappNumber (rondas anteriores), ese valor sigue siendo esta línea. */
   whatsappAtencion: string;

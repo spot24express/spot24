@@ -19,6 +19,14 @@
  * datos personales (sección 8.4 de la Política de Privacidad). Con foto el
  * método se registra como 'panel_nativo_con_foto' para medir cuántas
  * veces la foto llegó al panel.
+ *
+ * Ronda 5.133 · Las fotos de dominios externos (i.ibb.co y
+ * firebasestorage.googleapis.com) ya no se piden directo al CDN: el service
+ * worker cachea respuestas OPACAS de esos dominios (regla 5.75, statuses
+ * [0,200]) y al compartir, el fetch legible recibía la copia opaca →
+ * ERR_FAILED → modo seguro sin foto. Ahora esas fotos viajan por el puente
+ * same-origin fn-shareImage (ver urlViaPuente); las rutas propias (/img/…)
+ * y cualquier otro dominio siguen bajándose directo, como siempre.
  */
 import { copyText } from './clipboard';
 import { toast } from './toast';
@@ -94,12 +102,31 @@ function imagenDe(datos: CompartirDatos, imagenExtra?: string): string | undefin
   );
 }
 
+/* ── Ronda 5.133 · Puente fn-shareImage ──
+ * El SW (ronda 5.75) cachea respuestas opacas de i.ibb.co / firebasestorage
+ * (statuses [0,200]); al compartir, el fetch en modo legible recibe la copia
+ * opaca → ERR_FAILED → modo seguro sin foto. Esos dominios se piden por el
+ * puente same-origin fn-shareImage; las rutas propias (/img/…) siguen
+ * directas y cualquier otro dominio intenta directo como hoy (si falla,
+ * manda el modo seguro de siempre). */
+const DOMINIOS_VIA_PUENTE = ['i.ibb.co', 'firebasestorage.googleapis.com'];
+
+function urlViaPuente(url: string): string {
+  try {
+    const u = new URL(url); // relativas (/img/…) lanzan → directo, como hoy
+    if (!DOMINIOS_VIA_PUENTE.includes(u.hostname)) return url;
+    return '/.netlify/functions/fn-shareImage?url=' + encodeURIComponent(u.toString());
+  } catch {
+    return url;
+  }
+}
+
 /** Baja la imagen y la convierte en File para el panel nativo. Devuelve
  *  null si no se pudo (404, sin red, tipo que no es imagen, demasiado
  *  pesada): el respaldo es compartir solo texto, como antes de la 5.126. */
 async function cargarArchivoImagen(url: string): Promise<File | null> {
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(urlViaPuente(url));
     if (!resp.ok) return null;
     const blob = await resp.blob();
     if (!blob.type.startsWith('image/') || blob.size === 0 || blob.size > MAX_FOTO_BYTES) {

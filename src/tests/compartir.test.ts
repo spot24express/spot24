@@ -13,6 +13,11 @@ import {
  * archivos, con la foto caída o rechazada, todo cae al comportamiento de
  * la 5.108 (solo texto). copyText se mockea: aquí se prueba la DECISIÓN,
  * no el portapapeles.
+ *
+ * Ronda 5.133 — las fotos de dominios externos de la lista blanca se piden
+ * por el puente same-origin fn-shareImage (el SW cacheaba respuestas opacas
+ * de esos CDN y el compartir recibía la copia corrupta). Los tests que
+ * pedían i.ibb.co directo ahora esperan la URL del puente (helper puente()).
  */
 vi.mock('@/shared/lib/clipboard', () => ({ copyText: vi.fn() }));
 
@@ -51,6 +56,11 @@ function respuestaImagen(tipo = 'image/jpeg'): Response {
     status: 200,
   });
 }
+
+/** URL del puente same-origin por la que ahora viajan las fotos externas
+ *  (ronda 5.133): mismo string que arma urlViaPuente en compartir.ts. */
+const puente = (url: string) =>
+  '/.netlify/functions/fn-shareImage?url=' + encodeURIComponent(url);
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -168,7 +178,7 @@ describe('compartirEnlace con foto (ronda 5.126)', () => {
 
     const r = await compartirEnlace({ ...DATOS, imagen: 'https://i.ibb.co/foto.jpg' });
 
-    expect(fetchMock).toHaveBeenCalledWith('https://i.ibb.co/foto.jpg');
+    expect(fetchMock).toHaveBeenCalledWith(puente('https://i.ibb.co/foto.jpg'));
     expect(fetchMock).not.toHaveBeenCalledWith(IMAGEN_COMPARTIR_APP);
     const llamada = share.mock.calls[0]?.[0];
     expect(llamada?.files).toHaveLength(1);
@@ -183,7 +193,7 @@ describe('compartirEnlace con foto (ronda 5.126)', () => {
 
     const r = await compartirEnlace(DATOS, 'https://i.ibb.co/foto2.jpg');
 
-    expect(fetchMock).toHaveBeenCalledWith('https://i.ibb.co/foto2.jpg');
+    expect(fetchMock).toHaveBeenCalledWith(puente('https://i.ibb.co/foto2.jpg'));
     const llamada = share.mock.calls[0]?.[0];
     expect(llamada?.files).toHaveLength(1);
     expect(r).toBe('compartido_con_foto');

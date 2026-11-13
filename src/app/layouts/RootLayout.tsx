@@ -8,6 +8,7 @@ import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useNotifs } from '@/features/orders/hooks/useNotifs';
 import { NewOrderAlert } from '@/features/admin/components/NewOrderAlert';
 import { InstalarEnIphone } from '@/shared/components/pwa/InstalarEnIphone';
+import { InstalarBanner } from '@/shared/components/InstalarBanner';
 import { BRAND } from '@/shared/constants/brand';
 import { getGeneralSettingsCached } from '@/shared/services/settings.service';
 import { lineasWhatsapp } from '@/shared/lib/whatsapp';
@@ -371,7 +372,7 @@ export function RootLayout() {
   // y búsquedas NO remontan.
   const routeKey = location.pathname.startsWith('/admin') ? 'admin' : location.pathname;
   // WhatsApp de soporte (5.132): líneas fijadas por el admin en /admin/ajustes
-  // (Soporte Atención al Cliente y/o Soporte de Ventas).
+  // (Atención al Cliente y/o Soporte de Ventas).
   // 5.75: promesa COMPARTIDA (getGeneralSettingsCached) — el Home (horario de
   // deliverys) y este layout consumen la MISMA lectura: 1 doc leído por carga.
   const [waLineas, setWaLineas] = useState<LineaWhatsapp[]>([]);
@@ -403,8 +404,8 @@ export function RootLayout() {
         {/* 5.75 · Transición de ruta: el contenido entra con fundido + subida
             leve (CSS .route-enter, 180 ms) en vez del corte seco de antes.
             El key (routeKey, ver arriba) remonta el envoltorio SOLO al cambiar
-            de página; el bloque global prefers-reduced-motion de index.css la
-            desactiva para quien la pida. */}
+            de página; el bloque global prefers-reduced-motion la desactiva
+            para quien la pida. */}
         <div key={routeKey} className="route-enter">
           <Outlet />
         </div>
@@ -426,6 +427,16 @@ export function RootLayout() {
           Fuera del envoltorio route-enter a propósito: el aviso es fijo y no
           debe remontarse al navegar. */}
       <InstalarEnIphone />
+      {/* 5.139 · Aviso de instalación para ANDROID: el aviso «nativo» de
+          Chrome (mini-infobar) era el único que salía antes y es caprichoso
+          (depende del engagement, se calla si se le descarta, y no sale si
+          la app ya está instalada). Este banner propio intercepta el evento
+          oficial `beforeinstallprompt` y ofrece instalar SIEMPRE que Chrome
+          considere la página instalable, con el diálogo oficial del sistema.
+          Solo Android (el iPhone usa InstalarEnIphone), solo si no corre ya
+          como app y solo si no se cerró en esta visita. Fuera del
+          route-enter a propósito, igual que el aviso de iPhone. */}
+      <InstalarBanner />
     </div>
   );
 }

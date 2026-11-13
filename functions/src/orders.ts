@@ -13,8 +13,12 @@
  *
  * Modalidades de entrega: 'delivery' (envío por zona) y 'pickup' (retiro en
  * tienda en Maracay, Aragua — sin costo de envío).
- * IVA: porcentaje configurable por el admin en settings/general.ivaPercent
- * (0–100; 0 = sin IVA). Se aplica sobre subtotal + envío.
+ * IVA (B1 · ronda 5.120): porcentaje configurable por el admin en
+ * settings/general.ivaPercent (0–100; 0 = sin IVA). IVA INCLUIDO en el
+ * precio publicado: el priceUsd de la variante es el precio FINAL que paga
+ * el cliente y el servidor EXTRAe la parte del IVA para el desglose
+ * (Base imponible + IVA = precio publicado). El envío NO lleva IVA: entra
+ * al total tal cual (partida neutra).
  *
  * 5.112-B · CANDADO DE FRANJA DEL DELIVERY: fn-createOrder rechaza todo
  * pedido a domicilio fuera de la franja guardada en settings/general
@@ -37,6 +41,16 @@
  * rechazaba pedidos al primer intento). Tras agotar los intentos el error
  * viaja con mensaje honesto («El servicio de imágenes está caído…») que
  * el checkout muestra tal cual vía el código 'images'.
+ *
+ * Ronda 5.135-B · GPS OPCIONAL del destinatario: createOrder acepta
+ * entregaTercero.sinUbicacion (SOLO el booleano true estricto). Con la
+ * marca el pedido viaja SIN punto exacto: se salta el candado de GPS, la
+ * dirección escrita (≥ 8 caracteres, ya exigida por el candado general de
+ * address) es la única referencia, delivery.location se fuerza a null
+ * aunque el cliente mandara un punto, la orden guarda destinatario.
+ * sinUbicacion y los avisos del cajero llevan el sufijo «Sin GPS:
+ * coordinar por teléfono con el destinatario.». Sin la marca: candado
+ * 5.135 intacto. Pickup + tercero sigue rechazándose SIEMPRE.
  */
 import admin from 'firebase-admin';
 import type { DecodedIdToken } from 'firebase-admin/auth';
@@ -416,6 +430,7 @@ export async function coreQuoteTotals(ctx: CoreCtx): Promise<unknown> {
       subtotalVes: totals.subtotalVes,
       shippingVes: totals.shippingVes,
       ivaVes: totals.ivaVes,
+      baseVes: totals.baseVes,
       zoneName: totals.zoneName,
       freeShipping: totals.shippingUsd === 0,
     };
@@ -542,7 +557,7 @@ async function computeTotals(
   subtotalUsd: number; shippingUsd: number;
   ivaPercent: number; ivaUsd: number;
   totalUsd: number; totalVes: number; rateUsed: number;
-  subtotalVes: number; shippingVes: number; ivaVes: number;
+  subtotalVes: number; shippingVes: number; ivaVes: number; baseVes: number;
   zoneName: string;
   linesSnapshot: ValidLineWithPrice[];
 }> {
@@ -624,22 +639,23 @@ async function computeTotals(
   }
 
   // IVA configurable por el admin (settings/general.ivaPercent, 0–100).
-  // 5.119 · El IVA se calcula sobre la base imponible EN BOLÍVARES — la moneda
-  // del cobro y de la factura. Antes se redondeaba en USD (2 decimales) y
-  // LUEGO se convertía: con precios bajos el redondeo mataba el IVA
-  // (0,02 USD × 16% = 0,0032 → 0,00) y con precios normales el doble
-  // redondeo desviaba céntimos del IVA real cobrado en Bs.
+  // B1 (ronda 5.120) · IVA INCLUIDO en el precio publicado: el priceUsd de
+  // cada variante es el precio FINAL que paga el cliente — el IVA NO se suma
+  // encima, se EXTRAe del monto ya convertido a Bs (la moneda del cobro y de
+  // la factura, mismo criterio 5.119). Regla EXTRACTOR: base + IVA = precio,
+  // así el desglose cuadra SIEMPRE con lo cobrado y ni un céntimo se pierde
+  // en redondeos. El envío es partida NEUTRA: entra al total tal cual, SIN
+  // IVA (base e IVA salen SOLO de los productos).
   const ivaPercent = normalizeIva(genSnap?.data()?.['ivaPercent']);
-  const baseVes = round2((subtotal + shipping) * rate);
-  const ivaVes = round2((baseVes * ivaPercent) / 100);
+  const subtotalVes = round2(subtotal * rate); // productos al precio publicado (IVA dentro)
+  const shippingVes = round2(shipping * rate); // envío (sin IVA)
+  const totalVes = round2(subtotalVes + shippingVes); // el cliente paga precio publicado + envío
+  const baseVes = round2(subtotalVes / (1 + ivaPercent / 100)); // base imponible (extraída)
+  const ivaVes = round2(subtotalVes - baseVes); // IVA dentro del precio (suma exacta con la base)
   const ivaUsd = round2(ivaVes / rate); // referencia USD (panel admin)
-
-  // El Bs es la moneda oficial: total = suma cuadrada de las partidas en Bs.
-  const subtotalVes = round2(subtotal * rate);
-  const shippingVes = round2(shipping * rate);
-  const totalVes = round2(subtotalVes + shippingVes + ivaVes);
-  // USD solo referencia (panel admin): suma cuadrada de las partidas en USD.
-  const totalUsd = round2(subtotal + shipping + ivaUsd);
+  // USD solo referencia (panel admin): precio publicado + envío. El IVA ya
+  // vive DENTRO de los precios publicados — no se vuelve a sumar.
+  const totalUsd = round2(subtotal + shipping);
   return {
     subtotalUsd: subtotal,
     shippingUsd: shipping,
@@ -651,6 +667,7 @@ async function computeTotals(
     subtotalVes,
     shippingVes,
     ivaVes,
+    baseVes,
     zoneName: zoneId && zoneSnap ? String(zoneSnap.get('name') ?? zoneId) : 'Retiro en tienda',
     linesSnapshot,
   };
@@ -690,6 +707,11 @@ interface CreateOrderReq {
    *  cerrada con llave en pagoRefs por fn-checkPagoMovil; aquí se COBRAN:
    *  se verifican en la transacción y la orden nace «pagado» si cubren. */
   pagosBdv: unknown;
+  /** 5.135 · Enviar a otra persona: quién recibe (nombre + teléfono).
+   *  Opcional; su dirección viaja en `address`. En pickup se rechaza.
+   *  5.135-B · sinUbicacion = true (solo booleano): el pedido viaja SIN
+   *  punto exacto — se exige address.details (≥ 8) en lugar del GPS. */
+  entregaTercero: unknown;
 }
 
 /** Evidencia de pago validado (espejo del checkout; saneada y acotada). */
@@ -700,6 +722,66 @@ interface PagoBdvValidado {
   bancoOrigen: string;
   telefonoDestino: string;
   validatedAt: number;
+}
+
+/**
+ * 5.135 · Quien RECIBE cuando el comprador envía a otra persona. El pagador
+ * sigue siendo el comprador (contact intacto — decisión del dueño).
+ * 5.135-B · sinUbicacion: el comprador NO tiene el punto exacto de quien
+ * recibe — el pedido viaja sin GPS y la entrega se coordina por teléfono.
+ */
+export interface EntregaTerceroValidado {
+  nombre: string;
+  telefono: string;
+  sinUbicacion?: boolean;
+}
+
+/**
+ * 5.135 · Vista previa de la dirección cuando el pedido va a otra persona:
+ * «Para: {nombre} · {ciudad} · {detalles}». Es lo que cajera y mensajero
+ * ven de un vistazo en el panel — saben A QUIÉN entregar sin abrir nada.
+ */
+export function previewTercero(nombre: string, city: string, details: string): string {
+  return `Para: ${nombre} · ${city} · ${details.slice(0, 40)}…`;
+}
+
+/**
+ * 5.135 · Sanea el bloque «enviar a otra persona» del payload.
+ * · undefined/null → null (compras normales y órdenes viejas: NADA cambia).
+ * · pickup + tercero → rechazo (el retiro en tienda se entrega en el
+ *   mostrador: no reparte a nadie).
+ * · nombre 2-80 caracteres, teléfono local de 11 dígitos (misma regla de
+ *   contact.phone en validateCreateOrderReq).
+ * 5.135-B · sinUbicacion: SOLO el booleano true estricto pasa al resultado
+ *   saneado; cualquier otra cosa (string, número…) se descarta.
+ * La DIRECCIÓN de entrega del destinatario NO viaja aquí: viaja en `address`
+ * (la estructura de siempre) — por eso computeTotals cobra la tarifa de SU
+ * zona (decisión 1) y delivery.location apunta a SU punto (decisión 2).
+ */
+export function parseEntregaTercero(
+  raw: unknown,
+  fulfillment: 'delivery' | 'pickup',
+): EntregaTerceroValidado | null {
+  if (raw === undefined || raw === null) return null;
+  if (fulfillment === 'pickup') {
+    throw new HttpsError(
+      'invalid-argument',
+      'El envío a otra persona solo aplica a domicilio: el retiro en tienda se entrega en el mostrador.',
+    );
+  }
+  const o = (raw ?? {}) as Record<string, unknown>;
+  const nombre = sanitizeStr(o['nombre'], 80);
+  const telefono = sanitizeDigits(o['telefono'], 11);
+  if (nombre.length < 2 || telefono.length !== 11) {
+    throw new HttpsError(
+      'invalid-argument',
+      'Datos de quien recibe incompletos: nombre y apellido, y teléfono móvil de 11 dígitos.',
+    );
+  }
+  // 5.135-B · GPS opcional del destinatario: SOLO el booleano true estricto
+  // viaja; cualquier otra basura (string, número, null…) se descarta.
+  const sinUbicacion = o['sinUbicacion'] === true;
+  return { nombre, telefono, ...(sinUbicacion ? { sinUbicacion: true } : {}) };
 }
 
 /**
@@ -864,6 +946,9 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
       : '';
 
     // Totales calculados SOLO aquí (6.3): precios, envío, IVA y Bs.
+    // 5.135: en envío a tercero, `address` ES la del destinatario (su zona y
+    // su GPS) — computeTotals cobra la tarifa de ESA zona (decisión 1): la
+    // zona del comprador no interviene en el cobro del envío.
     const totals = await phase('montos', () => computeTotals(uid, req.lines, isPickup ? null : req.address['zoneId']));
 
     // Nace «pagado» SOLO si las evidencias cubren el total (máquina existente:
@@ -944,6 +1029,7 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
         subtotalVes: totals.subtotalVes,
         shippingVes: totals.shippingVes,
         ivaVes: totals.ivaVes,
+        baseVes: totals.baseVes,
       },
       payment: {
         method: req.paymentMethod,
@@ -975,12 +1061,22 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
         zoneId: req.address['zoneId'],
         zoneName: req.address['zoneName'],
         window: req.deliveryWindow,
-        // GPS del cliente (delivery): punto exacto para el mensajero.
-        location: isPickup ? null : (req.address['location'] ?? null),
+        // GPS del punto de ENTREGA (delivery): 5.135 — el del destinatario
+        // cuando el pedido va a otra persona, el del comprador en lo demás.
+        // 5.135-B · con sinUbicacion el punto NO viaja aunque el cliente lo
+        // mandara: la entrega se coordina por teléfono (doble llave — el
+        // checkout ya no lo envía, y aquí se fuerza null igual).
+        location: isPickup || req.entregaTercero?.sinUbicacion === true
+          ? null
+          : (req.address['location'] ?? null),
         addressEncrypted: encAddress,
+        // 5.135: con envío a otra persona el preview abre con «Para: {nombre}»
+        // — cajera y mensajero saben A QUIÉN entregar de un vistazo.
         addressPreview: isPickup
           ? pickupAddress
-          : `${req.address['city']} · ${req.address['details'].slice(0, 40)}…`,
+          : req.entregaTercero
+            ? previewTercero(req.entregaTercero.nombre, req.address['city'], req.address['details'])
+            : `${req.address['city']} · ${req.address['details'].slice(0, 40)}…`,
         trackingCode: null,
       },
       contact: {
@@ -1001,6 +1097,24 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
         cedulaEncrypted: encContact.cedula,
       },
       notes: req.notes,
+      // 5.135 · Quien RECIBE cuando el comprador envía a otra persona, en
+      // claro (mismo criterio del teléfono del comprador desde la 5.9): la
+      // cajera coordina y el mensajero llama a quien abre la puerta.
+      // Órdenes viejas y compras normales: los campos NO existen → el panel
+      // y el detalle del cliente no cambian (undefined → fallback).
+      ...(req.entregaTercero
+        ? {
+            envioTercero: true,
+            destinatario: {
+              nombre: req.entregaTercero.nombre,
+              telefono: req.entregaTercero.telefono,
+              // 5.135-B · la marca viaja al doc SOLO cuando el comprador la
+              // puso: el panel muestra el badge «SIN GPS · coordinar por
+              // teléfono» y el detalle del cliente su caja de coordinación.
+              ...(req.entregaTercero.sinUbicacion ? { sinUbicacion: true } : {}),
+            },
+          }
+        : {}),
       riskFlags: risk.flags,
       needsReview: risk.needsReview,
       reservationId: req.reservationId ?? null,
@@ -1181,7 +1295,7 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
           ? `Pago validado automáticamente por el banco (BDV).${vueltoVes > 0.004 ? ` Vuelto a entregar: Bs ${vueltoVes.toFixed(2)}.` : ''}`
           : isPickup
             ? 'Pedido creado con comprobante de pago. Retiro en tienda. Pago en verificación.'
-            : 'Pedido creado con comprobante de pago. Pago en verificación.',
+            : `Pedido creado con comprobante de pago. Pago en verificación.${req.entregaTercero ? ` Entrega a: ${req.entregaTercero.nombre}.` : ''}`,
       });
       // Consume la reserva y liquida hold + venta (Ronda 5i).
       if (reservation) {
@@ -1224,13 +1338,22 @@ export async function coreCreateOrder(ctx: CoreCtx): Promise<unknown> {
     //   pagado era invisible para la tienda (hallazgo 1 de la prueba en vivo
     //   del dueño: nadie en el local se enteraba del pedido).
     // · Resto → la cadena de siempre (cliente + cola del cajero).
+    // 5.135 · Los avisos al personal llevan «Para: {nombre}» cuando el
+    // pedido va a otra persona — el cajero lo distingue sin abrir nada.
+    // Es el ÚNICO aviso extra: al destinatario JAMÁS se le notifica (no es
+    // cliente de la app) y al comprador le llega su globo de siempre.
+    // 5.135-B · con sinUbicacion los avisos añaden al final «Sin GPS:
+    // coordinar por teléfono con el destinatario.» — el punto se afina
+    // llamando, porque no hay coordenadas en la orden.
+    const paraQuien = req.entregaTercero?.nombre;
+    const terceroSinGps = req.entregaTercero?.sinUbicacion === true;
     if (nacePagado) {
       await ORDER_NOTIFICATIONS.send(uid, code, 'pagado');
       // 5.114 · El cajero se entera: pedido pagado por el banco, a preparar.
-      await ORDER_NOTIFICATIONS.sendPaidAlert(code);
+      await ORDER_NOTIFICATIONS.sendPaidAlert(code, paraQuien, terceroSinGps);
     } else {
       await ORDER_NOTIFICATIONS.send(uid, code, 'en_verificacion');
-      await ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code);
+      await ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code, paraQuien, terceroSinGps);
     }
     // 5.74 · «Se agotó» SOLO a los carritos que tenían la variante vendida
     // hasta el cero (fuera el comprador: él ya sabe). En cadena y best-effort.
@@ -1273,6 +1396,9 @@ function buildCreateResponse(orderId: string, data: admin.firestore.DocumentData
       subtotalVes: Number(totals?.['subtotalVes'] ?? 0),
       shippingVes: Number(totals?.['shippingVes'] ?? 0),
       ivaVes: Number(totals?.['ivaVes'] ?? 0),
+      // B1: base imponible en Bs. Órdenes anteriores a esta ronda (replay de
+      // idempotencia) no traen el campo → 0 y el cliente cae a subtotalVes.
+      baseVes: Number(totals?.['baseVes'] ?? 0),
     },
     riskFlags: Array.isArray(data['riskFlags']) ? (data['riskFlags'] as string[]) : [],
   };
@@ -1291,6 +1417,7 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
   paymentDetails: Record<string, string>;
   receiptImage: string;
   pagosBdv: PagoBdvValidado[];
+  entregaTercero: EntregaTerceroValidado | null;
 } {
   if (!data) throw new HttpsError('invalid-argument', 'Datos faltantes.');
 
@@ -1382,6 +1509,19 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
     throw new HttpsError('invalid-argument', 'Dirección incompleta.');
   }
 
+  // 5.135 · ENVIAR A OTRA PERSONA: undefined → null (compras normales y
+  // órdenes viejas: nada cambia). En pickup se rechaza dentro del parser.
+  // En delivery EXIGE el punto GPS del destinatario: el mensajero llega
+  // exacto (el comprador casi nunca está parado en esa casa).
+  // 5.135-B · GPS OPCIONAL: con sinUbicacion el pedido viaja SIN punto
+  // exacto — el candado de arriba ya exigió address.details ≥ 8 (la
+  // dirección escrita es la única referencia y el mensajero coordina por
+  // teléfono). Sin la marca, el candado de GPS queda EXACTO al de 5.135.
+  const entregaTercero = parseEntregaTercero(data.entregaTercero, fulfillment);
+  if (entregaTercero && entregaTercero.sinUbicacion !== true && !location) {
+    throw new HttpsError('invalid-argument', 'Falta el punto GPS de entrega de quien recibe.');
+  }
+
   const deliveryWindow = {
     start: sanitizeStr(w['start'], 5) || '08:00',
     end: sanitizeStr(w['end'], 5) || '20:00',
@@ -1417,7 +1557,7 @@ function validateCreateOrderReq(data: CreateOrderReq | undefined): {
       : requireReceiptImage(data.receiptImage)
     : optionalReceiptImage(data.receiptImage);
 
-  return { idempotencyKey, reservationId, fulfillment, lines, contact, address: { ...address, location }, deliveryWindow, notes, paymentMethod, paymentDetails, receiptImage, pagosBdv };
+  return { idempotencyKey, reservationId, fulfillment, lines, contact, address: { ...address, location }, deliveryWindow, notes, paymentMethod, paymentDetails, receiptImage, pagosBdv, entregaTercero };
 }
 
 /* ─────────────────────────── cancelar orden ─────────────────────────── */

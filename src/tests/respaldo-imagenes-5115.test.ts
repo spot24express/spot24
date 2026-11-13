@@ -102,6 +102,8 @@ describe('guardián 5.115 · cadena en functions/src/orders.ts', () => {
 
   it('regresión 5.114: el aviso al cajero sigue en su sitio', () => {
     const src = leer(ORDERS);
-    expect(src).toContain('ORDER_NOTIFICATIONS.sendPaidAlert(code)');
+    // 5.135-B: la firma lleva destinatario opcional («Para: …») + el flag
+    // «Sin GPS» del envío a tercero (terceroSinGps) para el remate del aviso.
+    expect(src).toContain('ORDER_NOTIFICATIONS.sendPaidAlert(code, paraQuien, terceroSinGps)');
   });
 });

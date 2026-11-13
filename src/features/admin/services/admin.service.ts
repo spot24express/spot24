@@ -228,32 +228,85 @@ export async function adminAdjustStock(
 
 /* ── 5.87 · Importar inventario desde el PDF del POS ── */
 
+/** 5.137/5.138 · Modo de la importación (el default «completo» es el de siempre). */
+export type ModoImportacion = 'completo' | 'stock' | 'precios';
+
+export interface ImportInventarioCambioPrecio {
+  codigo: string;
+  nombre: string;
+  /** Precio actual (2 decimales). */
+  antes: number;
+  /** Precio nuevo SIN decimales (entero). */
+  despues: number;
+}
+
+export interface ImportInventarioCambioStock {
+  codigo: string;
+  nombre: string;
+  antes: number;
+  despues: number;
+}
+
+export interface ImportInventarioAlta {
+  codigo: string;
+  nombre: string;
+  stock: number;
+}
+
 export interface ImportInventarioResult {
   /** Filas reconocidas en el PDF. */
   filas: number;
-  /** Productos NUEVOS creados (código no existía). */
+  /** Productos NUEVOS creados (código no existía) — modos completo/stock. */
   creados: number;
-  /** Productos existentes con stock y precio actualizados. */
+  /** Productos existentes actualizados. */
   actualizados: number;
-  /** 5.92 · Formato detectado: «pos» (Inventario disponible) o «lista-limpia» (doble precio). */
-  formato: 'pos' | 'lista-limpia';
+  /** 5.92/5.138 · Formato detectado: «pos» (Inventario disponible), «lista-limpia»
+   *  (doble precio) o «lista-precios» (REPORTE LISTA DE PRECIOS del ERP). */
+  formato: 'pos' | 'lista-limpia' | 'lista-precios';
   /** Filas descartadas con motivo (ilegibles, códigos repetidos renombrados…). */
   problemas: string[];
+  /** 5.137/5.138 · Modo de la importación. */
+  modo: ModoImportacion;
+  /** 5.137 · true = MODO ENSAYO: se calculó TODO y NO se guardó nada. */
+  ensayo: boolean;
+  /** Referencias muertas omitidas (blindaje 5.92b). */
+  omitidasHuerfanas?: number;
+  /** 5.138 modo precios: códigos del PDF que NO están en la tienda (no se tocan). */
+  sinMatch?: string[];
+  /** 5.138 modo precios: quedarían en 0 al quitar decimales → se conserva el precio actual. */
+  sinPrecio?: string[];
+  /** 5.138 modo precios: el precio ya era ese (nada que escribir). */
+  sinCambio?: number;
+  /** 5.138 modo precios: precio anterior → nuevo entero (tope 50). */
+  cambiosPrecio?: ImportInventarioCambioPrecio[];
+  /** 5.137 modo stock: altas — códigos nuevos creados (o que se crearían en ensayo). */
+  altas?: ImportInventarioAlta[];
+  /** 5.137 modo stock: existencias antes → después (tope 50). */
+  cambiosStock?: ImportInventarioCambioStock[];
 }
 
 /**
- * Sube el PDF de inventario (base64) a fn-importInventory: detecta el
- * formato (reporte del POS o lista limpia con doble precio), crea los
- * productos que falten — aun con existencia/precio 0, así los actualiza
- * la próxima importación — y actualiza stock + precio de los existentes.
+ * Sube el PDF de inventario (base64) a fn-importInventory. 5.137/5.138:
+ *  · modo 'completo' (default): crea los que falten y actualiza stock+precio
+ *    de los existentes (comportamiento de siempre, intacto).
+ *  · modo 'stock': SOLO existencias — a los existentes se les actualiza el
+ *    stock entero; los códigos nuevos se crean INACTIVOS, sin categoría ni
+ *    precio (el dueño los completa desde el panel antes de activarlos).
+ *  · modo 'precios' (LISTA DE PRECIOS del ERP): fija el precio de la columna
+ *    «Precio REF c/Imp» SIN decimales a los códigos que YA existen; no crea
+ *    nada y no toca el stock. Los que quedarían en 0 no se tocan.
+ *  · ensayo: true → NO guarda nada, solo devuelve el resumen de lo que haría.
  */
 export async function adminImportInventory(
   pdfBase64: string,
   categoryId: string,
+  opts?: { modo?: ModoImportacion; ensayo?: boolean },
 ): Promise<ImportInventarioResult> {
   return callFunction<ImportInventarioResult>('fn-importInventory', {
     pdfBase64,
     categoryId,
+    modo: opts?.modo ?? 'completo',
+    ensayo: opts?.ensayo === true,
   });
 }
 
@@ -272,17 +325,23 @@ export async function adminSetProductImages(productId: string, images: string[])
 }
 
 /**
- * Elimina un producto (admin Y gerente, con confirmación en el panel).
- * 5.124 (pedido del dueño): la eliminación pasa por fn-deleteProduct
- * (Admin SDK). Hasta ahora el borrado DIRECTO del cliente fallaba SIEMPRE:
- * las reglas pedían admin para borrar la ficha y, además, la regla de
- * variantes evaluaba request.resource.data en un DELETE (donde no existe)
- * → permission-denied garantizado para todos, con el lote atómico abortado.
- * El backend verifica el rol, borra TODO atómico (variantes + ficha, 5.92c),
- * rechaza si hay reservas activas del artículo y deja registro en auditLog.
+ * Elimina un producto (solo admin, con confirmación en el panel).
+ * 5.92c · Borrado COMPLETO en UN lote atómico: TODAS las variantes + la
+ * ficha se borran juntos — si algo falla no se borra nada. Antes solo se
+ * borraba la ficha y las variantes quedaban colgando en la base (Firestore
+ * no borra subcolecciones en cascada): esa basura tomaba al importador por
+ * sorpresa y abortó la 1ª importación real con «No document to update».
+ * Un producto solo tiene variantes como subcolección (verificado), así que
+ * con esto no queda nada huérfano.
  */
 export async function adminDeleteProduct(productId: string): Promise<void> {
-  await callFunction('fn-deleteProduct', { productId });
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  const varsSnap = await getDocs(collection(fb.db, 'products', productId, 'variants'));
+  const batch = writeBatch(fb.db);
+  varsSnap.forEach((v) => batch.delete(v.ref));
+  batch.delete(doc(fb.db, 'products', productId));
+  await batch.commit();
 }
 
 /* ── Pedidos (colas de pagos y despacho) ── */

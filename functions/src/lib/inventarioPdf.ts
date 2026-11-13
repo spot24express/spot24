@@ -42,6 +42,10 @@ export interface FilaInventario {
   existencia: number;
   /** Costo en USD (2 decimales) — el dueño lo usa como precio. */
   costo: number;
+  /** 5.138 · «Precio REF c/Imp» (USD CON impuesto) — solo el formato
+   *  «lista de precios»; es el precio FINAL de la tienda con el modelo de
+   *  IVA incluido (5.120). En los otros formatos queda undefined. */
+  precioConImp?: number;
 }
 
 export interface ParseInventarioResult {
@@ -389,9 +393,190 @@ export function parseListaLimpia(paginas: InvItem[][]): ParseInventarioResult {
   return { filas, problemas };
 }
 
+/* ── 5.138 · Formato «lista de precios» (REPORTE LISTA DE PRECIOS del ERP) ──
+ *
+ * El dueño importa su LISTA DE PRECIOS («Tipo de Precio: Precio 1 - Moneda
+ * Referencial x Factor de Cambio»): tabla Codigo | Descripcion | Precio |
+ * Precio REF | Precio c/Imp | Precio REF c/Imp. La columna que manda es la
+ * ÚLTIMA, «Precio REF c/Imp» (USD CON impuesto): es el precio FINAL de la
+ * tienda con el modelo de IVA incluido (5.120). El modo «precios» del
+ * importador le quita los decimales (pedido literal del dueño: 125.81 → 125).
+ *
+ * Layout que este parser tolera (verificado item por item con SU PDF real):
+ * · SOLO la página 1 trae la cabecera completa de 6 etiquetas; las páginas
+ *   siguientes repiten una cabecera CORTA (Codigo/Descripcion/Precio/
+ *   Precio c/Imp). Los límites de la página 1 GOBIERNAN el documento entero
+ *   (se conservan entre páginas, como en el POS); si el PDF no tuviera la
+ *   cabecera completa, las 2 columnas REF se derivan con los huecos fijos
+ *   del formato (medidos en el PDF real del dueño).
+ * · ORDEN VISUAL de columnas: Codigo | Descripcion | Precio | Precio c/Imp
+ *   | Precio REF | Precio REF c/Imp — el ERP agrupa las dos columnas en Bs
+ *   juntas y las dos REF (USD) juntas; el orden del TEXTO plano extraído es
+ *   otro y NO hay que seguirlo (solo las coordenadas X mandan).
+ * · Los números van alineados a la DERECHA (125.81 termina donde termina la
+ *   etiqueta «Precio REF c/Imp»): los límites son punto medio entre el FIN
+ *   de la etiqueta anterior y el INICIO de la siguiente — misma lección de
+ *   la lista limpia; con el medio-por-inicios del POS, el 108.46 caería en
+ *   la columna equivocada.
+ * · La descripción puede traer números propios («WHISKYE DEWARS 8 AÑOS
+ *   0.75», «BLAZER 262.305.3»): caen en su columna por coordenadas y jamás
+ *   se confunden con el precio objetivo.
+ * · La versión vieja de esta lista trae «S/D» suelto bajo las filas con
+ *   precio 0: se descarta SIEMPRE (no es dato).
+ * · Solo pasan filas con al menos un número en las columnas de precio: el
+ *   membrete, «Pag.N» y los pies de página quedan fuera sin ruido.
+ * · Códigos con apóstrofe («23300'21030») son válidos: el POS los genera.
+ */
+
+/** Etiquetas EXACTAS de la cabecera, EN ORDEN VISUAL DE X del PDF real:
+ *  el ERP agrupa las dos columnas en Bs (Precio | Precio c/Imp) y luego las
+ *  dos REF en USD (Precio REF | Precio REF c/Imp) — el orden del TEXTO plano
+ *  («Precio Precio REF Precio c/Imp…») es otro: solo las X mandan. */
+const ANCLAS_PRECIOS = [
+  'Codigo',
+  'Descripcion',
+  'Precio',
+  'Precio c/Imp',
+  'Precio REF',
+  'Precio REF c/Imp',
+] as const;
+
+/** Códigos de la lista de precios: dígito o letra inicial + [A-Z0-9./'-]. */
+const RE_CODIGO_PRECIOS = /^[A-Z0-9][A-Z0-9./'\-]{1,}$/;
+
+/** Hueco fijo fin(«Precio c/Imp») → límite de la columna REF (px, PDF real). */
+const HUECO_CIMP_A_REF = 9.2;
+/** Ancho fijo del hueco REF → límite de la columna REF c/Imp (px, PDF real). */
+const ANCHO_REF_A_REFCIMP = 47.75;
+
+/**
+ * Límites de las 6 columnas a partir de una fila de cabecera. «completa»
+ * exige las 6 etiquetas (página 1); sin él basta la cabecera corta de 4
+ * (páginas 2+) y las 2 columnas REF se derivan con los huecos del formato.
+ * Devuelve null si la fila no es una cabecera reconocible.
+ */
+function limitesCabeceraPrecios(fila: InvItem[], completa: boolean): number[] | null {
+  const xs: Array<{ inicio: number; fin: number } | undefined> = ANCLAS_PRECIOS.map(() => undefined);
+  for (const it of fila) {
+    const i = ANCLAS_PRECIOS.indexOf(it.s as (typeof ANCLAS_PRECIOS)[number]);
+    if (i >= 0 && xs[i] === undefined) {
+      xs[i] = { inicio: it.x, fin: it.x + (it.w > 0 ? it.w : it.s.length * 5.5) };
+    }
+  }
+  const necesarias = completa ? ANCLAS_PRECIOS.length : 4; // corta: hasta «Precio c/Imp»
+  for (let i = 0; i < necesarias; i++) {
+    if (!xs[i]) return null;
+  }
+  const limites: number[] = [];
+  for (let i = 0; i < ANCLAS_PRECIOS.length - 1; i++) {
+    const a = xs[i];
+    const b = xs[i + 1];
+    if (a && b) {
+      limites.push((a.fin + b.inicio) / 2); // alineación a la derecha: fin→inicio
+    } else {
+      // Columnas REF sin etiqueta (cabecera corta): huecos fijos del formato.
+      const finAnterior = a ? a.fin : limites[limites.length - 1]!;
+      limites.push(
+        limites.length === 3 ? finAnterior + HUECO_CIMP_A_REF : finAnterior + ANCHO_REF_A_REFCIMP,
+      );
+    }
+  }
+  limites.push(Number.POSITIVE_INFINITY);
+  return limites;
+}
+
+/**
+ * Parsea la «REPORTE LISTA DE PRECIOS» completa. Misma salida que los demás
+ * parsers (filas + problemas): la importación no distingue formatos. El
+ * precio objetivo viaja en precioConImp (USD con impuesto, 2 decimales);
+ * existencia/costo quedan en 0 porque este reporte NO trae existencias.
+ */
+export function parseListaPrecios(paginas: InvItem[][]): ParseInventarioResult {
+  const filas: FilaInventario[] = [];
+  const problemas: string[] = [];
+  const porCodigo = new Map<string, FilaInventario>();
+  let limites: number[] | null = null;
+
+  const celda = (items: InvItem[]): string => items.map((i) => i.s).join(' ').replace(/\s+/g, ' ').trim();
+
+  for (const pagina of paginas) {
+    // «S/D» de la lista vieja: no es dato (descartado siempre).
+    const limpios = pagina.filter((it) => it.s !== 'S/D');
+    for (const fila of filasDeItems(limpios)) {
+      const full = limitesCabeceraPrecios(fila, true);
+      if (full) {
+        // Cabecera completa: re-ancla (los límites de la página 1 gobiernan).
+        limites = full;
+        continue;
+      }
+      const corta = limitesCabeceraPrecios(fila, false);
+      if (corta) {
+        // Cabecera corta (páginas 2+): NUNCA re-ancla si ya hay límites; si
+        // aún no hay ninguno (PDF que empieza sin la cabecera completa), los
+        // deriva con los huecos fijos del formato.
+        if (!limites) limites = corta;
+        continue;
+      }
+      if (!limites) continue; // aún sin cabecera (membrete de la página 1)
+
+      const celdas: InvItem[][] = Array.from({ length: ANCLAS_PRECIOS.length }, () => []);
+      for (const it of fila) {
+        let col = ANCLAS_PRECIOS.length - 1;
+        for (let i = 0; i < limites.length; i++) {
+          if (it.x < limites[i]!) {
+            col = i;
+            break;
+          }
+        }
+        celdas[col]!.push(it);
+      }
+
+      const codigo = celdas[0]!.map((i) => i.s).join('').replace(/\s+/g, '').toUpperCase();
+      if (!codigo) continue; // sin código (membrete, descripción envuelta): nada
+      if (codigo.length > MAX_CODIGO || !RE_CODIGO_PRECIOS.test(codigo)) continue;
+      // Solo filas con número en las columnas de precio: el membrete y los
+      // pies («REPORTE LISTA DE PRECIOS», «Pag.N») quedan fuera sin ruido.
+      const conNumero = [...celdas[2]!, ...celdas[3]!, ...celdas[4]!, ...celdas[5]!]
+        .filter((i) => RE_NUM_LIMPIO.test(i.s.trim()));
+      if (!conNumero.length) continue;
+
+      const desc = celda(celdas[1]!);
+      const objetivo = celdas[5]!.find((i) => RE_NUM_LIMPIO.test(i.s.trim()));
+      const precio = objetivo ? numeroVe(objetivo.s) : NaN;
+      if (!Number.isFinite(precio)) {
+        problemas.push(`${codigo}: sin «Precio REF c/Imp» legible, se omitió.`);
+        continue;
+      }
+      if (desc.length < 3) {
+        problemas.push(`${codigo}: sin descripción legible, se omitió.`);
+        continue;
+      }
+      const precioRedondo = Math.round(precio * 100) / 100;
+      if (porCodigo.has(codigo)) {
+        // Duplicado: gana la última aparición (mismo criterio que el POS),
+        // SIN sufijos: un código con sufijo no emparejaría con la tienda.
+        const previa = porCodigo.get(codigo)!;
+        previa.descripcion = desc.slice(0, MAX_NOMBRE);
+        previa.precioConImp = precioRedondo;
+        continue;
+      }
+      const nueva: FilaInventario = {
+        codigo: codigo.slice(0, MAX_CODIGO),
+        descripcion: desc.slice(0, MAX_NOMBRE),
+        existencia: 0,
+        costo: 0,
+        precioConImp: precioRedondo,
+      };
+      filas.push(nueva);
+      porCodigo.set(codigo, nueva);
+    }
+  }
+  return { filas, problemas };
+}
+
 /* ── 5.92 · Detección automática de formato ── */
 
-export type FormatoInventario = 'pos' | 'lista-limpia';
+export type FormatoInventario = 'pos' | 'lista-limpia' | 'lista-precios';
 
 export interface ParseInventarioConFormato extends ParseInventarioResult {
   /** Formato detectado: «pos» = reporte del POS · «lista-limpia» = doble precio. */
@@ -399,15 +584,18 @@ export interface ParseInventarioConFormato extends ParseInventarioResult {
 }
 
 /**
- * Prueba primero el reporte del POS (cabecera exacta de 7 columnas) y si
- * no reconoce nada, el formato «lista limpia». Los formatos no se confunden
- * entre sí: cada cabecera es excluyente de la otra.
+ * Prueba primero el reporte del POS (cabecera exacta de 7 columnas), luego
+ * la «lista limpia» (doble precio sin/con impuesto) y por último la «lista
+ * de precios» del ERP (5.138, columna Precio REF c/Imp). Los formatos no se
+ * confunden entre sí: cada cabecera es excluyente de las otras.
  */
 export function parseInventarioAuto(paginas: InvItem[][]): ParseInventarioConFormato {
   const pos = parseInventario(paginas);
   if (pos.filas.length) return { ...pos, formato: 'pos' };
   const lista = parseListaLimpia(paginas);
   if (lista.filas.length) return { ...lista, formato: 'lista-limpia' };
+  const precios = parseListaPrecios(paginas);
+  if (precios.filas.length) return { ...precios, formato: 'lista-precios' };
   // Ninguno reconoció filas: se devuelve el del POS con sus problemas
   // (es el formato original y sus diagnósticos son más informativos).
   return { ...pos, formato: 'pos' };

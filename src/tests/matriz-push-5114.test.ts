@@ -67,7 +67,9 @@ describe('guardián 5.114 · matriz de pushes en functions/src/orders.ts', () =>
     const fin = idxAfter(src, '// 5.74 · «Se agotó»', ini);
     const rama = src.slice(ini, fin);
     const cliente = rama.indexOf("ORDER_NOTIFICATIONS.send(uid, code, 'pagado')");
-    const cajero = rama.indexOf('ORDER_NOTIFICATIONS.sendPaidAlert(code)');
+    // 5.135-B: la firma lleva destinatario opcional («Para: …») + el flag
+    // «Sin GPS» del envío a tercero (terceroSinGps) para el remate del aviso.
+    const cajero = rama.indexOf('ORDER_NOTIFICATIONS.sendPaidAlert(code, paraQuien, terceroSinGps)');
     expect(cliente).toBeGreaterThan(-1);
     expect(cajero).toBeGreaterThan(cliente); // cadena 5.71: primero cliente
   });
@@ -94,7 +96,9 @@ describe('guardián 5.114 · matriz de pushes en functions/src/orders.ts', () =>
     const sino = rama.indexOf('} else {');
     const antes = rama.slice(0, sino);
     const despues = rama.slice(sino);
-    expect(despues).toContain('ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code)');
+    // 5.135-B: la firma lleva destinatario opcional («Para: …») + el flag
+    // «Sin GPS» del envío a tercero (terceroSinGps) para el remate del aviso.
+    expect(despues).toContain('ORDER_NOTIFICATIONS.sendPaymentReviewAlert(code, paraQuien, terceroSinGps)');
     expect(antes).not.toContain('sendPaymentReviewAlert'); // pagado del banco NO pide verificación
   });
 

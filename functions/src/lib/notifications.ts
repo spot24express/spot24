@@ -75,6 +75,21 @@
  * CAJERO (con gerencia/admin como respaldo) cada vez que un pedido nace
  * pagado por el banco. El CTA abre /admin/despacho (aud 'dispatch'), donde
  * la cola ya lista los 'pagado' y el cajero los marca PREPARADO.
+ *
+ * Ronda 5.135 · ENVIAR A OTRA PERSONA: los avisos internos del personal
+ * (pagos y pagado) pueden llevar «Para: {nombre}» cuando el comprador mandó
+ * el pedido a un destinatario distinto — el cajero lo distingue en la
+ * cortina sin abrir nada. Solo avisos INTERNOS: al destinatario jamás se
+ * le notifica (no es cliente de la app) y el comprador recibe sus globos
+ * de siempre, sin cambios.
+ *
+ * Ronda 5.135-B · GPS OPCIONAL del destinatario: cuando el pedido va a un
+ * tercero SIN punto exacto (checkbox «No tengo la ubicación del
+ * destinatario»), los MISMOS avisos internos añaden al final «Sin GPS:
+ * coordinar por teléfono con el destinatario.» — el cajero sabe de una vez
+ * que el punto se afina llamando a quien recibe. Los demás avisos quedan
+ * EXACTOS (mismo criterio 5.135: solo cambia el aviso interno, jamás el del
+ * cliente).
  */
 import admin from 'firebase-admin';
 
@@ -122,6 +137,20 @@ const PAYMENT_TITLE = 'SPOT 24 · Pago por verificar';
 
 /** 5.114 · Aviso de pedido pagado por el banco: nace listo para preparar. */
 const PAID_TITLE = 'SPOT 24 · Pedido pagado — listo para preparar';
+
+/**
+ * 5.135 · Cuerpo del aviso interno al personal: añade «Para: {nombre}.»
+ * cuando el pedido va a otra persona. PURO y testeado (entrega-terceros).
+ * 5.135-B · `sinUbicacion` añade al final «Sin GPS: coordinar por teléfono
+ * con el destinatario.» — el punto exacto no existe; los detalles escritos
+ * son la única referencia y el mensajero afinará llamando. Sin la marca, el
+ * cuerpo queda EXACTO al de siempre (regresión cubierta por tests).
+ */
+export function cuerpoAvisoStaff(base: string, destinatario?: string, sinUbicacion?: boolean): string {
+  const para = destinatario?.trim() ? ` Para: ${destinatario.trim().slice(0, 40)}.` : '';
+  const sinGps = sinUbicacion ? ' Sin GPS: coordinar por teléfono con el destinatario.' : '';
+  return `${base}${para}${sinGps}`;
+}
 
 /** 5.74 · Avisos de inventario al dueño del carrito afectado. */
 const STOCK_OUT_TITLE = 'SPOT 24 · Se agotó';
@@ -386,16 +415,29 @@ export const ORDER_NOTIFICATIONS = {
    *  VA AL CAJERO (con gerencia/admin como respaldo): es el rol que aprueba
    *  o rechaza el pago en /admin/pagos. El cuerpo lleva el código para
    *  cotejar la referencia sin abrir la app; el detalle (comprobante, monto,
-   *  datos del pagador) vive en el panel. */
-  async sendPaymentReviewAlert(orderCode: string): Promise<void> {
+   *  datos del pagador) vive en el panel.
+   *  5.135: `destinatario` (opcional) añade «Para: {nombre}.» al cuerpo —
+   *  solo cuando el comprador mandó el pedido a otra persona.
+   *  5.135-B: `sinUbicacion` (opcional) añade al final «Sin GPS: coordinar
+   *  por teléfono con el destinatario.» */
+  async sendPaymentReviewAlert(
+    orderCode: string,
+    destinatario?: string,
+    sinUbicacion?: boolean,
+  ): Promise<void> {
     const code = orderCode.slice(0, 40);
     try {
       const staff = await tokenRefsForRoles(['cajero', 'gerente', 'admin']);
-      await sendAndCleanup(staff, PAYMENT_TITLE, `${code}. Revísalo en el panel de pagos.`, {
-        aud: 'pagos',
-        status: 'en_verificacion',
-        orderCode: code,
-      });
+      await sendAndCleanup(
+        staff,
+        PAYMENT_TITLE,
+        cuerpoAvisoStaff(`${code}. Revísalo en el panel de pagos.`, destinatario, sinUbicacion),
+        {
+          aud: 'pagos',
+          status: 'en_verificacion',
+          orderCode: code,
+        },
+      );
     } catch (e) {
       // 5.73 · Log visible en Netlify (best-effort: jamás interrumpe la operación).
       console.warn('[notificaciones] push de personal fallido (best-effort)', e);
@@ -408,16 +450,28 @@ export const ORDER_NOTIFICATIONS = {
    *  pagos 5.71. El CTA abre el panel de despacho (aud 'dispatch' →
    *  /admin/despacho): la cola ya lista los 'pagado' y ahí se marca
    *  PREPARADO (pickup y delivery). Best-effort igual que todos los avisos:
-   *  jamás interrumpe la creación del pedido. */
-  async sendPaidAlert(orderCode: string): Promise<void> {
+   *  jamás interrumpe la creación del pedido.
+   *  5.135: `destinatario` (opcional) añade «Para: {nombre}.» al cuerpo.
+   *  5.135-B: `sinUbicacion` (opcional) añade al final «Sin GPS: coordinar
+   *  por teléfono con el destinatario.» */
+  async sendPaidAlert(
+    orderCode: string,
+    destinatario?: string,
+    sinUbicacion?: boolean,
+  ): Promise<void> {
     const code = orderCode.slice(0, 40);
     try {
       const staff = await tokenRefsForRoles(['cajero', 'gerente', 'admin']);
-      await sendAndCleanup(staff, PAID_TITLE, `${code}. Pago confirmado por el banco: prepáralo.`, {
-        aud: 'dispatch',
-        status: 'pagado',
-        orderCode: code,
-      });
+      await sendAndCleanup(
+        staff,
+        PAID_TITLE,
+        cuerpoAvisoStaff(`${code}. Pago confirmado por el banco: prepáralo.`, destinatario, sinUbicacion),
+        {
+          aud: 'dispatch',
+          status: 'pagado',
+          orderCode: code,
+        },
+      );
     } catch (e) {
       // 5.73 · Log visible en Netlify (best-effort: jamás interrumpe la operación).
       console.warn('[notificaciones] push de personal fallido (best-effort)', e);

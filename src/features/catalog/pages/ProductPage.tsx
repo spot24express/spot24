@@ -31,7 +31,7 @@ export default function ProductPage() {
   const [variantId, setVariantId] = useState<string | null>(null);
   const [qty, setQty] = useState(1);
   const [liveStockTotal, setLiveStockTotal] = useState<number | null>(null);
-  // 5.81/5.83 · galería de la ficha: carrusel DESLIZABLE con puntos (como
+  // 5.81/5.83 · galería de la ficha: carrusel DESLIZABLE con puntos (como en
   // en la app de referencia) + miniaturas sincronizadas (tocar una desliza hasta esa foto).
   const [imgIdx, setImgIdx] = useState(0);
   const carouselRef = useRef<HTMLDivElement>(null);
@@ -272,8 +272,10 @@ export default function ProductPage() {
             <p className="mt-1 spot-label">Precio en bolívares</p>
             {/* 5.120 (pedido del dueño) · la misma letra chica fiscal que la
                 tarjeta: el precio grande cambia con la variante elegida, así
-                que la nota cubre todas. */}
-            <p className="mt-0.5 text-[11px] leading-snug text-muted">Precios no incluyen IVA</p>
+                que la nota cubre todas. 5.138 · ahora dice «Precios incluyen
+                IVA»: el IVA va DENTRO del precio publicado (desglose en el
+                checkout). */}
+            <p className="mt-0.5 text-[11px] leading-snug text-muted">Precios incluyen IVA</p>
           </div>
 
           {/* 5.108 (aprobado por el dueño) · COMPARTIR la ficha: mismo mecanismo

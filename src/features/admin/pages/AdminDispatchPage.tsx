@@ -20,6 +20,7 @@ import { copyText } from '@/shared/lib/clipboard';
 import { userMessage } from '@/shared/lib/errors';
 import { formatBs, formatDateTime, usdToBs } from '@/shared/lib/format';
 import { unirConPuntos } from '@/shared/lib/lineaMeta';
+import { waHref } from '@/shared/lib/whatsapp';
 import { filtrarColaPorRol } from '../lib/colaDespacho';
 
 /**
@@ -89,6 +90,18 @@ import { filtrarColaPorRol } from '../lib/colaDespacho';
  * rechazado con «Es retiro en tienda: no requiere delivery»). admin,
  * gerente y cajero siguen viendo TODO, intacto. El flujo pickup-aware
  * 5.112.1 (cierre «→ Retirado en tienda» de caja/gerencia) queda intacto.
+ *
+ * Ronda 5.135 — ENVIAR A OTRA PERSONA: cuando la orden trae envioTercero,
+ * cada tarjeta muestra «Recibe: {nombre} · {teléfono}» con WhatsApp directo
+ * al destinatario (FilaRecibe) y el enlace GPS pasa a decir «punto de
+ * entrega» — el mensajero coordina con quien abre la puerta, no con el
+ * pagador. Órdenes viejas y compras normales: nada cambia.
+ *
+ * Ronda 5.135-B — GPS OPCIONAL del destinatario: pedidos a tercero SIN
+ * punto exacto (checkbox «No tengo la ubicación del destinatario» del
+ * checkout) muestran el badge «SIN GPS · coordinar por teléfono» junto a
+ * «Recibe: …» — sin enlace de Maps, el punto se afina llamando. Órdenes
+ * viejas y compras normales: nada cambia.
  */
 const QUEUE: OrderStatus[] = ['pagado', 'preparado', 'en_camino'];
 
@@ -421,6 +434,9 @@ export default function AdminDispatchPage() {
                     ) : (
                       <p className="mt-1 text-sm text-paper">{o.delivery.addressPreview}</p>
                     )}
+                    {/* 5.135 · Envió a otra persona: quién recibió. Órdenes
+                        viejas y compras normales: el campo no existe → nada. */}
+                    <FilaRecibe o={o} />
 
                     {/* Contenido real entregado (snapshot congelado al crear). */}
                     <ul className="mt-3 space-y-2 border-t-2 border-line pt-3">
@@ -544,9 +560,16 @@ export default function AdminDispatchPage() {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          Abrir ubicación GPS del cliente
+                          {/* 5.135: «de entrega» — con envío a otra persona el
+                              punto es el del DESTINATARIO, no el del comprador. */}
+                          Abrir punto de entrega en Google Maps
                         </a>
                       )}
+                      {/* 5.135 · ENVIAR A OTRA PERSONA: quién recibe (nombre +
+                          teléfono en claro) con WhatsApp directo — el mensajero
+                          llama/coordina con quien abre la puerta, no con el
+                          pagador. Órdenes viejas y compras normales: nada. */}
+                      <FilaRecibe o={o} />
                       {/* Tracking sin ventana de horario (ronda 5.9). */}
                       {o.delivery.trackingCode && (
                         <p className="mt-1 text-sm text-muted">tracking {o.delivery.trackingCode}</p>
@@ -779,6 +802,48 @@ export default function AdminDispatchPage() {
           </Button>
         </div>
       </Modal>
+    </div>
+  );
+}
+
+/**
+ * 5.135 · Fila «Recibe:» — quién recibe el pedido cuando el comprador lo
+ * mandó a otra persona, con WhatsApp directo al destinatario (wa.me, mismo
+ * mecanismo de producción). En claro: es el dato operativo del momento de
+ * la entrega — sin teléfono visible la entrega se cae (decisión del dueño).
+ * Órdenes viejas y compras normales: no existe `destinatario` → no se pinta.
+ * 5.135-B · sin punto en la orden (o con destinatario.sinUbicacion) añade
+ * el badge «SIN GPS · coordinar por teléfono».
+ */
+function FilaRecibe({ o }: { o: Order }) {
+  if (!o.envioTercero || !o.destinatario) return null;
+  // 5.135-B · SIN GPS: la orden no trae punto exacto (o trae la marca
+  // explícita del checkout) → el punto se coordina llamando a quien recibe.
+  const sinGps = !o.delivery.location || o.destinatario.sinUbicacion === true;
+  const wa = waHref(
+    o.destinatario.telefono,
+    `Hola ${o.destinatario.nombre}, te escribimos de SPOT 24 por el pedido ${o.code}.`,
+  );
+  return (
+    <div className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-brand border-2 border-signal/40 bg-signal/10 px-3 py-2">
+      <p className="text-sm font-bold text-signal">
+        Recibe: {o.destinatario.nombre} · {o.destinatario.telefono}
+      </p>
+      {sinGps && (
+        <span className="rounded-brand border-2 border-signal px-2 py-0.5 font-display text-xs font-bold italic uppercase text-signal">
+          SIN GPS · coordinar por teléfono
+        </span>
+      )}
+      {wa && (
+        <a
+          className="text-sm font-semibold text-signal underline"
+          href={wa}
+          target="_blank"
+          rel="noreferrer"
+        >
+          WhatsApp al destinatario
+        </a>
+      )}
     </div>
   );
 }
