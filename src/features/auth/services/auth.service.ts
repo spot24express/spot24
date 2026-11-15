@@ -159,7 +159,11 @@ export async function signUpEmail(
   } catch (e) {
     logger.warn('signUp falló', e);
     const code = (e as { code?: string }).code ?? '';
-    if (code.includes('email-already-in-use')) throw new AppError('generic', 'email en uso');
+    // 5.148-B · Caso Dariannys: la cuenta YA existe (intentos previos crearon
+    // el usuario de Auth) y el mensaje genérico «reintenta en unos segundos»
+    // empujaba a la clienta a repetir mil veces algo imposible. La verdad y
+    // la salida en una sola línea: entrar con su clave o pedir el enlace.
+    if (code.includes('email-already-in-use')) throw new AppError('email-en-uso');
     if (code.includes('weak-password')) throw new AppError('generic', 'clave débil');
     throw new AppError('generic', GENERIC);
   }

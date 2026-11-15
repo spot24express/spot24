@@ -1,6 +1,12 @@
 /**
- * SPOT 24 · Parser del reporte «REPORTE DE INVENTARIO DISPONIBLE» del POS
+ * SPOT 24 · Parser de los reportes del ERP/POS del dueño para el importador
  * (5.87, a pedido del dueño: importar el PDF desde el panel).
+ * 5.145 · CUATRO formatos, detectados automáticamente:
+ *   1. «REPORTE DE INVENTARIO DISPONIBLE» (parseInventario, 5.87).
+ *   2. «Lista limpia» con doble precio sin/con impuesto (parseListaLimpia, 5.92).
+ *   3. «REPORTE LISTA DE PRECIOS» del ERP (parseListaPrecios, 5.138).
+ *   4. «REPORTE DE EXISTENCIAS DE INVENTARIO» del ERP (parseExistencias, 5.145
+ *      — el del modo «Solo stock»: 3 columnas, sin costo; ver su doc abajo).
  *
  * El PDF es una tabla de layout FIJO: cada página repite una cabecera
  * (Codigo | Descripcion | Existencia | Pedidos | Disponible | Costo |
@@ -576,20 +582,152 @@ export function parseListaPrecios(paginas: InvItem[][]): ParseInventarioResult {
   return { filas, problemas };
 }
 
+/* ── 5.145 · Formato «REPORTE DE EXISTENCIAS DE INVENTARIO» ──
+ *
+ * El ERP del dueño expone OTRO reporte (el que alimenta el MODO «Solo stock»
+ * de la 5.137): cabecera de TRES columnas (Codigo | Descripcion | Existencia)
+ * y SIN costo ni precio — el precio lo fija la Lista de precios, así que
+ * este reporte SOLO manda existencias. Layout real medido con pdfjs sobre el
+ * PDF del dueño (937 filas / 22 páginas):
+ *   Codigo@34 · Descripcion@105.5 · «Completa : N»@340.1 ·
+ *   «Detallada : N»@392.6 · «Total Existencias»@447.6 · existencia@542-546
+ * (la cabecera SOLO sale en la página 1; el resto de páginas traen solo
+ * filas y el nº de página suelto). Peculiaridades que el parser tolera:
+ * · Códigos que EMPIEZAN CON LETRA (D22-850, AF371, ADAPCARB27), cortos
+ *   (0518, 997) y con apóstrofe, «&» y «+» (23300'21030, LLAVERO2K&N,
+ *   WT4RUNNER2025+): la regex del POS exige dígito inicial y aquí no sirve.
+ * · La existencia real es el ÚLTIMO número a la DERECHA del rótulo
+ *   «Total Existencias» (p. ej. «2,592.00» con coma de miles); los
+ *   desgloses «Completa/Detallada» quedan a la izquierda del rótulo y no
+ *   estorban (la columna Existencia es el total, igual que en el POS).
+ * · La descripción viene TRUNCADA por el ERP a su columna (no envuelve
+ *   renglones) y puede desbordar su límite: el corte se hace por la X del
+ *   rótulo «Completa», no por el límite de cabecera, para no perder texto.
+ * · SIN costo ni precio: la fila sale con costo 0 (misma convención que
+ *   parseListaPrecios con campos ausentes). El modo «Solo stock» jamás los
+ *   usa y el modo completo con este reporte crearía en 0: el precio lo
+ *   llena después la Lista de precios (mismo código).
+ */
+
+/** Cabecera de 3 columnas del reporte de existencias (items EXACTOS). */
+const ANCLAS_EXISTENCIAS = ['Codigo', 'Descripcion', 'Existencia'] as const;
+
+/** Códigos del reporte de existencias: dígito O LETRA inicial; el ERP usa
+ *  también apóstrofe (23300'21030), & (LLAVERO2K&N) y + (WT4RUNNER2025+). */
+const RE_CODIGO_EXISTENCIAS = /^[A-Z0-9][A-Z0-9&+.'/-]{1,}$/;
+
+/** Rótulo que ancla la cola de la fila (item completo del ERP). */
+const RE_COLA_TOTAL = /^Total\s+Existencias$/;
+/** Desglose «Completa : N» (item con espacios incluido en el PDF real). */
+const RE_COMPLETA = /^Completa\b/;
+
+/**
+ * Parsea el «REPORTE DE EXISTENCIAS DE INVENTARIO»: misma salida que los
+ * demás parsers (filas + problemas) para que la importación no distinga
+ * formatos. Duplicados: gana la última aparición (mismo criterio del POS).
+ */
+export function parseExistencias(paginas: InvItem[][]): ParseInventarioResult {
+  const filas: FilaInventario[] = [];
+  const problemas: string[] = [];
+  const porCodigo = new Map<string, FilaInventario>();
+  let limites: number[] | null = null;
+
+  for (const items of paginas) {
+    for (const fila of filasDeItems(items)) {
+      // 1) ¿Fila de cabecera? (solo página 1; si el ERP algún día la repite,
+      //    re-ancla las columnas igual que el parser del POS).
+      const xs: Array<number | undefined> = ANCLAS_EXISTENCIAS.map(() => undefined);
+      for (const it of fila) {
+        const i = ANCLAS_EXISTENCIAS.indexOf(it.s as (typeof ANCLAS_EXISTENCIAS)[number]);
+        if (i >= 0 && xs[i] === undefined) xs[i] = it.x;
+      }
+      if (!xs.some((v) => v === undefined)) {
+        limites = [(xs[0]! + xs[1]!) / 2, (xs[1]! + xs[2]!) / 2, Number.POSITIVE_INFINITY];
+        continue;
+      }
+      if (!limites) continue; // membrete (empresa, filtros, fecha) antes de la cabecera
+
+      // 2) Ancla de la cola: «Completa : N» (o el rótulo «Total Existencias»).
+      //    Sin cola NO es fila de producto (membrete repetido, nº de página).
+      const ancla = fila.find((it) => RE_COMPLETA.test(it.s)) ?? fila.find((it) => RE_COLA_TOTAL.test(it.s));
+      if (!ancla) continue;
+
+      // 3) Código: los items a la IZQUIERDA del límite Código/Descripción
+      //    (el ERP los emite en un solo item; unión sin espacios por si
+      //    algún día lo parte).
+      const codigoTxt = fila
+        .filter((it) => it.x < limites![0]!)
+        .map((it) => it.s)
+        .join('')
+        .replace(/\s+/g, '')
+        .toUpperCase();
+      if (!RE_CODIGO_EXISTENCIAS.test(codigoTxt)) continue; // membrete / nº de página
+
+      // 4) Descripción: todo lo que va del código hasta la cola — corte por
+      //    la X del ancla (tolera descripciones que desbordan su columna).
+      const descripcion = fila
+        .filter((it) => it.x >= limites![0]! && it.x < ancla.x)
+        .map((it) => it.s)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      // 5) Existencia real: el ÚLTIMO número a la DERECHA del ancla (la
+      //    columna Existencia está más a la derecha que «Total Existencias»;
+      //    los desgloses «Completa/Detallada» quedan a la izquierda).
+      let existencia = NaN;
+      for (const it of fila) {
+        if (it.x > ancla.x && RE_NUM_LIMPIO.test(it.s.trim())) existencia = numeroVe(it.s);
+      }
+      if (!Number.isFinite(existencia)) {
+        problemas.push(`${codigoTxt}: existencia ilegible, se omitió.`);
+        continue;
+      }
+      if (descripcion.length < 3) {
+        problemas.push(`${codigoTxt}: sin descripción legible, se omitió.`);
+        continue;
+      }
+
+      if (porCodigo.has(codigoTxt)) {
+        // Duplicado: gana la última aparición (mismo criterio que el POS),
+        // reemplazando EN el mismo lugar para conservar el orden.
+        const previa = porCodigo.get(codigoTxt)!;
+        previa.descripcion = descripcion.slice(0, MAX_NOMBRE);
+        previa.existencia = Math.max(0, Math.round(existencia));
+        continue;
+      }
+      const nueva: FilaInventario = {
+        codigo: codigoTxt.slice(0, MAX_CODIGO),
+        descripcion: descripcion.slice(0, MAX_NOMBRE),
+        existencia: Math.max(0, Math.round(existencia)),
+        costo: 0, // SIN costo en este reporte (5.145): el modo stock no lo usa
+      };
+      filas.push(nueva);
+      porCodigo.set(codigoTxt, nueva);
+    }
+  }
+  return { filas, problemas };
+}
+
 /* ── 5.92 · Detección automática de formato ── */
 
-export type FormatoInventario = 'pos' | 'lista-limpia' | 'lista-precios';
+export type FormatoInventario = 'pos' | 'lista-limpia' | 'lista-precios' | 'existencias';
 
 export interface ParseInventarioConFormato extends ParseInventarioResult {
-  /** Formato detectado: «pos» = reporte del POS · «lista-limpia» = doble precio. */
+  /** Formato detectado: «pos» = reporte del POS · «lista-limpia» = doble precio
+   *  · «lista-precios» = Lista de precios del ERP · «existencias» = reporte de
+   *  existencias de inventario (5.145, solo stock). */
   formato: FormatoInventario;
 }
 
 /**
  * Prueba primero el reporte del POS (cabecera exacta de 7 columnas), luego
- * la «lista limpia» (doble precio sin/con impuesto) y por último la «lista
- * de precios» del ERP (5.138, columna Precio REF c/Imp). Los formatos no se
- * confunden entre sí: cada cabecera es excluyente de las otras.
+ * la «lista limpia» (doble precio sin/con impuesto), la «lista de precios»
+ * del ERP (5.138, columna Precio REF c/Imp) y por ÚLTIMO el reporte de
+ * existencias (5.145). El orden no es decorativo: la cabecera de 3 columnas
+ * del reporte de existencias también existe DENTRO de la del POS (Codigo |
+ * Descripcion | Existencia | Pedidos…), así que el POS SIEMPRE va antes —
+ * solo cae en existencias cuando NINGÚN otro formato reconoció una fila.
  */
 export function parseInventarioAuto(paginas: InvItem[][]): ParseInventarioConFormato {
   const pos = parseInventario(paginas);
@@ -598,6 +736,8 @@ export function parseInventarioAuto(paginas: InvItem[][]): ParseInventarioConFor
   if (lista.filas.length) return { ...lista, formato: 'lista-limpia' };
   const precios = parseListaPrecios(paginas);
   if (precios.filas.length) return { ...precios, formato: 'lista-precios' };
+  const exist = parseExistencias(paginas);
+  if (exist.filas.length) return { ...exist, formato: 'existencias' };
   // Ninguno reconoció filas: se devuelve el del POS con sus problemas
   // (es el formato original y sus diagnósticos son más informativos).
   return { ...pos, formato: 'pos' };

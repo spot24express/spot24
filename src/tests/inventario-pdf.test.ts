@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 import { build as esbuildBuild } from 'esbuild';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  filasDeItems, numeroVe, parseInventario, parseInventarioAuto, parseListaLimpia,
+  filasDeItems, numeroVe, parseExistencias, parseInventario, parseInventarioAuto, parseListaLimpia,
   type InvItem,
 } from '../../functions/src/lib/inventarioPdf';
 import {
@@ -24,6 +24,7 @@ import {
 } from '../../functions/src/lib/extraerPdf';
 import muestraReal from './fixtures/inventario-items.sample.json';
 import listaLimpiaReal from './fixtures/lista-limpia-items.sample.json';
+import existenciasReal from './fixtures/existencias-items.sample.json';
 
 const paginas = muestraReal as unknown as InvItem[][];
 
@@ -498,5 +499,188 @@ describe('parseListaLimpia · casos límite (sintéticos con el layout real)', (
     expect(filas).toEqual([
       { codigo: '317', descripcion: 'PULITURA INSTANTANEA TURBO TX PIS', existencia: 12, costo: 8.62 },
     ]);
+  });
+});
+
+/* ── 5.145 · Formato «REPORTE DE EXISTENCIAS DE INVENTARIO» (modo «Solo stock») ── */
+
+const paginasExistencias = existenciasReal as unknown as InvItem[][];
+
+describe('parseInventarioAuto con el PDF real de EXISTENCIAS del dueño (5.145)', () => {
+  // El reporte del ERP que el dueño usa para el modo «Solo stock»: 2 páginas
+  // reales (236 + 271 items pdfjs) con membrete, cabecera de 3 columnas y
+  // filas de producto con la cola «Completa : N Detallada : N Total Existencias». 
+  const auto = parseInventarioAuto(paginasExistencias);
+  const porCodigo = new Map(auto.filas.map((f) => [f.codigo, f]));
+
+  it('detecta el formato «existencias» (antes: 400 «No se reconoció ningún producto»)', () => {
+    expect(auto.formato).toBe('existencias');
+    expect(auto.filas.length).toBeGreaterThan(30);
+  });
+
+  it('código que EMPIEZA CON LETRA y con guion: D22-850 (la regex del POS lo rechazaba)', () => {
+    const fila = porCodigo.get('D22-850');
+    expect(fila).toBeDefined();
+    expect(fila!.descripcion).toBe('BATERIA DUNCAN 850');
+    expect(fila!.existencia).toBe(2);
+    expect(fila!.costo).toBe(0); // sin costo: el modo stock no lo usa
+    expect(fila!.precioConImp).toBeUndefined();
+  });
+
+  it('código con APÓSTROFE del ERP: 23300\'21030 (FILTRO GAS TMM TOY. COROLLA)', () => {
+    const fila = porCodigo.get("23300'21030");
+    expect(fila).toBeDefined();
+    expect(fila!.existencia).toBe(0);
+  });
+
+  it('código corto y existencias 0 también importan (0518 PEPSI · NESCAFE BORRAR)', () => {
+    expect(porCodigo.get('0518')!.descripcion).toBe('PEPSI RETORNABLE 350 ML');
+    expect(porCodigo.get('0518')!.existencia).toBe(24);
+    const borrar = porCodigo.get('12320237');
+    expect(borrar!.descripcion).toBe('NESCAFE BORRAR');
+    expect(borrar!.existencia).toBe(0);
+    // Cruce de página 2 del PDF real: el 097012401017 (AMSOIL DOT 3 AND 4) ya
+    // llegó SIN cabecera que lo re-ancla — el hilo entre páginas vive.
+    expect(porCodigo.get('097012401017')!.descripcion).toBe('AMSOIL DOT 3 AND 4 BRAKE FLUID');
+    expect(porCodigo.get('097012401017')!.existencia).toBe(12);
+  });
+
+  it('continuidad entre páginas: la página 2 SIN cabecera sigue parseando (937 filas / 22 pág reales)', () => {
+    // Página 2 del fixture: arranque con el 097012321018 (continuación del
+    // corte de página 1 — el ERP NO repite la cabecera).
+    expect(porCodigo.get('097012321018')!.descripcion).toBe('ACEITE AMSOIL SINTETICO 0W-20 OE');
+    expect(porCodigo.get('097012321018')!.existencia).toBe(12);
+  });
+
+  it('el membrete, los filtros y los NÚMEROS DE PÁGINA no producen filas ni ruido', () => {
+    expect(auto.problemas).toEqual([]);
+    expect(porCodigo.has('1')).toBe(false); // nº de página suelto (x=558, y=33.8)
+    expect(auto.filas.every((f) => !f.descripcion.includes('MONTANA FRESCA'))).toBe(true);
+    expect(auto.filas.every((f) => !f.descripcion.includes('Completa'))).toBe(true);
+  });
+
+  it('los otros tres parsers NO reconocen este reporte (sin falsos positivos)', () => {
+    expect(parseInventario(paginasExistencias).filas).toHaveLength(0);
+    expect(parseListaLimpia(paginasExistencias).filas).toHaveLength(0);
+  });
+});
+
+describe('parseExistencias · casos límite (sintéticos con el layout real medido)', () => {
+  // Coordenadas REALES del PDF del dueño: Codigo@34 · Descripcion@105.5 ·
+  // «Completa : N»@340.1 · «Detallada : N»@392.6 · «Total Existencias»@447.6
+  // · existencia@542-546. Cabecera: Codigo@34 · Descripcion@106.5 · Existencia@519.8.
+  const cabecera: InvItem[] = [
+    { s: 'Codigo', x: 34, y: 672.2, w: 28.5 },
+    { s: 'Descripcion', x: 106.5, y: 672.2, w: 48.1 },
+    { s: 'Existencia', x: 519.8, y: 672.2, w: 41.3 },
+  ];
+  const producto = (
+    y: number, codigo: string, desc: string, completa: string, detallada: string, exist: string,
+  ): InvItem[] => [
+    { s: codigo, x: 34, y, w: 48.7 },
+    { s: desc, x: 105.5, y, w: 120 },
+    { s: completa, x: 340.1, y: y - 1.1, w: 39.5 },
+    { s: detallada, x: 392.6, y: y - 1.1, w: 35.6 },
+    { s: 'Total Existencias', x: 447.6, y: y - 0.7, w: 53.5 },
+    { s: exist, x: 542.5, y, w: 18.2 },
+  ];
+
+  it('cabecera solo en la página 1: la página 2 SIN cabecera sigue parseando', () => {
+    const { filas, problemas } = parseExistencias([
+      [...cabecera, ...producto(659.2, 'AF371', 'FILTRO DE AIRE WINNER DAIHATSU/COROLA', 'Completa : 6', 'Detallada : 0', '6.00')],
+      producto(803.7, 'BD125527E', 'DISCO DE FRENO DELANTERO MERU y PRADO UN', 'Completa : 2', 'Detallada : 0', '2.00'),
+    ]);
+    expect(problemas).toEqual([]);
+    expect(filas.map((f) => f.codigo)).toEqual(['AF371', 'BD125527E']);
+  });
+
+  it('cabecera repetida en página 2 re-ancla sin duplicar filas', () => {
+    const { filas } = parseExistencias([
+      [...cabecera, ...producto(659.2, '0518', 'PEPSI RETORNABLE 350 ML', 'Completa : 24', 'Detallada : 0', '24.00')],
+      [...cabecera.map((i) => ({ ...i, y: 800 })), ...producto(786, '0518', 'PEPSI RETORNABLE 350 ML', 'Completa : 30', 'Detallada : 0', '30.00')],
+    ]);
+    expect(filas).toHaveLength(1);
+    expect(filas[0]!.existencia).toBe(30); // gana la última aparición
+  });
+
+  it('descripción que DESBORDA su columna (hasta x=340) se captura completa', () => {
+    // El ERP trunca, pero si un día no truncara: el corte es por la X de
+    // «Completa», no por el límite medio de la cabecera (313.15).
+    const descLarga: InvItem[] = [
+      { s: 'ARB705LB', x: 34, y: 659.2, w: 48.7 },
+      { s: 'CINCHA ARB PEQ 8 TONELADAS / 17.600 lb / 9 M', x: 105.5, y: 659.2, w: 230 },
+      { s: 'Completa : 1', x: 340.1, y: 658.1, w: 39.5 },
+      { s: 'Detallada : 0', x: 392.6, y: 658.1, w: 35.6 },
+      { s: 'Total Existencias', x: 447.6, y: 657.4, w: 53.5 },
+      { s: '1.00', x: 546.6, y: 659.2, w: 14.2 },
+    ];
+    const { filas } = parseExistencias([[...cabecera, ...descLarga]]);
+    expect(filas[0]!.descripcion).toBe('CINCHA ARB PEQ 8 TONELADAS / 17.600 lb / 9 M');
+    expect(filas[0]!.existencia).toBe(1);
+  });
+
+  it('fila sin cola («Completa»/«Total Existencias») se descarta en silencio', () => {
+    const ruido: InvItem[] = [
+      { s: 'Ordenado Por : Código', x: 35.3, y: 688.9, w: 82.8 },
+      { s: 'JACINTO MARACAY ARAGUA', x: 31.6, y: 778.2, w: 101.6 },
+      { s: '1', x: 558.2, y: 33.8, w: 5.6 }, // nº de página (1 char)
+      { s: '99', x: 34, y: 500, w: 10 }, // 2 chars con aspecto de código pero SIN cola
+    ];
+    const { filas, problemas } = parseExistencias([[...cabecera, ...ruido]]);
+    expect(filas).toEqual([]);
+    expect(problemas).toEqual([]);
+  });
+
+  it('existencia con COMA DE MILES: «2,592.00» → 2592 y los desgloses NO colan', () => {
+    // La Polar Pilsen del PDF completo trae «2,592.00» en la columna Existencia:
+    // el número que manda es el de la DERECHA del rótulo y ni «Completa : 2592»
+    // ni «Detallada : 0» se cuelan en la existencia ni en el nombre.
+    const { filas, problemas } = parseExistencias([
+      [...cabecera, ...producto(659.2, '75902940', 'POLAR PILSEN RET 222 ML', 'Completa : 2592', 'Detallada : 0', '2,592.00')],
+    ]);
+    expect(problemas).toEqual([]);
+    expect(filas).toEqual([
+      { codigo: '75902940', descripcion: 'POLAR PILSEN RET 222 ML', existencia: 2592, costo: 0 },
+    ]);
+  });
+
+  it('códigos del ERP con «&» y «+»: LLAVERO2K&N · WT4RUNNER2025+ (3 filas del PDF real)', () => {
+    // El ERP emite el código EN UN SOLO item («LLAVERO2K&N»): la regex debe
+    // aceptar & y + o esas filas se perdían (las 3 del PDF real del dueño).
+    const { filas, problemas } = parseExistencias([
+      [
+        ...cabecera,
+        ...producto(659.2, 'LLAVERO2K&N', 'LLAVERO SENCILLO K&N', 'Completa : 10', 'Detallada : 0', '10.00'),
+        ...producto(642.1, 'LLAVERO3K&N', 'LLAVERO TIPO FILTRO K&N', 'Completa : 2', 'Detallada : 0', '2.00'),
+        ...producto(625.1, 'WT4RUNNER2025+', 'ALFOM FLORINER 4RUNNER 2025 NEGRA', 'Completa : 1', 'Detallada : 0', '1.00'),
+      ],
+    ]);
+    expect(problemas).toEqual([]);
+    expect(filas.map((f) => f.codigo)).toEqual(['LLAVERO2K&N', 'LLAVERO3K&N', 'WT4RUNNER2025+']);
+    expect(filas[0]!.existencia).toBe(10);
+    expect(filas[2]!.existencia).toBe(1);
+  });
+
+  it('fila con código pero existencia ilegible → problema y se omite', () => {
+    const sinNumero: InvItem[] = [
+      ...cabecera,
+      { s: '0613', x: 34, y: 659.2, w: 48.7 },
+      { s: 'REFRESCO GOLDEN NARANJA RETORNABLE 350 M', x: 105.5, y: 659.2, w: 180 },
+      { s: 'Completa : 4', x: 340.1, y: 658.1, w: 39.5 },
+      { s: 'Detallada : 0', x: 392.6, y: 658.1, w: 35.6 },
+      { s: 'Total Existencias', x: 447.6, y: 657.4, w: 53.5 },
+      // sin número de existencia a la derecha del rótulo
+    ];
+    // sinNumero YA es la página: UN solo nivel de corchetes.
+    const { filas, problemas } = parseExistencias([sinNumero]);
+    expect(filas).toHaveLength(0);
+    expect(problemas).toEqual(['0613: existencia ilegible, se omitió.']);
+  });
+
+  it('regresión: los formatos ANTERIORES no se parsean como existencias', () => {
+    // El POS y las listas tienen sus parsers primero en la detección
+    // automática; el reporte de existencias NO debe tragárselos.
+    expect(parseExistencias(paginas).filas).toHaveLength(0);
+    expect(parseExistencias(paginasLista).filas).toHaveLength(0);
   });
 });

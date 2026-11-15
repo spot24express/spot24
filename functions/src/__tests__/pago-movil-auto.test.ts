@@ -214,3 +214,100 @@ describe('5.113 · cuando el banco no ve el pago', () => {
     });
   });
 });
+
+/* ── 5.142 · RESPALDO DE CUENTA ÚNICA ──────────────────────────────────────
+ * settings/general puede llegar SIN pagoMovilTelefono (un guardado de
+ * Operación con el suiche apagado escribe el bloque completo y antes lo
+ * dejaba vacío): si hay EXACTAMENTE UNA cuenta de pago móvil ACTIVA en
+ * settings/payment_accounts, esa es la que concilia el banco y la
+ * validación automática DEBE funcionar con su teléfono. Con varias cuentas
+ * (ambigüedad real) sigue el rechazo accionable. */
+describe('5.142 · respaldo de cuenta única para el teléfono de recaudo', () => {
+  const CUENTA_BDV: Record<string, unknown> = {
+    id: 'pm',
+    method: 'pago_movil',
+    active: true,
+    bank: 'Banco de Venezuela',
+    phone: TEL_DESTINO,
+  };
+
+  it('settings SIN teléfono + UNA cuenta de pago móvil activa → valida con el teléfono de la cuenta', async () => {
+    h.reset({
+      'settings/general': { pagoMovilAuto: true, ivaPercent: 0 },
+      'settings/payment_accounts': { accounts: [CUENTA_BDV] },
+    });
+    const out = (await coreCheckPagoMovil(ctxCliente(datosPago()))) as {
+      ok: boolean;
+      evidencia: Record<string, unknown>;
+    };
+    expect(out.ok).toBe(true);
+    expect(out.evidencia['telefonoDestino']).toBe(TEL_DESTINO);
+    expect(h.store.get(`pagoRefs/${pagoRefId(TEL_DESTINO, '123112313')}`)).toMatchObject({
+      uid: 'cli-1',
+      importe: 120,
+      used: false,
+    });
+  });
+
+  it('el teléfono de la cuenta con formato (guiones) se normaliza igual', async () => {
+    h.reset({
+      'settings/general': { pagoMovilAuto: true },
+      'settings/payment_accounts': { accounts: [{ ...CUENTA_BDV, phone: '0422-0337872' }] },
+    });
+    const out = (await coreCheckPagoMovil(ctxCliente(datosPago()))) as { ok: boolean };
+    expect(out.ok).toBe(true);
+  });
+
+  it('documento viejo sin el campo active → cuenta como ACTIVA (criterio del checkout)', async () => {
+    h.reset({
+      'settings/general': { pagoMovilAuto: true },
+      'settings/payment_accounts': { accounts: [{ ...CUENTA_BDV, active: undefined }] },
+    });
+    const out = (await coreCheckPagoMovil(ctxCliente(datosPago()))) as { ok: boolean };
+    expect(out.ok).toBe(true);
+  });
+
+  it('settings SIN teléfono + 2 cuentas de pago móvil activas → rechazo honesto (ambigüedad)', async () => {
+    h.reset({
+      'settings/general': { pagoMovilAuto: true },
+      'settings/payment_accounts': {
+        accounts: [CUENTA_BDV, { ...CUENTA_BDV, id: 'pm2', phone: '04129998877' }],
+      },
+    });
+    await expect(coreCheckPagoMovil(ctxCliente(datosPago()))).rejects.toThrow('varias cuentas');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('cuenta INACTIVA (active: false) NO respalda → rechazo como siempre', async () => {
+    h.reset({
+      'settings/general': { pagoMovilAuto: true },
+      'settings/payment_accounts': { accounts: [{ ...CUENTA_BDV, active: false }] },
+    });
+    await expect(coreCheckPagoMovil(ctxCliente(datosPago()))).rejects.toThrow('teléfono de recaudo');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('cuenta activa con teléfono INVÁLIDO no respalda → rechazo', async () => {
+    h.reset({
+      'settings/general': { pagoMovilAuto: true },
+      'settings/payment_accounts': { accounts: [{ ...CUENTA_BDV, phone: '123' }] },
+    });
+    await expect(coreCheckPagoMovil(ctxCliente(datosPago()))).rejects.toMatchObject({
+      code: 'failed-precondition',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('el teléfono de settings SIEMPRE manda si existe (el respaldo no lo pisa)', async () => {
+    h.reset({
+      'settings/general': { pagoMovilAuto: true, pagoMovilTelefono: TEL_DESTINO },
+      'settings/payment_accounts': { accounts: [{ ...CUENTA_BDV, phone: '04129998877' }] },
+    });
+    const out = (await coreCheckPagoMovil(ctxCliente(datosPago()))) as {
+      ok: boolean;
+      evidencia: Record<string, unknown>;
+    };
+    expect(out.ok).toBe(true);
+    expect(out.evidencia['telefonoDestino']).toBe(TEL_DESTINO);
+  });
+});

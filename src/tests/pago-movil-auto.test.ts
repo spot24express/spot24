@@ -10,6 +10,7 @@ import {
   fechaHoyCaracas,
   isValidReferenciaBdv,
   pagoMovilAutoDisponible,
+  puedeCancelarEnPago,
   restanteBs,
   round2,
   vueltoBs,
@@ -82,6 +83,35 @@ describe('5.113 · elegibilidad: solo la cuenta BDV del dueño se valida sola', 
   });
 });
 
+describe('5.142 · respaldo de cuenta única (settings/general sin teléfono)', () => {
+  it('settings SIN teléfono + UNA cuenta de pago móvil activa → disponible (se deduce la cuenta)', () => {
+    expect(pagoMovilAutoDisponible(true, '', cuentaBDV, 1)).toBe(true);
+    expect(pagoMovilAutoDisponible(true, '   ', cuentaBDV, 1)).toBe(true);
+  });
+
+  it('settings SIN teléfono + 2 cuentas de pago móvil → no disponible (ambigüedad real)', () => {
+    expect(pagoMovilAutoDisponible(true, '', cuentaBDV, 2)).toBe(false);
+  });
+
+  it('settings SIN teléfono + ninguna cuenta → no disponible', () => {
+    expect(pagoMovilAutoDisponible(true, '', cuentaBDV, 0)).toBe(false);
+  });
+
+  it('sin el 4º argumento se conserva el comportamiento de siempre (teléfono exigido)', () => {
+    expect(pagoMovilAutoDisponible(true, '', cuentaBDV)).toBe(false);
+    expect(pagoMovilAutoDisponible(true, '04220337872', cuentaBDV)).toBe(true);
+  });
+
+  it('cuenta única pero con teléfono inválido → no disponible (el respaldo no salva basura)', () => {
+    expect(pagoMovilAutoDisponible(true, '', { ...cuentaBDV, phone: '123' }, 1)).toBe(false);
+    expect(pagoMovilAutoDisponible(true, '', { ...cuentaBDV, phone: '' }, 1)).toBe(false);
+  });
+
+  it('el suiche apagado sigue mandando: el respaldo no enciende nada solo', () => {
+    expect(pagoMovilAutoDisponible(false, '', cuentaBDV, 1)).toBe(false);
+  });
+});
+
 describe('5.113 · faltante y vuelto (el patrón PedidosYa)', () => {
   it('sin validaciones: el restante es el total', () => {
     expect(restanteBs(6012, [])).toBe(6012);
@@ -118,5 +148,30 @@ describe('5.113 · faltante y vuelto (el patrón PedidosYa)', () => {
     const pagos = [ev('444444', 119.998)];
     expect(restanteBs(120, pagos)).toBe(0);
     expect(coberturaCompleta(120, pagos)).toBe(true);
+  });
+});
+
+describe('5.147 · cancelación en el paso Pago: solo mientras NO haya pagado', () => {
+  it('sin comprobante y sin validaciones del banco → puede cancelar (no pagó nada)', () => {
+    expect(puedeCancelarEnPago(false, [])).toBe(true);
+  });
+
+  it('con comprobante adjunto (camino manual) → sin cancelación (5.26, intacto)', () => {
+    expect(puedeCancelarEnPago(true, [])).toBe(false);
+  });
+
+  it('pago AUTOMÁTICO ya validado por el banco (sin comprobante) → sin cancelación: debajo de «Revisar y confirmar» ya no sale el botón', () => {
+    expect(puedeCancelarEnPago(false, [ev('555555', 120)])).toBe(false);
+  });
+
+  it('validación PARCIAL (aún hay faltante) → tampoco: el dinero ya se movió', () => {
+    const pagos = [ev('666666', 30)];
+    expect(restanteBs(120, pagos)).toBe(90);
+    expect(puedeCancelarEnPago(false, pagos)).toBe(false);
+  });
+
+  it('validaciones vacías con auto apagado → la regla vuelve a la de siempre (solo comprobante manda)', () => {
+    expect(puedeCancelarEnPago(false, [])).toBe(true);
+    expect(puedeCancelarEnPago(true, [])).toBe(false);
   });
 });

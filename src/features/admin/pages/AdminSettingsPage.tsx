@@ -30,6 +30,7 @@ import type { PaymentMethod } from '@/shared/constants/orders';
 import {
   getPaymentAccounts, savePaymentAccounts,
   getGeneralSettings, saveGeneralSettings, GENERAL_SEED,
+  telefonoPagoMovilAlGuardar,
 } from '@/shared/services/settings.service';
 import { adminUploadImage } from '../services/imageUpload.service';
 import { esHHMM } from '@/shared/lib/horarioDelivery';
@@ -150,6 +151,11 @@ export default function AdminSettingsPage() {
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   /** Subida de QR en curso: la clave de la cuenta (para el loading del botón). */
   const [uploadingKey, setUploadingKey] = useState<string | null>(null);
+  /** 5.142 · Teléfono del Pago Móvil BDV tal como VINO del doc al cargar la
+   *  página. Con el suiche apagado el campo queda oculto y el formulario
+   *  puede mandarlo vacío: al guardar se CONSERVA este valor en vez de
+   *  borrarlo — apagar el suiche jamás mata el Pago Móvil automático. */
+  const [pagoMovilTelefonoGuardado, setPagoMovilTelefonoGuardado] = useState('');
 
   const load = () => {
     setLoading(true);
@@ -185,6 +191,9 @@ export default function AdminSettingsPage() {
           pagoMovilAuto: g.pagoMovilAuto,
           pagoMovilTelefono: g.pagoMovilTelefono,
         });
+        // 5.142 · recordamos lo que el DOC tenía para conservarlo al guardar
+        // si el dueño apaga el suiche (el campo desaparece del formulario).
+        setPagoMovilTelefonoGuardado(g.pagoMovilTelefono);
       })
       .catch(() => setError(true))
       .finally(() => setLoading(false));
@@ -220,10 +229,14 @@ export default function AdminSettingsPage() {
       e['deliveryStart'] = msg;
       e['deliveryEnd'] = msg;
     }
-    // 5.113: validación automática BDV — si se activa, exige el teléfono del
-    // Pago Móvil donde el banco concilia (el conciliador solo ve esa cuenta).
+    // 5.113 + 5.142: validación automática BDV — si se activa, se exige un
+    // teléfono de recaudo en ALGÚN lado: el del formulario, o el que ya
+    // estaba en el doc (5.142: el formulario puede traer el campo vacío
+    // aunque el doc lo tenga — con el suiche apagado el campo está oculto).
+    // Solo se pide al dueño cuando NO hay teléfono en ningún lado.
     const autoTel = general.pagoMovilTelefono.replace(/\D/g, '');
-    if (general.pagoMovilAuto && !isValidPhoneVE(autoTel)) {
+    const telPagoMovilFinal = telefonoPagoMovilAlGuardar(autoTel, pagoMovilTelefonoGuardado);
+    if (general.pagoMovilAuto && !isValidPhoneVE(telPagoMovilFinal)) {
       e['pagoMovilTelefono'] = 'Teléfono del Pago Móvil BDV: 0412, 0414, 0416, 0422, 0424 o 0426.';
     }
     setErrors((prev) => ({ ...prev, ...e }));
@@ -241,7 +254,10 @@ export default function AdminSettingsPage() {
         deliveryStart: dStart,
         deliveryEnd: dEnd,
         pagoMovilAuto: general.pagoMovilAuto,
-        pagoMovilTelefono: autoTel,
+        // 5.142 · el formulario vacío CONSERVA el teléfono del doc: apagar
+        // el suiche (o guardar con el campo oculto) ya NO borra el teléfono
+        // del Pago Móvil BDV — la regresión de producción queda cerrada.
+        pagoMovilTelefono: telPagoMovilFinal,
       });
       setSavedGeneralAt(Date.now());
       toast.success('Operación guardada: IVA, WhatsApp, retiro, horario, franja del delivery y pago móvil automático en vivo.');

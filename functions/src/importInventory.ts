@@ -31,8 +31,10 @@
  * · 5.92 · detecta el formato automáticamente: el reporte del POS
  *   (lib/inventarioPdf.parseInventario), la «lista limpia» del dueño con
  *   doble precio sin/con impuesto (parseListaLimpia — usa el SIN impuesto y
- *   resuelve códigos repetidos con sufijo -2/-3…) o la «LISTA DE PRECIOS»
- *   del ERP (parseListaPrecios, 5.138 — usa «Precio REF c/Imp»).
+ *   resuelve códigos repetidos con sufijo -2/-3…), la «LISTA DE PRECIOS»
+ *   del ERP (parseListaPrecios, 5.138 — usa «Precio REF c/Imp») o el
+ *   «REPORTE DE EXISTENCIAS DE INVENTARIO» del ERP (parseExistencias, 5.145
+ *   — 3 columnas sin costo: el que alimenta el modo «Solo stock»).
  * · 5.92b · blindaje «No document to update»: cuando el panel borra un
  *   producto, su subcolección variants SOBREVIVE (Firestore no borra
  *   subcolecciones en cascada) y collectionGroup la sigue listando — los
@@ -533,7 +535,7 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
     throw new HttpsError(
       'invalid-argument',
       'No se reconoció ningún producto. Verifica que el PDF sea el reporte «Inventario disponible» de tu sistema, '
-      + 'una lista con columnas Código / Descripción / Existencia / Precio sin impuesto '
+      + 'el reporte «Existencias de inventario», una lista con columnas Código / Descripción / Existencia / Precio sin impuesto '
       + 'o la «Lista de precios» (columna Precio REF c/Imp).',
     );
   }
@@ -556,6 +558,17 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
       'invalid-argument',
       'El modo «Solo stock» necesita el reporte de INVENTARIO (con columna Existencia): '
       + 'el PDF subido es la LISTA DE PRECIOS, que no trae existencias.',
+    );
+  }
+  // 5.145 · El reporte de EXISTENCIAS no trae costo ni precio: en modo
+  // «completo» actualizaría TODOS los precios a 0 (gratis en la tienda). Se
+  // rechaza con la orden correcta: ese PDF es para el modo «Solo stock».
+  if (modo === 'completo' && parseo.formato === 'existencias') {
+    throw new HttpsError(
+      'invalid-argument',
+      'El PDF subido es el REPORTE DE EXISTENCIAS (solo stock, sin precios). '
+      + 'Úsalo con el modo «Solo stock» (actualiza existencias y crea los nuevos inactivos); '
+      + 'los precios los fija la Lista de precios con el modo «Solo precios».',
     );
   }
 

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth.store';
 import { observeAuth } from '../services/auth.service';
 import { useCartStore } from '@/features/cart/store/cart.store';
+import { logger } from '@/shared/lib/logger';
 import type { UserRole } from '../types';
 
 /** Roles con acceso al panel operativo (única fuente de verdad, ronda 5i-i).
@@ -18,8 +19,18 @@ export function useAuthObserver(): void {
       setUser(user);
       const cart = useCartStore.getState();
       if (!cart.hydrated) {
-        await cart.hydrateForUser(user?.uid ?? null);
-        cart.setHydrated();
+        // 5.144 · setHydrated() en finally: si hydrateForUser lanzara (Firestore
+        // caído, JSON corrupto…), hydrated quedaría false PARA SIEMPRE y con el
+        // gate de recarga del checkout (debeCotizar/debeReservar) la página
+        // esperaría la hidratación eternamente. Cualquier fallo deja el flag
+        // marcado: el checkout corre con lo que haya (localStorage o vacío).
+        try {
+          await cart.hydrateForUser(user?.uid ?? null);
+        } catch (e) {
+          logger.warn('Hidratación del carrito falló: el checkout sigue con lo que haya', e);
+        } finally {
+          useCartStore.getState().setHydrated();
+        }
       }
     });
     return unsub;

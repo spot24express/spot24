@@ -100,11 +100,29 @@ export function clampQuantity(qty: number, max = 20): number {
   return Math.min(max, Math.max(1, Math.floor(qty)));
 }
 
-/** Nombre de persona: letras (unicode básico), espacios, guiones; 2–80. */
+/**
+ * Nombre de persona: letras (unicode), espacios, guiones y apóstrofes; 2–80.
+ * 5.148 · ACEPTA el nombre solo («Dariannys») o nombre y apellido: una
+ * usuaria real quedó bloqueada al escribir solo su primer nombre, tanto en
+ * el registro como en el destinatario del envío a tercero. También normaliza
+ * lo que el teclado del teléfono mete sin permiso: el espacio no separador
+ * (NBSP, lo autocompletan Android/iOS) y los espacios dobles cuentan como
+ * UN espacio normal.
+ */
 export function isValidPersonName(value: string): boolean {
-  const v = value.trim();
+  const v = value
+    .replace(/[\u00A0\u2000-\u200A\u202F\u3000]/g, ' ')
+    .replace(/ {2,}/g, ' ')
+    .trim();
   if (v.length < 2 || v.length > 80) return false;
-  return /^[\p{L}\p{M}'’-]+( [\p{L}\p{M}'’-]+)+$/u.test(v);
+  const palabras = v.split(' ');
+  // Cada palabra: solo letras/marcas/apóstrofes/guion Y con al menos una
+  // letra verdadera (rechaza «--», «''», «123»). Y alguna palabra de 2+
+  // caracteres (rechaza iniciales sueltas tipo «A B»).
+  return (
+    palabras.every((p) => /^[\p{L}\p{M}'’-]+$/u.test(p) && /\p{L}/u.test(p)) &&
+    palabras.some((p) => p.length >= 2)
+  );
 }
 
 /** Nombre de archivo seguro para Storage (comprobantes, imágenes). */

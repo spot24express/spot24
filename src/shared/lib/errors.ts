@@ -14,6 +14,7 @@ export type AppErrorCode =
   | 'images'
   | 'rate-limit'
   | 'code-duplicate'
+  | 'email-en-uso'
   | 'pago-no-visto'
   | 'pago-repetido'
   | 'banco-no-responde';
@@ -35,6 +36,14 @@ const USER_MESSAGES: Record<AppErrorCode, string> = {
     'El servicio de imágenes está caído. Intenta de nuevo en unos minutos: tu carrito y tu comprobante están a salvo.',
   'rate-limit': 'Demasiados intentos seguidos. Espera un momento y vuelve a intentar.',
   'code-duplicate': 'Ese código ya lo usa otro producto. Escribe uno diferente.',
+  // 5.148-B · REGISTRO CON CORREO YA REGISTRADO (caso Dariannys): Firebase
+  // rechaza el signUp porque la cuenta existe, pero el mensaje genérico
+  // («reintenta en unos segundos») escondía la causa y la clienta repetía
+  // mil veces algo imposible. La verdad y la salida en una sola línea: la
+  // cuenta ya está — entrar con su clave o pedir el enlace de recuperación
+  // (el mismo que ofrece /cuenta/recuperar desde «Iniciar sesión»).
+  'email-en-uso':
+    'Ese correo ya tiene una cuenta en SPOT 24. Entra con tu clave en «Iniciar sesión», o usa «¿Olvidaste tu clave?» y te enviamos el enlace para entrar.',
   // 5.113.3 · PAGO MÓVIL BDV: la verdad del banco en la UI, con el mismo
   // espíritu del parche de imágenes (5.112-C). Los prefijos de mensaje son
   // CONTRATO con lib/backend.ts (toAppError) y con pagoMovil.ts.

@@ -177,3 +177,22 @@ export async function saveGeneralSettings(s: GeneralSettings): Promise<void> {
   // valor sin recargar (mismo proceso de página).
   generalCache = clean;
 }
+
+/**
+ * 5.142 · Teléfono del Pago Móvil BDV al GUARDAR Operación.
+ *
+ * El guardado de Operación escribe el bloque COMPLETO (setDoc): si el suiche
+ * llega apagado, el campo del teléfono está OCULTO en el formulario y puede
+ * llegar vacío — antes se guardaba '' y el Pago Móvil automático moría en el
+ * doc aunque la cuenta BDV siguiera perfecta (regresión reportada por el
+ * dueño en producción). Regla nueva:
+ * · El formulario tiene un teléfono → manda el formulario (el dueño lo cambió).
+ * · El formulario viene vacío (suiche apagado/campo oculto) → se CONSERVA el
+ *   teléfono que estaba guardado: apagar el suiche jamás borra el teléfono,
+ *   y volver a encender no exige reescribirlo.
+ */
+export function telefonoPagoMovilAlGuardar(telefonoForm: string, telefonoGuardado: string): string {
+  const form = String(telefonoForm ?? '').replace(/\D/g, '').slice(0, 11);
+  if (form) return form;
+  return String(telefonoGuardado ?? '').replace(/\D/g, '').slice(0, 11);
+}

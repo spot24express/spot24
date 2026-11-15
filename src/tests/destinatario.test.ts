@@ -108,11 +108,17 @@ describe('5.135 · validarEntregaTercero (datos de quien recibe)', () => {
     expect(validarEntregaTercero(LLENO)).toEqual({});
   });
 
-  it('nombre EXIGE nombre y apellido (igual que el pagador)', () => {
-    const e = validarEntregaTercero({ ...LLENO, nombre: 'Rosa' });
-    expect(e['terceroNombre']).toBeTruthy();
+  it('nombre: acepta nombre solo o nombre y apellido; basura no (5.148)', () => {
+    // 5.148 · REGRESIÓN Dariannys: el nombre solo de quien recibe ya NO
+    // bloquea el pedido (una compradora real no pudo registrar a «Dariannys»).
+    const solo = validarEntregaTercero({ ...LLENO, nombre: 'Rosa' });
+    expect(solo['terceroNombre']).toBeUndefined();
     const ok = validarEntregaTercero({ ...LLENO, nombre: 'Rosa María Pérez' });
     expect(ok['terceroNombre']).toBeUndefined();
+    // Basura sigue rechazada: iniciales, símbolos, dígitos.
+    expect(validarEntregaTercero({ ...LLENO, nombre: 'R' })['terceroNombre']).toBeTruthy();
+    expect(validarEntregaTercero({ ...LLENO, nombre: '123' })['terceroNombre']).toBeTruthy();
+    expect(validarEntregaTercero({ ...LLENO, nombre: '' })['terceroNombre']).toBeTruthy();
   });
 
   it('teléfono: mismos prefijos móviles que el comprador', () => {

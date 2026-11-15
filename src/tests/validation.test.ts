@@ -96,10 +96,27 @@ describe('validadores generales', () => {
     expect(isValidAmount(Number.NaN)).toBe(false);
   });
 
-  it('nombre de persona con dos partes', () => {
+  it('nombre de persona: nombre solo o nombre y apellido (5.148)', () => {
     expect(isValidPersonName('Juan Pérez')).toBe(true);
-    expect(isValidPersonName('Juan')).toBe(false);
     expect(isValidPersonName('María de los Ángeles Rodríguez')).toBe(true);
+    // 5.148 · REGRESIÓN Dariannys: el nombre solo ya NO bloquea el registro
+    // ni el destinatario del envío a tercero.
+    expect(isValidPersonName('Dariannys')).toBe(true);
+    expect(isValidPersonName('Juan')).toBe(true);
+    // El teclado del teléfono mete espacios sin permiso: NBSP y dobles valen.
+    expect(isValidPersonName('Dariannys\u00A0Sierra')).toBe(true);
+    expect(isValidPersonName('Dariannys  Sierra')).toBe(true);
+    // Doble letra y combinaciones reales de nombres venezolanos pasan igual.
+    expect(isValidPersonName('Dariannys Sierra')).toBe(true);
+    expect(isValidPersonName('Annelisse Rodríguez')).toBe(true);
+    expect(isValidPersonName('Jhonattan Pérez')).toBe(true);
+    // Basura sigue bloqueada: iniciales sueltas, símbolos, dígitos, vacío.
+    expect(isValidPersonName('A')).toBe(false);
+    expect(isValidPersonName('A B')).toBe(false);
+    expect(isValidPersonName('--')).toBe(false);
+    expect(isValidPersonName('123')).toBe(false);
+    expect(isValidPersonName('Ana123')).toBe(false);
+    expect(isValidPersonName('')).toBe(false);
   });
 
   it('carga de archivos: tipo y tamaño', () => {

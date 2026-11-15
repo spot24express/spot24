@@ -36,6 +36,7 @@ import { useCart } from '@/features/cart/hooks/useCart';
 import { useAuth } from '@/features/auth/hooks/useAuth';
 import { useZones } from '@/features/delivery/hooks/useZones';
 import { reserveStock, quoteTotals, createOrder, checkPagoMovil } from '../services/checkout.service';
+import { correrConWatchdog, msWatchdogCotizacion, debeCotizar, debeReservar } from '@/shared/lib/cotizacion';
 import { buildIdempotencyKey } from '../lib/idempotency';
 import {
   ENTREGA_TERCERO_VACIO,
@@ -73,6 +74,7 @@ import {
   fechaHoyCaracas,
   isValidReferenciaBdv,
   pagoMovilAutoDisponible,
+  puedeCancelarEnPago,
   restanteBs,
   vueltoBs,
   type PagoBdvEvidence,
@@ -107,7 +109,10 @@ const ZONE_CITY = 'Maracay';
 export default function CheckoutPage() {
   useDocumentTitle('Checkout');
   const navigate = useNavigate();
-  const { items, clear, isEmpty } = useCart();
+  // 5.144 · cartHydrated: al RECARGAR la página el carrito real llega asincrónico
+  // (observeAuth → hydrateForUser): mientras sea false, efectos que dependen
+  // del carrito NO deben dispararse (ver gates en shared/lib/cotizacion.ts).
+  const { items, clear, isEmpty, hydrated: cartHydrated } = useCart();
   const { user } = useAuth();
   const { data: zones } = useZones();
   // Tasa BCV en vivo: para mostrar el envío por zona en Bs en el selector.
@@ -172,7 +177,14 @@ export default function CheckoutPage() {
   // nuevo sin apilar stockReserved fantasma.
   const reserveFired = useRef(false);
   useEffect(() => {
-    if (isEmpty || reserveFired.current) return;
+    // 5.144 · GATE DE RESERVA: al recargar, este efecto corría AL MONTAR con
+    // el carrito aún vacío (hidratación en vuelo) y retornaba; como
+    // reserveFired seguía en false pero el efecto no tenía dependencias que
+    // re-corrieran, la reserva de stock quedaba SIN DISPARAR en toda la
+    // sesión (createOrder la revalidaba al final: sin colapso, pero sin el
+    // hold de 2 h). Ahora espera la hidratación y re-corre con ella: si el
+    // carrito trae items, la reserva sale una sola vez.
+    if (!debeReservar({ cartHydrated, isEmpty, yaReservada: reserveFired.current })) return;
     reserveFired.current = true;
     const reservar = (intento: number) => {
       void reserveStock(
@@ -192,9 +204,10 @@ export default function CheckoutPage() {
     reservar(0);
     // Sin cleanup alive: React 18 hace no-op el setState tras desmontar y una
     // reserva huérfana se libera sola (vence ≤2 h; la barre el servidor o la
-    // próxima reserva del mismo uid la reemplaza).
+    // próxima reserva del mismo uid la reemplaza). Deps: solo cartHydrated —
+    // el gate decide con isEmpty/yaReservada del cierre de cada corrida.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [cartHydrated]);
 
   // Datos precargados del perfil. El teléfono vive en users/{uid}.phoneE164
   // como +58XXXXXXXXX (uso interno): al cliente NUNCA se le muestra el +58,
@@ -262,9 +275,15 @@ export default function CheckoutPage() {
   // 5.112-B: si el delivery CERRÓ (o ya estaba cerrado al entrar al checkout),
   // el cliente vuela a RETIRO EN TIENDA con aviso claro. El backend revalida
   // la franja al crear la orden: doble llave — jamás un envío fuera de horario.
+  // 5.143: al volar a retiro se RE-DISPARA la cotización de forma garantizada
+  // (bump de quoteAttempt). El cambio de fulfillment ya re-corre el efecto de
+  // cotización; el bump es el cinturón que asegura el disparo aunque algún
+  // día el agrupado de React se salte una corrida: la cotización de delivery
+  // anterior ya no sirve y el pago móvil automático exige montos frescos.
   useEffect(() => {
     if (created || deliveryOk || fulfillment !== 'delivery') return;
     setFulfillment('pickup');
+    setQuoteAttempt((n) => n + 1);
     toast.warning(
       franjaTexto
         ? `El envío a domicilio solo está disponible ${franjaTexto}. Tomamos tu pedido para RETIRO EN TIENDA.`
@@ -284,30 +303,53 @@ export default function CheckoutPage() {
   const zoneEntregaId = terceroActivo ? tercero.zoneId : address.zoneId;
   const zoneEntrega = zones?.find((z) => z.id === zoneEntregaId) ?? null;
   useEffect(() => {
-    if (isEmpty) return;
-    if (fulfillment === 'delivery' && !zoneEntregaId) return;
+    // 5.144 · GATE DE COTIZACIÓN (la pista del dueño: «sucede si RECARGO»).
+    // Antes el guard era `if (isEmpty) return;` con isEmpty FUERA de las
+    // deps: al recargar fuera de la franja del delivery, settings llegaba y
+    // disparaba el vuelo a RETIRO (re-corrida ÚNICA del efecto) ANTES de que
+    // el carrito se hidratara → el guard mataba esa corrida y NUNCA había
+    // otra → «Calculando montos exactos…» eterno + pago móvil automático
+    // apagado + «Esperando los montos exactos para seguir». Ahora el gate
+    // espera la hidratación y `cartHydrated` está en las deps: cuando el
+    // carrito real llega, el efecto RE-CORRE SOLO y la cotización de retiro
+    // sale con los items verdaderos. Dentro de horario no cambia nada (el
+    // cliente elige zona después de hidratarse y esa re-corrida sigue viva).
+    if (!debeCotizar({ cartHydrated, isEmpty, fulfillment, zoneEntregaId })) return;
     let alive = true;
     setQuoteState('loading');
-    void quoteTotals({
-      fulfillment,
-      zoneId: fulfillment === 'pickup' ? '' : zoneEntregaId,
-      items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
-    })
-      .then((q) => {
-        if (!alive) return;
-        setQuote(q);
+    // 5.143 · WATCHDOG DE COTIZACIÓN: «Calculando montos exactos…» JAMÁS es
+    // eterno. AbortSignal.timeout (25 s) cubre el fetch, pero NO lo que pasa
+    // antes (loadFirebase, refresco de token) ni una función que muera sin
+    // cerrar la conexión: la promesa quedaba pendiente para siempre y el
+    // checkout se colgaba (reportado fuera de la franja del delivery, en
+    // vuelo a retiro). Con el watchdog: sin respuesta a tiempo → error
+    // accionable con Reintentar. Una respuesta tardía AÚN gana (el .then
+    // sigue vivo): mejor montos tarde que nunca.
+    void correrConWatchdog(
+      quoteTotals({
+        fulfillment,
+        zoneId: fulfillment === 'pickup' ? '' : zoneEntregaId,
+        items: items.map((i) => ({ productId: i.productId, variantId: i.variantId, qty: i.qty })),
+      }),
+      msWatchdogCotizacion(import.meta.env.DEV),
+    ).then((r) => {
+      if (!alive) return;
+      if (r.tipo === 'ok') {
+        setQuote(r.valor);
         setQuoteState('ok');
-      })
-      .catch(() => {
-        if (!alive) return;
+      } else {
         setQuote(null);
         setQuoteState('error');
-      });
+      }
+    });
     return () => {
       alive = false;
     };
+    // Deps 5.144: cartHydrated + isEmpty entran a la carrera — al hidratarse
+    // el carrito (false→true, true→false) el efecto re-corre y cotiza con el
+    // carrito real. fulfillment/zoneEntregaId/quoteAttempt como siempre.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fulfillment, zoneEntregaId, quoteAttempt]);
+  }, [cartHydrated, isEmpty, fulfillment, zoneEntregaId, quoteAttempt]);
 
   // Formas de pago: primero Firestore (el dueño activa/desactiva desde
   // /admin/ajustes sin deploy); si aún no hay documento o falla la red, se
@@ -328,6 +370,14 @@ export default function CheckoutPage() {
   }, []);
 
   const activeAccounts = useMemo(() => activeAccountsOf(accounts), [accounts]);
+  // 5.142 · ¿Cuántas cuentas de Pago Móvil ACTIVAS hay? Con EXACTAMENTE una,
+  // la validación automática se ofrece aunque settings/general haya perdido
+  // el teléfono de recaudo (el guardado de Operación podía borrarlo): no hay
+  // ninguna ambigüedad sobre la cuenta donde concilia el banco.
+  const cuentasPmActivas = useMemo(
+    () => activeAccounts.filter((a) => a.method === 'pago_movil').length,
+    [activeAccounts],
+  );
   // Cuenta ELEGIDA (5.80: puede haber varias del mismo método — el cliente
   // escoge una concreta, no solo un método). Si la elegida se desactivó (o
   // Firestore cargó tarde), cae a la primera activa y se sincroniza solo.
@@ -366,15 +416,65 @@ export default function CheckoutPage() {
   // lista no hay validación (el importe a validar sale de ella).
   const autoActivo = useMemo(
     () =>
-      pagoMovilAutoDisponible(autoPago.on, autoPago.telefono, zoneAccount) &&
+      pagoMovilAutoDisponible(autoPago.on, autoPago.telefono, zoneAccount, cuentasPmActivas) &&
       quoteState === 'ok' &&
       !!quote &&
       quote.rateUsed > 0,
-    [autoPago, zoneAccount, quoteState, quote],
+    [autoPago, zoneAccount, quoteState, quote, cuentasPmActivas],
   );
   const restante = autoActivo && quote ? restanteBs(quote.totalVes, validaciones) : 0;
   const vuelto = autoActivo && quote ? vueltoBs(quote.totalVes, validaciones) : 0;
   const coberturaOk = autoActivo && quote ? coberturaCompleta(quote.totalVes, validaciones) : false;
+
+  // 5.142 · DIAGNÓSTICO del dueño (solo administración): con el suiche activo
+  // en Ajustes pero la sección oculta en el checkout, este panel dice CUÁL de
+  // las condiciones de pagoMovilAutoDisponible está fallando — el teléfono de
+  // la cuenta elegida vs el guardado en Ajustes, la cuenta activa, la forma
+  // elegida o la cotización. El cliente JAMÁS lo ve (role admin/gerente).
+  const esDueno = user?.role === 'admin' || user?.role === 'gerente';
+  const diagnosticoAuto = useMemo<string | null>(() => {
+    if (!esDueno || autoActivo) return null;
+    if (!autoPago.on) {
+      return 'Ajustes: el suiche «Pago móvil automático» llegó APAGADO a esta sesión. Si lo acabas de activar, recarga esta página: el checkout lee los ajustes al abrirse.';
+    }
+    if (quoteState !== 'ok') {
+      // 5.143: mensaje ampliado — el caso reportado es el VUELO A RETIRO (el
+      // delivery cerró y la cotización de retiro no llega): el desglose queda
+      // en «Calculando montos exactos…» o en error, y sin montos no hay
+      // validación automática. Con el watchdog esto ya no se cuelga: si la
+      // función falla, el Reintentar del desglose lo repite al instante.
+      return fulfillment === 'pickup'
+        ? 'La cotización de RETIRO EN TIENDA no está llegando (falló la llamada al servidor o venció el plazo): sin montos no hay validación automática. Toca Reintentar en el desglose de montos; si sigue, revisa el estado de las funciones en Netlify.'
+        : 'La cotización no está lista (falló la llamada al servidor o la tasa BCV): sin montos no hay validación automática. Revisa el botón Reintentar del desglose.';
+    }
+    if (!quote || !(quote.rateUsed > 0)) {
+      return 'La cotización llegó con tasa BCV en 0: la validación automática exige monto en Bs. Revisa el documento rates/bcv en Firestore.';
+    }
+    if (!zoneAccount) {
+      return 'No hay ninguna cuenta de pago ACTIVA: activa al menos una en Ajustes → Cuentas de pago.';
+    }
+    if (zoneAccount.method !== 'pago_movil') {
+      const hayPm = activeAccounts.some((a) => a.method === 'pago_movil');
+      return hayPm
+        ? `La cuenta elegida por defecto es «${accountChipLabel(zoneAccount, siblingsOf(zoneAccount))}» (no es Pago Móvil): toca el chip PAGO MÓVIL (la BDV) y la sección aparece. La validación automática solo aplica a la cuenta BDV.`
+        : 'No hay ninguna cuenta de PAGO MÓVIL activa en Ajustes → Cuentas de pago: la validación automática solo existe para esa forma de pago.';
+    }
+    const telA = normalizePhoneVE(zoneAccount.phone ?? '');
+    const telS = normalizePhoneVE(autoPago.telefono);
+    if (telA.length !== 11) {
+      return `La cuenta de pago móvil elegida no tiene un teléfono válido («${zoneAccount.phone || 'vacío'}»): corrígelo en Ajustes → Cuentas de pago. Debe ser el mismo donde concilia el BDV.`;
+    }
+    // 5.142 · settings SIN teléfono usable solo bloquea cuando NO se puede
+    // deducir la cuenta (0 o 2+ cuentas de pago móvil activas — con una sola
+    // el respaldo de cuenta única ya ofrece la validación automática).
+    if (telS.length !== 11) {
+      return `Ajustes → Operación no tiene el teléfono del Pago Móvil BDV («${autoPago.telefono || 'vacío'}») y hay ${cuentasPmActivas} cuentas de Pago Móvil activas: con varias, la app exige el teléfono para saber cuál concilia el banco. Llena el teléfono en Ajustes → Operación (el de la cuenta BDV, ej. 04220337872) y guarda.`;
+    }
+    if (telA !== telS) {
+      return `Teléfonos DISTINTOS: la cuenta elegida es ${telA} y Ajustes → Operación tiene ${telS}. Deben ser el MISMO número (el conciliador del banco solo ve pagos de esa cuenta).`;
+    }
+    return null; // Todas las condiciones se cumplirían: no debería pasar.
+  }, [esDueno, autoActivo, autoPago, quoteState, quote, zoneAccount, activeAccounts, cuentasPmActivas, siblingsOf, fulfillment]);
 
   // 5.113: la fecha del pago por defecto es HOY en Venezuela (el conciliador
   // busca el movimiento de hoy; editable si pagó cerca de medianoche).
@@ -1162,6 +1262,12 @@ export default function CheckoutPage() {
                       Reintentar
                     </Button>
                   </div>
+                ) : fulfillment === 'delivery' && !zoneEntregaId ? (
+                  // 5.142 · sin zona elegida el efecto de cotización NO se
+                  // dispara (guard de zona): antes esto quedaba «Calculando
+                  // montos exactos…» para siempre y parecía una falla. Ahora
+                  // el texto guía la acción que falta.
+                  <p className="mt-3 text-muted">Elige la zona de entrega y calculamos los montos exactos al instante.</p>
                 ) : (
                   <p className="mt-3 text-muted">Calculando montos exactos…</p>
                 )}
@@ -1408,6 +1514,20 @@ export default function CheckoutPage() {
                 </section>
               )}
 
+              {/* 5.142 · Diagnóstico SOLO para administración: con el suiche
+                  activo y la sección automática oculta, explica la condición
+                  exacta que la está bloqueando (teléfonos, cuenta activa,
+                  forma elegida o cotización). El cliente no lo ve nunca. */}
+              {diagnosticoAuto && (
+                <section
+                  className="rounded-brand-lg border-2 border-dashed border-line bg-ink p-4"
+                  aria-label="Diagnóstico de la validación automática"
+                >
+                  <p className="spot-label">Diagnóstico · Validación automática BDV (solo tú lo ves)</p>
+                  <p className="mt-1 text-sm text-muted">{diagnosticoAuto}</p>
+                </section>
+              )}
+
               {needsReceipt && (!autoActivo || manualFallback) ? (
                 <section className="rounded-brand-lg border-2 border-line bg-surface-1 p-6" aria-label="Comprobante de pago">
                   <h2 className="font-display text-lg font-bold italic uppercase text-paper">Comprobante de pago</h2>
@@ -1502,8 +1622,12 @@ export default function CheckoutPage() {
               {/* POLÍTICA DEL DUEÑO (5.26): la cancelación vive AQUÍ y SOLO
                   mientras NO haya comprobante adjunto (aún no pagó). Con el
                   comprobante listo el botón desaparece sin aviso: después de
-                  pagar no existe cancelación para el cliente. */}
-              {!receipt && (
+                  pagar no existe cancelación para el cliente.
+                  (5.147) Y tampoco con pago YA validado por el banco: en el
+                  Pago Móvil automático no hay comprobante —el dinero ya se
+                  movió, parcial o completo— así que debajo de «Revisar y
+                  confirmar» ya no puede salir «Cancelar pedido». */}
+              {puedeCancelarEnPago(Boolean(receipt), validaciones) && (
                 <Button variant="danger-ghost" type="button" fullWidth onClick={() => setCancelOpen(true)}>
                   Cancelar pedido
                 </Button>
@@ -1566,10 +1690,10 @@ export default function CheckoutPage() {
         </form>
       )}
 
-      {/* POLÍTICA DEL DUEÑO (5.26): cancelar SOLO en el paso Pago y sin
-          comprobante. Aquí no hay pedido creado todavía: al salir, el carrito
-          queda igual y la reserva de stock expira sola a las 2 h (sin acción
-          del cliente). */}
+      {/* POLÍTICA DEL DUEÑO (5.26 + 5.147): cancelar SOLO en el paso Pago y
+          mientras no haya comprobante ni pago validado. Aquí no hay pedido
+          creado todavía: al salir, el carrito queda igual y la reserva de
+          stock expira sola a las 2 h (sin acción del cliente). */}
       <Modal open={cancelOpen} onClose={() => setCancelOpen(false)} title="Cancelar pedido">
         <p className="text-body-base text-paper">
           Todavía no hay pedido ni cobro: tu carrito queda igual. ¿Seguro que quieres salir?

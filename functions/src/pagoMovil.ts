@@ -115,12 +115,36 @@ export async function coreCheckPagoMovil(ctx: CoreCtx): Promise<unknown> {
   if (gen.data()?.['pagoMovilAuto'] !== true) {
     throw new HttpsError('failed-precondition', 'La validación automática de pago móvil no está activa.');
   }
-  const telefonoDestino = telefonoBdv(gen.data()?.['pagoMovilTelefono'] ?? '');
+  // 5.142 · RESOLUCIÓN del teléfono de recaudo con RESPALDO de cuenta única.
+  // Primero el valor oficial (settings/general.pagoMovilTelefono). Si el doc
+  // lo perdió (un guardado de Operación con la carga fallida o con el suiche
+  // apagado escribe el bloque completo: el campo quedaba vacío y la
+  // validación automática moría para TODO el mundo, aunque el suiche volviera
+  // a verse encendido) y hay EXACTAMENTE UNA cuenta de pago móvil ACTIVA en
+  // settings/payment_accounts, esa cuenta es la que concilia el banco: se usa
+  // SU teléfono. Con 2+ cuentas sigue el rechazo (no se puede deducir cuál
+  // pregunta el banco) y con cero cuentas también.
+  let telefonoDestino = telefonoBdv(gen.data()?.['pagoMovilTelefono'] ?? '');
   if (telefonoDestino.length !== 11) {
-    throw new HttpsError(
-      'failed-precondition',
-      'La validación automática no tiene el teléfono de recaudo BDV configurado (Ajustes → Operación).',
+    const accSnap = await db().collection('settings').doc('payment_accounts').get();
+    const rawCuentas = accSnap.data()?.['accounts'];
+    const telefonos = new Set<string>(
+      Array.isArray(rawCuentas)
+        ? rawCuentas
+            .filter((a) => (a as Record<string, unknown> | null)?.['method'] === 'pago_movil' && (a as Record<string, unknown> | null)?.['active'] !== false)
+            .map((a) => telefonoBdv((a as Record<string, unknown>)['phone']))
+            .filter((t) => t.length === 11)
+        : [],
     );
+    if (telefonos.size !== 1) {
+      throw new HttpsError(
+        'failed-precondition',
+        telefonos.size === 0
+          ? 'La validación automática no tiene el teléfono de recaudo BDV configurado (Ajustes → Operación).'
+          : 'La validación automática necesita el teléfono de recaudo en Ajustes → Operación: hay varias cuentas de Pago Móvil activas y no se puede deducir la que concilia el banco.',
+      );
+    }
+    telefonoDestino = [...telefonos][0] as string;
   }
 
   // Claves del conciliador SOLO en el servidor.

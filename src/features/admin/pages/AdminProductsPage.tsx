@@ -640,7 +640,9 @@ function formatoLegibleImport(f: string): string {
     ? 'lista de precios (REF c/Imp)'
     : f === 'lista-limpia'
       ? 'lista con doble precio'
-      : 'reporte del POS';
+      : f === 'existencias'
+        ? 'reporte de existencias de inventario (solo stock)'
+        : 'reporte del POS';
 }
 
 function ImportarInventarioModal({
