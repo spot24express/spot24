@@ -326,23 +326,25 @@ export async function adminSetProductImages(productId: string, images: string[])
 }
 
 /**
- * Elimina un producto (solo admin, con confirmación en el panel).
- * 5.92c · Borrado COMPLETO en UN lote atómico: TODAS las variantes + la
- * ficha se borran juntos — si algo falla no se borra nada. Antes solo se
- * borraba la ficha y las variantes quedaban colgando en la base (Firestore
- * no borra subcolecciones en cascada): esa basura tomaba al importador por
- * sorpresa y abortó la 1ª importación real con «No document to update».
- * Un producto solo tiene variantes como subcolección (verificado), así que
- * con esto no queda nada huérfano.
+ * Elimina un producto (admin o gerencia, con confirmación en el panel).
+ * 5.92c · Borrado COMPLETO atómico: TODAS las variantes + la ficha juntos —
+ * si algo falla no se borra nada (Firestore no borra subcolecciones en
+ * cascada: borrar solo la ficha dejaba variantes huérfanas que abortaban al
+ * importador con «No document to update»).
+ *
+ * 5.150 · VÍA SERVIDOR (fn-deleteProduct): la 5.124 construyó el core Admin
+ * SDK (rol verificado en el servidor, blindaje de reservas activas,
+ * idempotente, auditoría) pero el panel seguía borrando por CLIENTE — y las
+ * reglas lo niegan SIEMPRE: la variante cae con `request.resource.data`
+ * inexistente en un DELETE (la causa original de la 5.124), el lote entero
+ * aborta con permission-denied y el dueño ve el genérico «Algo salió fuera
+ * de línea». Era el bug reportado el 15/11 al intentar borrar una alta del
+ * importador. El servidor es inmune a las reglas y rechaza con mensaje
+ * accionable si el producto tiene carritos en checkout (reserva activa):
+ * el panel nunca vuelve a ver un permission-denied crudo.
  */
 export async function adminDeleteProduct(productId: string): Promise<void> {
-  const fb = await loadFirebase();
-  if (!fb) throw new AppError('generic');
-  const varsSnap = await getDocs(collection(fb.db, 'products', productId, 'variants'));
-  const batch = writeBatch(fb.db);
-  varsSnap.forEach((v) => batch.delete(v.ref));
-  batch.delete(doc(fb.db, 'products', productId));
-  await batch.commit();
+  await callFunction('fn-deleteProduct', { productId });
 }
 
 /* ── Pedidos (colas de pagos y despacho) ── */

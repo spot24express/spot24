@@ -103,6 +103,13 @@
 [functions."fn-deleteMyAccount"]
   timeout = 26
 
+# 5.150 · Borrado de producto del panel (fn-deleteProduct, 5.124): escanea
+# reservas activas + lote de variantes + auditoría. Sin entrada propia moría
+# con el tope de fábrica (10 s) cuando la red del operador va degradada —
+# el mismo motivo de fn-deleteUser. 26 s = margen igual que el resto.
+[functions."fn-deleteProduct"]
+  timeout = 26
+
 # 5.112-C · PARCHE IMGBB: la subida del panel (productos, promos) reintenta
 # 3 veces contra caídas del hosting de fotos (peor caso ~17 s con los topos
 # internos de 5 s por intento). Sin timeout propio la lambda moría a los

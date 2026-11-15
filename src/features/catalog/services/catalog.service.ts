@@ -15,6 +15,7 @@ import { aMillis } from '@/shared/lib/tiempos';
 import {
   anclaDe, pasaFiltros, pasaTodosLosTokens, terminosDeCodigo, tokensDe,
 } from '../lib/busqueda';
+import { consultaSoloActivos } from '../lib/listado';
 import type { CatalogQuery, Product } from '../types';
 import type { Page } from '@/shared/types';
 import type { CategoryDef } from '@/shared/constants/categories';
@@ -76,6 +77,15 @@ async function buildProductsQuery(
   if (q.maxPriceUsd !== undefined) clauses.push(where('basePriceUsd', '<=', q.maxPriceUsd));
   if (q.inStockOnly) clauses.push(where('stockTotal', '>', 0));
   if (q.q) clauses.push(where('searchTerms', 'array-contains', q.q));
+  // 5.149 · El bloque de INACTIVOS a la cabeza (altas del importador «Solo
+  // stock»: nacen activo=false, sin categoría y con createdAt de la
+  // importación) dejaba páginas vacías tras el filtro en código: «Recién
+  // llegados» vacío y «Cargar más» a ciegas. Donde el índice compuesto YA
+  // existe (sin búsqueda ni precio/stock — ver consultaSoloActivos), el
+  // activo va EN la consulta y cada página trae solo productos vendibles.
+  // El cursor por snapshot (startAfter(doc)) sigue válido: cambia el índice,
+  // no la posición. En los combos sin índice queda el filtro en código.
+  if (consultaSoloActivos(q)) clauses.push(where('active', '==', true));
   clauses.push(orderBy('createdAt', 'desc'));
   if (q.cursor) {
     const c = decodeCursor(q.cursor);
