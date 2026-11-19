@@ -66,3 +66,27 @@ export function dedupePorId<T extends { id: string }>(items: readonly T[]): T[] 
   }
   return out;
 }
+
+/**
+ * 5.153 · Fecha y hora legibles en HORA DE VENEZUELA (America/Caracas) para
+ * la auditoría de «Actualizar inventario» (el dueño: «se vea quien lo
+ * ejecuto por ultima vez con fecha y hora»). Cualquier valor de Firestore
+ * pasa por aMillis; lo desconocido → '—' (jamás 'Invalid Date').
+ */
+export function fechaCaracasDe(v: unknown): string {
+  const ms = aMillis(v);
+  if (!ms) return '—';
+  try {
+    return new Intl.DateTimeFormat('es-VE', {
+      timeZone: 'America/Caracas',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    }).format(new Date(ms));
+  } catch {
+    return '—';
+  }
+}

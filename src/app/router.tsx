@@ -20,6 +20,7 @@ const MyOrdersPage = lazy(() => import('@/features/orders/pages/MyOrdersPage'));
 const OrderDetailPage = lazy(() => import('@/features/orders/pages/OrderDetailPage'));
 const AdminLayout = lazy(() => import('@/features/admin/pages/AdminLayout'));
 const AdminProductsPage = lazy(() => import('@/features/admin/pages/AdminProductsPage'));
+const AdminInventarioPage = lazy(() => import('@/features/admin/pages/AdminInventarioPage'));
 const AdminCategoriesPage = lazy(() => import('@/features/admin/pages/AdminCategoriesPage'));
 const AdminPaymentsPage = lazy(() => import('@/features/admin/pages/AdminPaymentsPage'));
 const AdminDispatchPage = lazy(() => import('@/features/admin/pages/AdminDispatchPage'));
@@ -93,6 +94,8 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <PanelIndex /> },
           { path: 'productos', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminProductsPage /></Lazy></GuardSection> },
+          /* 5.153 · Actualizar inventario: cajero, gerente y admin (decisión del dueño). */
+          { path: 'inventario', element: <GuardSection allow={['admin', 'gerente', 'cajero']}><Lazy><AdminInventarioPage /></Lazy></GuardSection> },
           { path: 'categorias', element: <GuardSection allow={['admin', 'gerente']}><Lazy><AdminCategoriesPage /></Lazy></GuardSection> },
           { path: 'pagos', element: <GuardSection allow={['admin', 'gerente', 'cajero']}><Lazy><AdminPaymentsPage /></Lazy></GuardSection> },
           { path: 'despacho', element: <GuardSection allow={['admin', 'gerente', 'cajero', 'delivery']}><Lazy><AdminDispatchPage /></Lazy></GuardSection> },

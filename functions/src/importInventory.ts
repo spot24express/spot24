@@ -75,6 +75,49 @@
  *   (Desde la 5.141 los precios menores de $1 SÍ se aplican: 0.75 queda
  *   0.75, ya no se pierden por el truncado de la 5.138.)
  *
+ * ── 5.151/5.152 · MODO «ACTUALIZAR» con el EXCEL del ERP (a pedido del dueño) ──
+ * · El dueño ya no importa PDFs: «ya no quiero las opciones de importar pdf,
+ *   solo quiero poder actualizar» con el «REPORTE LISTA DE PRECIOS» en
+ *   Excel (.xlsx), que trae «más de 1000 productos». El lector vive en
+ *   lib/listaPreciosXlsx.ts (misma arquitectura del parser PDF: puro y
+ *   testeado con el archivo real como fixture).
+ * · UPSERT literal del dueño: «si el codigo existe actualizar tanto el
+ *   precio como el stock y si no existe crear el producto con el precio y
+ *   la existencia, sin categoria e inactivo para completar luego y ponerlo
+ *   activo donde corresponde».
+ * · REGLAS (planActualizar, pura y testeada):
+ *   1. Código existe → precio («Precio REF c/Imp» CON decimales) + stock
+ *      («Existencia») se actualizan JUNTOS sobre el mismo emparejamiento.
+ *   2. Código nuevo → borrador INACTIVO, SIN categoría, CON precio y
+ *      existencia (el dueño lo completa y lo activa desde el panel).
+ *   3. Precio 0 o ilegible (punto ciego): al EXISTENTE no se le toca el
+ *      precio (un 0 sería un producto gratis) pero su stock SÍ se actualiza;
+ *      el NUEVO nace igual (inactivo, con precio 0) y queda señalado.
+ *   4. SOLO ESCRITURAS CON CAMBIO REAL: las filas idénticas (precio y stock
+ *      ya iguales) generan CERO escrituras — reimportar el mismo archivo es
+ *      un no-op con el resumen a la vista (ensayo 17/11: 982 de 985 filas →
+ *      0 escrituras).
+ *   5. ENSAYO POR DEFECTO: el resumen sin escrituras es el paso obligatorio
+ *      antes de «Actualizar de verdad».
+ * · FILAS-TRAMPA del ERP («COMPRAS GRAVABLES» / «COMPRAS EXENTAS»): el
+ *   lector las descarta SIEMPRE («realmente no son productos», decisión del
+ *   dueño) y las cuenta en el resumen.
+ * · ROLES (decisión del dueño): en «actualizar» también corre el CAJERO
+ *   («solo los roles cajero, gerente y admin podran actualizar»); delivery
+ *   sigue bloqueado y los otros modos quedan admin/gerente.
+ * · AUDITORÍA POR CORRIDA (decisión del dueño, 5.152): donde está el botón
+ *   «Actualizar inventario» se ve QUIÉN lo ejecutó POR ÚLTIMA VEZ con fecha
+ *   y hora. Cada corrida real (no ensayo) deja 1 documento en
+ *   inventoryImports: { byUid, byName (users/{uid}, 1 lectura), byRole, at,
+ *   archivo, filas, altas, precios, stocks, sinCambio }. La página lee el
+ *   último (y el historial) con reglas de SOLO LECTURA para el personal.
+ * · Sin sello por producto (el dueño lo aclaró: solo le importa el
+ *   «por última vez» de la corrida) → las escrituras siguen siendo SOLO las
+ *   del cambio real.
+ * · Los 501 borradores antiguos NO se tocan (decisión del dueño).
+ * · Tope del modo: MAX_FILAS_ACTUALIZAR (5000, margen para el crecimiento
+ *   del catálogo que espera el dueño; subible con una constante).
+ *
  * ── 5.140 · FIX TIMEOUT — «Task timed out after 30.00 seconds» ──
  * · La terminal de netlify dev mostró el timeout en fn-importInventory y la
  *   medición real dio la causa: el PDF se lee y parsea en <1 s (reporte de
@@ -97,12 +140,20 @@ import { HttpsError, onCall, type CallableRequest } from 'firebase-functions/v2/
 import { extraerItemsPdf } from './lib/extraerPdf';
 import { getAdminApp, type CoreCtx } from './lib/ctx';
 import { parseInventarioAuto, type FilaInventario } from './lib/inventarioPdf';
+import { parseListaPreciosXlsx } from './lib/listaPreciosXlsx';
 import { writeAudit } from './payments';
 
 const db = () => admin.firestore(getAdminApp());
 
 /** Tope defensivo de filas por importación (reportes de miles de ítems). */
 const MAX_FILAS = 2000;
+/**
+ * 5.151/5.152 · Tope del modo «actualizar» (Excel del ERP): margen para el
+ * crecimiento del catálogo que espera el dueño («se espera que el catálogo
+ * crezca bastante»). El archivo real de 985 filas sobra; subirlo es cambiar
+ * esta constante.
+ */
+export const MAX_FILAS_ACTUALIZAR = 5000;
 /** Firestore admite 500 ops por lote: margen para el control. */
 const OPS_POR_LOTE = 450;
 /** Firestore `in` admite 30 valores por consulta. */
@@ -210,12 +261,25 @@ export function filtrarPidsVivos(
 
 /* ── 5.137/5.138 · Modos, ensayo y planes (lógica PURA, testeable sin Firestore) ── */
 
-export type ModoImportacion = 'completo' | 'stock' | 'precios';
+export type ModoImportacion = 'completo' | 'stock' | 'precios' | 'actualizar';
 
 /** Modo pedido en el body ('completo' por default: comportamiento de siempre). */
 export function modoDe(data: unknown): ModoImportacion {
   const m = (data as Record<string, unknown> | undefined)?.['modo'];
-  return m === 'stock' ? 'stock' : m === 'precios' ? 'precios' : 'completo';
+  if (m === 'stock') return 'stock';
+  if (m === 'precios') return 'precios';
+  if (m === 'actualizar') return 'actualizar';
+  return 'completo';
+}
+
+/**
+ * 5.152 · Roles por modo (decisión del dueño): el Excel «actualizar» lo
+ * corren cajero, gerente y admin; el resto queda admin/gerente. Delivery
+ * jamás. Pura para poder testearla sin Firestore.
+ */
+export function puedeImportarInventario(modo: ModoImportacion, role: unknown): boolean {
+  const permitidos = modo === 'actualizar' ? ['admin', 'gerente', 'cajero'] : ['admin', 'gerente'];
+  return typeof role === 'string' && permitidos.includes(role);
 }
 
 /** Bandera de ensayo (dry-run: no escribe nada). */
@@ -259,6 +323,8 @@ export interface AltaInfo {
   codigo: string;
   nombre: string;
   stock: number;
+  /** 5.152 · Modo actualizar: precio CON el que nace el borrador (0 si ilegible). */
+  precio?: number;
 }
 
 export interface PlanPrecios {
@@ -350,6 +416,87 @@ export function planStock(
   return { cambios, altas };
 }
 
+export interface PlanActualizar {
+  /** Precio que cambia de verdad (antes ≠ después, después > 0). */
+  cambiosPrecio: Array<CambioPrecioInfo & { pid: string; vid: string }>;
+  /** Existencia que cambia de verdad (antes ≠ después). */
+  cambiosStock: Array<CambioStockInfo & { pid: string; vid: string }>;
+  /** Códigos NUEVOS: nacen como borrador INACTIVO con precio y existencia. */
+  altas: FilaInventario[];
+  /** Códigos emparejados SIN ningún cambio real: 0 escrituras (Regla 4). */
+  sinCambio: string[];
+  /** Emparejados con precio 0/ilegible en el archivo: precio NO se toca
+   *  (Regla 3); si su stock cambia igual aparecen en cambiosStock. */
+  sinPrecio: string[];
+}
+
+/**
+ * 5.152 · Clasificación PURA del modo «actualizar» (las Reglas 1 a 4 del
+ * pedido del dueño en UNA sola pasada sobre el emparejamiento code/sku):
+ *  · existe + precio válido ≠ actual → cambiosPrecio (Regla 1).
+ *  · existe + stock ≠ actual → cambiosStock (Regla 1, junto al precio).
+ *  · no existe → altas (Regla 2: borrador inactivo con precio y existencia).
+ *  · precio 0/ilegible de un EXISTENTE → sinPrecio, su stock SÍ se procesa
+ *    (Regla 3: jamás un producto gratis, pero la existencia es real).
+ *  · nada cambió → sinCambio: CERO escrituras (Regla 4).
+ */
+export function planActualizar(
+  filas: FilaInventario[],
+  existentes: Map<string, {
+    pid: string;
+    nombre: string;
+    precioActual: number;
+    stockActual: number;
+    vid: string;
+  }>,
+): PlanActualizar {
+  const cambiosPrecio: PlanActualizar['cambiosPrecio'] = [];
+  const cambiosStock: PlanActualizar['cambiosStock'] = [];
+  const altas: FilaInventario[] = [];
+  const sinCambio: string[] = [];
+  const sinPrecio: string[] = [];
+  for (const fila of filas) {
+    const blanco = existentes.get(fila.codigo);
+    if (!blanco) {
+      altas.push(fila);
+      continue;
+    }
+    let toco = false;
+    const nuevoPrecio = precioDecimalesDe(fila.precioConImp ?? Number.NaN);
+    if (nuevoPrecio > 0) {
+      const antes = Math.round(blanco.precioActual * 100) / 100;
+      if (nuevoPrecio !== antes) {
+        cambiosPrecio.push({
+          codigo: fila.codigo,
+          nombre: blanco.nombre,
+          antes,
+          despues: nuevoPrecio,
+          pid: blanco.pid,
+          vid: blanco.vid,
+        });
+        toco = true;
+      }
+    } else {
+      // Regla 3 (punto ciego): el precio del archivo es 0 o ilegible.
+      sinPrecio.push(fila.codigo);
+    }
+    const nuevoStock = existenciaEnteraDe(fila.existencia);
+    if (nuevoStock !== Math.round(blanco.stockActual)) {
+      cambiosStock.push({
+        codigo: fila.codigo,
+        nombre: blanco.nombre,
+        antes: Math.round(blanco.stockActual),
+        despues: nuevoStock,
+        pid: blanco.pid,
+        vid: blanco.vid,
+      });
+      toco = true;
+    }
+    if (!toco) sinCambio.push(fila.codigo);
+  }
+  return { cambiosPrecio, cambiosStock, altas, sinCambio, sinPrecio };
+}
+
 /**
  * 5.137 · Payload del producto NUEVO del modo stock: INACTIVO, SIN categoría
  * y SIN precio (0) — el dueño los completa desde el panel antes de activarlo
@@ -389,6 +536,27 @@ export function datosProductoNuevoStock(
   };
 }
 
+/**
+ * 5.152 · Payload del producto NUEVO del modo «actualizar»: IGUAL que el del
+ * modo stock (INACTIVO, SIN categoría — «sin categoria e inactivo para
+ * completar luego y ponerlo activo donde corresponde») pero CON el precio y
+ * la existencia del archivo («crear el producto con el precio y la
+ * existencia»). Precio ilegible/0 → 0 (nace inactivo: jamás sale gratis a
+ * la venta; el dueño lo completa antes de activarlo).
+ */
+export function datosProductoNuevoActualizar(
+  fila: FilaInventario,
+  ahora: number,
+  slug: string,
+): { producto: Record<string, unknown>; variante: Record<string, unknown> } {
+  const base = datosProductoNuevoStock(fila, ahora, slug);
+  const precio = precioDecimalesDe(fila.precioConImp ?? Number.NaN);
+  return {
+    producto: { ...base.producto, basePriceUsd: precio },
+    variante: { ...base.variante, priceUsd: precio },
+  };
+}
+
 export interface ResumenImportacion {
   filas: number;
   formato: string;
@@ -419,6 +587,10 @@ export interface ResumenImportacion {
     /** Confirmar los lotes (0 en ensayo: no escribe). */
     msEscrituras: number;
   };
+  /** 5.152 · Modo actualizar: nombre del archivo subido (para la corrida). */
+  archivo?: string;
+  /** 5.152 · Modo actualizar: meta del lector XLSX (para el resumen del panel). */
+  metaXlsx?: { bloques: number; basura: number; descartadasResumen: number };
 }
 
 /**
@@ -501,20 +673,320 @@ function elegirVid(map: Map<string, VarianteDatos>, codigo: string): string | nu
   );
 }
 
+/* ── 5.151/5.152 · MODO «ACTUALIZAR»: el Excel del ERP, las Reglas 1-5 ── */
+
+interface CtxActualizar {
+  role: unknown;
+  adminUid: string;
+  ensayo: boolean;
+}
+
+/**
+ * Núcleo del modo «actualizar» (5.151/5.152): la entrada es el «REPORTE LISTA
+ * DE PRECIOS» en Excel del ERP; el upsert literal del dueño:
+ *  «si el codigo existe actualizar tanto el precio como el stock y si no
+ *   existe crear el producto con el precio y la existencia, sin categoria e
+ *   inactivo para completar luego y ponerlo activo donde corresponde».
+ * La lectura/emparejamiento replica EXACTAMENTE la arquitectura de los otros
+ * modos (porLotesIn code → sku del grupo variants → blindaje de vivos
+ * 5.92b) y las escrituras son SOLO los cambios reales (Regla 4), loteados a
+ * 450 y confirmados en paralelo. En ensayo NADA se escribe (Regla 5).
+ */
+async function coreActualizar(ctx: CoreCtx, datos: CtxActualizar): Promise<unknown> {
+  const { role, adminUid, ensayo } = datos;
+  const archivoB64 = typeof ctx.data?.['archivoBase64'] === 'string' ? ctx.data['archivoBase64'] : '';
+  if (!archivoB64) throw new HttpsError('invalid-argument', 'Falta el archivo Excel (.xlsx) de la lista de precios.');
+  const nombreArchivo = sanitizeStr(ctx.data?.['nombreArchivo'], 120) || 'lista de precios.xlsx';
+
+  // ── 1 · Lectura del Excel (lib/listaPreciosXlsx: multi-bloque, coma VE,
+  //        ceros iniciales como texto, filas-trampa del ERP descartadas) ──
+  const t0 = Date.now();
+  let bytes: Buffer;
+  try {
+    bytes = Buffer.from(archivoB64, 'base64');
+  } catch {
+    throw new HttpsError('invalid-argument', 'El archivo llegó dañado (no se pudo decodificar).');
+  }
+  const parseo = parseListaPreciosXlsx(new Uint8Array(bytes));
+  const tArchivo = Date.now();
+  if (!parseo.filas.length) {
+    throw new HttpsError(
+      'invalid-argument',
+      'No se reconoció ningún producto en el Excel. Sube el «REPORTE LISTA DE PRECIOS» de tu sistema (.xlsx).',
+    );
+  }
+  if (parseo.filas.length > MAX_FILAS_ACTUALIZAR) {
+    throw new HttpsError(
+      'invalid-argument',
+      `El archivo trae ${parseo.filas.length} filas (tope ${MAX_FILAS_ACTUALIZAR}). Divídelo.`,
+    );
+  }
+
+  // ── 2 · Emparejamiento code/sku (idéntico a los otros modos) ──
+  const filas = parseo.filas;
+  const codigos = [...new Set(filas.map((f) => f.codigo))];
+  const productoPorCode = new Map<string, string>();
+  const docs = codigos.length
+    ? await porLotesIn(db().collection('products'), 'code', codigos)
+    : [];
+  docs.forEach((d) => {
+    const code = String(d.data()['code'] ?? '').toUpperCase();
+    if (code) productoPorCode.set(code, d.id);
+  });
+
+  const skuSinProducto = codigos.filter((c) => !productoPorCode.has(c));
+  const productoPorSku = new Map<string, string>();
+  const grupoVariantes = await db().collectionGroup('variants').get();
+  if (skuSinProducto.length) {
+    const buscar = new Set(skuSinProducto.map((c) => c.slice(0, 40).toUpperCase()));
+    grupoVariantes.forEach((d) => {
+      const sku = String(d.data()['sku'] ?? '').toUpperCase();
+      const pid = d.ref.parent?.parent?.id;
+      if (sku && pid && buscar.has(sku) && !productoPorCode.has(sku)) {
+        productoPorSku.set(sku, pid);
+      }
+    });
+  }
+
+  const pidsCandidatos = [...new Set([...productoPorCode.values(), ...productoPorSku.values()])];
+  const pidsVivos = new Set<string>();
+  const nombrePorPid = new Map<string, string>();
+  const tandasVivos: Array<Promise<admin.firestore.QuerySnapshot>> = [];
+  for (let i = 0; i < pidsCandidatos.length; i += EN_CONSULTA) {
+    const tanda = pidsCandidatos.slice(i, i + EN_CONSULTA);
+    if (!tanda.length) continue;
+    tandasVivos.push(
+      db().collection('products')
+        .where(admin.firestore.FieldPath.documentId(), 'in', tanda)
+        .get(),
+    );
+  }
+  const vivosSnaps = await Promise.all(tandasVivos);
+  vivosSnaps.forEach((snap) =>
+    snap.forEach((d) => {
+      pidsVivos.add(d.id);
+      nombrePorPid.set(d.id, String(d.data()['name'] ?? ''));
+    }),
+  );
+  const omitidasHuerfanas = filtrarPidsVivos(productoPorCode, productoPorSku, pidsVivos);
+
+  // ── 3 · Existentes con precio y stock de su variante objetivo ──
+  const existentes = new Map<string, {
+    pid: string; nombre: string; precioActual: number; stockActual: number; vid: string;
+  }>();
+  const pidsMatch = new Set<string>();
+  for (const fila of filas) {
+    const pid = productoPorCode.get(fila.codigo) ?? productoPorSku.get(fila.codigo);
+    if (!pid) continue;
+    pidsMatch.add(pid);
+    existentes.set(fila.codigo, { pid, nombre: nombrePorPid.get(pid) ?? '', precioActual: 0, stockActual: 0, vid: '' });
+  }
+  const variantesPorPid = variantesDeGrupo(grupoVariantes, pidsMatch);
+  for (const [codigo, info] of existentes) {
+    const map = variantesPorPid.get(info.pid);
+    const vid = map ? elegirVid(map, codigo) : null;
+    if (!map || !vid) {
+      // Producto sin variantes (resto de datos del panel): no emparejable,
+      // su código cae como NUEVO (alta) igual que en los otros modos.
+      existentes.delete(codigo);
+      continue;
+    }
+    const v = map.get(vid)!;
+    info.vid = vid;
+    info.precioActual = v.priceUsd;
+    info.stockActual = v.stock;
+  }
+
+  // ── 4 · Plan (Reglas 1-4, pura) ──
+  const plan = planActualizar(filas, existentes);
+
+  const ahora = Date.now();
+  const lote: admin.firestore.WriteBatch[] = [];
+  let loteActual = db().batch();
+  let ops = 0;
+  const nuevoLoteSiHagaFalta = () => {
+    if (ops >= OPS_POR_LOTE) {
+      lote.push(loteActual);
+      loteActual = db().batch();
+      ops = 0;
+    }
+  };
+  const enLote = (fn: (b: admin.firestore.WriteBatch) => void): void => {
+    nuevoLoteSiHagaFalta();
+    fn(loteActual);
+    ops += 1;
+  };
+
+  // ── 5 · UPDATE de existentes: consolidado por producto (un pid puede
+  //      llevar precio Y stock a la vez) → 1 update por variante tocada y
+  //      UNA sola ficha del producto (basePriceUsd solo si cambió precio). ──
+  const tocadosPorPid = new Map<string, { precio: Map<string, number>; stock: Map<string, number> }>();
+  const tocar = (pid: string, vid: string, campo: 'precio' | 'stock', valor: number): void => {
+    const actual = tocadosPorPid.get(pid) ?? { precio: new Map<string, number>(), stock: new Map<string, number>() };
+    (campo === 'precio' ? actual.precio : actual.stock).set(vid, valor);
+    tocadosPorPid.set(pid, actual);
+  };
+  for (const c of plan.cambiosPrecio) tocar(c.pid, c.vid, 'precio', c.despues);
+  for (const c of plan.cambiosStock) tocar(c.pid, c.vid, 'stock', c.despues);
+
+  let actualizados = 0;
+  for (const [pid, cambios] of tocadosPorPid) {
+    const pref = db().doc(`products/${pid}`);
+    const map = variantesPorPid.get(pid)!;
+    const estadoFinal = new Map<string, VarianteDatos>();
+    map.forEach((v, vid) => estadoFinal.set(vid, { ...v }));
+    for (const [vid, p] of cambios.precio) {
+      const actual = estadoFinal.get(vid);
+      if (actual) estadoFinal.set(vid, { ...actual, priceUsd: p });
+    }
+    for (const [vid, s] of cambios.stock) {
+      const actual = estadoFinal.get(vid);
+      if (actual) estadoFinal.set(vid, { ...actual, stock: s });
+    }
+    const vidsTocados = new Set([...cambios.precio.keys(), ...cambios.stock.keys()]);
+    for (const vid of vidsTocados) {
+      const precioNuevo = cambios.precio.get(vid);
+      const stockNuevo = cambios.stock.get(vid);
+      enLote((b) => b.update(pref.collection('variants').doc(vid), {
+        ...(precioNuevo !== undefined ? { priceUsd: redondearPrecio(precioNuevo) } : {}),
+        ...(stockNuevo !== undefined ? { stock: Math.max(0, stockNuevo) } : {}),
+      }));
+    }
+    const stockTotal = [...estadoFinal.values()].reduce((a, v) => a + Math.max(0, Math.round(v.stock)), 0);
+    const escribePrecio = cambios.precio.size > 0;
+    const basePriceUsd = escribePrecio
+      ? redondearPrecio(Math.min(...[...estadoFinal.values()].map((v) => v.priceUsd).filter((p) => Number.isFinite(p) && p >= 0)))
+      : 0;
+    enLote((b) => b.update(pref, {
+      stockTotal,
+      updatedAt: ahora,
+      ...(escribePrecio ? { basePriceUsd } : {}),
+    }));
+    actualizados += vidsTocados.size;
+  }
+
+  // ── 6 · CREATE de nuevos (Regla 2): borrador INACTIVO, SIN categoría, CON
+  //      precio y existencia; imagen placeholder hasta que el dueño complete. ──
+  let creados = 0;
+  const slugsBase = [...new Set(plan.altas.map((f) => slugDe(f.descripcion)))];
+  const slugsUsados = new Set<string>();
+  if (slugsBase.length) {
+    const docsSlug = await porLotesIn(db().collection('products'), 'slug', slugsBase.slice(0, 300));
+    docsSlug.forEach((d) => slugsUsados.add(String(d.data()['slug'] ?? '')));
+  }
+  for (const fila of plan.altas) {
+    const pref = db().collection('products').doc();
+    let slug = slugDe(fila.descripcion);
+    if (slugsUsados.has(slug)) slug = `${slug}-${fila.codigo.toLowerCase()}`;
+    if (slugsUsados.has(slug)) slug = `${slug}-${pref.id.slice(0, 6)}`;
+    slugsUsados.add(slug);
+    const datosNueva = datosProductoNuevoActualizar(fila, ahora, slug);
+    enLote((b) => b.set(pref, datosNueva.producto));
+    enLote((b) => b.set(pref.collection('variants').doc(`${pref.id}-v1`), datosNueva.variante));
+    creados += 1;
+  }
+
+  // ── 7 · Resumen (el mismo contrato del modal, con lo nuevo del modo) ──
+  const resumen: ResumenImportacion = {
+    filas: filas.length,
+    formato: 'xlsx',
+    modo: 'actualizar',
+    ensayo,
+    creados,
+    actualizados,
+    omitidasHuerfanas,
+    problemas: parseo.problemas.slice(0, 20),
+    sinMatch: [],
+    sinPrecio: plan.sinPrecio.slice(0, TOPE_LISTA_RESUMEN),
+    sinCambio: plan.sinCambio.length,
+    cambiosPrecio: plan.cambiosPrecio.slice(0, TOPE_CAMBIOS_RESUMEN).map(({ codigo, nombre, antes, despues }) => ({
+      codigo, nombre, antes, despues,
+    })),
+    altas: plan.altas.slice(0, TOPE_CAMBIOS_RESUMEN).map((f) => ({
+      codigo: f.codigo,
+      nombre: f.descripcion.slice(0, 60),
+      stock: existenciaEnteraDe(f.existencia),
+      precio: precioDecimalesDe(f.precioConImp ?? Number.NaN),
+    })),
+    cambiosStock: plan.cambiosStock.slice(0, TOPE_CAMBIOS_RESUMEN).map(({ codigo, nombre, antes, despues }) => ({
+      codigo, nombre, antes, despues,
+    })),
+    tiempos: { msPdf: tArchivo - t0, msLecturas: 0, msEscrituras: 0 },
+    archivo: nombreArchivo,
+    metaXlsx: {
+      bloques: parseo.bloquesEncabezado,
+      basura: parseo.filasBasura,
+      descartadasResumen: parseo.descartadasResumen,
+    },
+  };
+
+  const tLecturas = Date.now();
+  resumen.tiempos = { msPdf: tArchivo - t0, msLecturas: tLecturas - tArchivo, msEscrituras: 0 };
+  // Regla 5 · ENSAYO: NADA se escribe (ni lotes ni corrida ni auditoría).
+  if (!ensayo) {
+    lote.push(loteActual);
+    await Promise.all(lote.map((b) => b.commit()));
+    resumen.tiempos.msEscrituras = Date.now() - tLecturas;
+
+    // Auditoría por corrida (decisión del dueño): «se vea quien lo ejecuto
+    // por ultima vez con fecha y hora» donde está el botón. 1 lectura del
+    // nombre (users/{uid}) + 1 documento por corrida. Los cajeros ven esta
+    // página (firestore.rules: lectura staff, escritura SOLO funciones).
+    const userSnap = await db().collection('users').doc(adminUid).get();
+    const byName = sanitizeStr(userSnap.data()?.['name'], 80) || 'Personal';
+    await db().collection('inventoryImports').add({
+      byUid: adminUid,
+      byName,
+      byRole: String(role ?? ''),
+      at: ahora,
+      archivo: nombreArchivo,
+      filas: filas.length,
+      altas: plan.altas.length,
+      precios: plan.cambiosPrecio.length,
+      stocks: plan.cambiosStock.length,
+      sinCambio: plan.sinCambio.length,
+      modo: 'actualizar',
+    });
+
+    await writeAudit({
+      action: 'importar_inventario',
+      adminUid,
+      targetId: 'actualizar',
+      note: `${nombreArchivo} · modo actualizar · ${filas.length} filas · ${plan.cambiosPrecio.length} precios`
+        + ` · ${plan.cambiosStock.length} existencias · +${plan.altas.length} borradores`
+        + ` · ${plan.sinCambio.length} sin cambio${omitidasHuerfanas ? ` · ${omitidasHuerfanas} huérfanas` : ''}`,
+    });
+  }
+  console.log(
+    `[fn-importInventory] modo actualizar${ensayo ? ' · ENSAYO' : ''} · ${nombreArchivo}`
+    + ` · tiempos ms: archivo=${resumen.tiempos.msPdf} lecturas=${resumen.tiempos.msLecturas} escrituras=${resumen.tiempos.msEscrituras}`,
+  );
+  return resumen;
+}
+
 export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
-  // Igual que fn-adjustStock: administración o gerencia (reglas del catálogo).
+  // 5.152 · Roles por modo (decisión del dueño): «actualizar» (Excel) lo
+  // corren cajero, gerente y admin; el resto queda administración o gerencia.
   if (!ctx.auth) throw new HttpsError('unauthenticated', 'Sesión requerida.');
   const role = ctx.auth.token['role'];
-  if (role !== 'admin' && role !== 'gerente') {
-    throw new HttpsError('permission-denied', 'Solo administración o gerencia.');
+  const modo = modoDe(ctx.data);
+  if (!puedeImportarInventario(modo, role)) {
+    throw new HttpsError(
+      'permission-denied',
+      modo === 'actualizar' ? 'Solo administración, gerencia o caja.' : 'Solo administración o gerencia.',
+    );
   }
   const adminUid = ctx.auth.uid;
 
-  // 5.137 · Modo de importación y bandera de ensayo. Cualquier valor distinto
-  // de 'stock'/'precios' en modo cae en 'completo' (default = comportamiento
-  // de siempre, intacto: los clientes que no mandan modo siguen igual).
-  const modo = modoDe(ctx.data);
+  // 5.137 · Bandera de ensayo. El modo cae en 'completo' si viene raro
+  // (default = comportamiento de siempre, intacto: los clientes que no mandan
+  // modo siguen igual).
   const ensayo = ensayoDe(ctx.data);
+
+  // 5.151/5.152 · MODO «ACTUALIZAR»: la entrada es el EXCEL del ERP (no PDF).
+  if (modo === 'actualizar') {
+    return coreActualizar(ctx, { role, adminUid, ensayo });
+  }
 
   const pdfBase64 = typeof ctx.data?.['pdfBase64'] === 'string' ? ctx.data['pdfBase64'] : '';
   const categoryId = sanitizeStr(ctx.data?.['categoryId'], 120);
@@ -1052,6 +1524,6 @@ export async function coreImportInventory(ctx: CoreCtx): Promise<unknown> {
 }
 
 export const fnImportInventory = onCall(
-  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 5 },
+  { region: 'us-central1', consumeAppCheckToken: true, cors: true, maxInstances: 5, timeoutSeconds: 120 },
   (req: CallableRequest) => coreImportInventory(req as unknown as CoreCtx),
 );

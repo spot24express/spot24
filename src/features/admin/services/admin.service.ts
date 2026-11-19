@@ -229,7 +229,7 @@ export async function adminAdjustStock(
 /* ── 5.87 · Importar inventario desde el PDF del POS ── */
 
 /** 5.137/5.138 · Modo de la importación (el default «completo» es el de siempre). */
-export type ModoImportacion = 'completo' | 'stock' | 'precios';
+export type ModoImportacion = 'completo' | 'stock' | 'precios' | 'actualizar';
 
 export interface ImportInventarioCambioPrecio {
   codigo: string;
@@ -251,6 +251,8 @@ export interface ImportInventarioAlta {
   codigo: string;
   nombre: string;
   stock: number;
+  /** 5.152 modo actualizar: precio CON el que nace el borrador (0 si ilegible). */
+  precio?: number;
 }
 
 export interface ImportInventarioResult {
@@ -261,8 +263,9 @@ export interface ImportInventarioResult {
   /** Productos existentes actualizados. */
   actualizados: number;
   /** 5.92/5.138 · Formato detectado: «pos» (Inventario disponible), «lista-limpia»
-   *  (doble precio) o «lista-precios» (REPORTE LISTA DE PRECIOS del ERP). */
-  formato: 'pos' | 'lista-limpia' | 'lista-precios';
+   *  (doble precio), «lista-precios» (REPORTE LISTA DE PRECIOS del ERP) o
+   *  «xlsx» (5.152 · el mismo reporte en Excel, modo «actualizar»). */
+  formato: 'pos' | 'lista-limpia' | 'lista-precios' | 'xlsx';
   /** Filas descartadas con motivo (ilegibles, códigos repetidos renombrados…). */
   problemas: string[];
   /** 5.137/5.138 · Modo de la importación. */
@@ -283,6 +286,10 @@ export interface ImportInventarioResult {
   altas?: ImportInventarioAlta[];
   /** 5.137 modo stock: existencias antes → después (tope 50). */
   cambiosStock?: ImportInventarioCambioStock[];
+  /** 5.152 modo actualizar: nombre del archivo subido (viaja a la corrida). */
+  archivo?: string;
+  /** 5.152 modo actualizar: meta del lector XLSX (bloques, basura, trampas). */
+  metaXlsx?: { bloques: number; basura: number; descartadasResumen: number };
 }
 
 /**
@@ -309,6 +316,111 @@ export async function adminImportInventory(
     modo: opts?.modo ?? 'completo',
     ensayo: opts?.ensayo === true,
   });
+}
+
+/* ── 5.151/5.152 · ACTUALIZAR INVENTARIO con el Excel del ERP ── */
+
+/** Tope del panel: 6 MB de .xlsx ≈ 8 MB en base64 (límite de la llamada: 10 MB). */
+export const ACTUALIZAR_PESO_MAX = 6 * 1024 * 1024;
+
+/**
+ * Mensaje de rechazo del archivo del modo «actualizar» ('' = válido).
+ * Pura para poder testearla sin DOM.
+ */
+export function validarArchivoActualizar(nombre: string, peso: number): string {
+  if (!/\.xlsx$/i.test(nombre.trim())) {
+    return 'Sube el archivo en Excel (.xlsx): el «REPORTE LISTA DE PRECIOS» de tu sistema.';
+  }
+  if (peso > ACTUALIZAR_PESO_MAX) {
+    return 'El Excel pesa más de 6 MB. Exporta el reporte con menos secciones o divídelo.';
+  }
+  return '';
+}
+
+/**
+ * 5.152 · Sube el «REPORTE LISTA DE PRECIOS» en Excel (base64) con el modo
+ * «actualizar»: upsert del dueño — existe → precio + stock; no existe →
+ * borrador INACTIVO sin categoría CON precio y existencia. Solo escriben los
+ * cambios reales. ensayo: true → NO guarda nada, devuelve el resumen.
+ */
+export async function adminActualizarInventario(
+  archivoBase64: string,
+  nombreArchivo: string,
+  ensayo: boolean,
+): Promise<ImportInventarioResult> {
+  return callFunction<ImportInventarioResult>('fn-importInventory', {
+    archivoBase64,
+    nombreArchivo: nombreArchivo.slice(0, 120),
+    modo: 'actualizar',
+    ensayo,
+  });
+}
+
+/** 5.152 · Corrida de «Actualizar inventario» registrada por el servidor. */
+export interface CorridaInventario {
+  id: string;
+  /** Nombre del personal que la ejecutó (resuelto en el servidor). */
+  byName: string;
+  byRole: string;
+  /** Epoch-ms de la corrida. */
+  at: number;
+  archivo: string;
+  filas: number;
+  altas: number;
+  precios: number;
+  stocks: number;
+  sinCambio: number;
+}
+
+const corridaDeDoc = (d: QueryDocumentSnapshot): CorridaInventario => {
+  const v = d.data();
+  return {
+    id: d.id,
+    byName: String(v['byName'] ?? 'Personal'),
+    byRole: String(v['byRole'] ?? ''),
+    at: aMillis(v['at']),
+    archivo: String(v['archivo'] ?? ''),
+    filas: Number(v['filas'] ?? 0),
+    altas: Number(v['altas'] ?? 0),
+    precios: Number(v['precios'] ?? 0),
+    stocks: Number(v['stocks'] ?? 0),
+    sinCambio: Number(v['sinCambio'] ?? 0),
+  };
+};
+
+/**
+ * 5.152 · La ÚLTIMA corrida real de «Actualizar inventario» (la que se ve
+ * junto al botón: quién la ejecutó por última vez con fecha y hora). Sin
+ * orderBy en cliente sería inviable — `at` SIEMPRE es número (Date.now()
+ * del servidor), así que orderBy no sufre el problema de tipos mezclados
+ * de createdAt (5.95).
+ */
+export async function ultimaActualizacionInventario(): Promise<CorridaInventario | null> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  const snap = await getDocs(query(
+    collection(fb.db, 'inventoryImports'),
+    orderBy('at', 'desc'),
+    fbLimit(1),
+  ));
+  if (snap.empty) return null;
+  return corridaDeDoc(snap.docs[0]!);
+}
+
+/**
+ * 5.152 · Historial reciente de corridas (las últimas 5, más nueva primero).
+ * Solo lectura (firestore.rules: personal admin/gerente/cajero; escritura
+ * SOLO vía Cloud Functions).
+ */
+export async function historialActualizacionesInventario(): Promise<CorridaInventario[]> {
+  const fb = await loadFirebase();
+  if (!fb) throw new AppError('generic');
+  const snap = await getDocs(query(
+    collection(fb.db, 'inventoryImports'),
+    orderBy('at', 'desc'),
+    fbLimit(5),
+  ));
+  return snap.docs.map(corridaDeDoc);
 }
 
 /**

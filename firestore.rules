@@ -242,6 +242,15 @@ service cloud.firestore {
     // (Admin SDK ignora las reglas). Explícita por claridad: el catch-all de
     // abajo ya la bloquea, así que re-deployar reglas NO es imprescindible.
     match /catalogBackups/{id}            { allow read, write: if false; }
+    /* 5.152/5.153 · Corridas de «Actualizar inventario»: el servidor escribe
+       (Admin SDK); el panel lee para mostrar «Última actualización» — quién,
+       cuándo y los conteos. Lectura para admin, gerente y cajero (el cajero
+       ve la página); delivery NO; escritura de cliente NUNCA. */
+    match /inventoryImports/{id} {
+      allow read: if signedIn()
+        && request.auth.token.role in ['admin', 'gerente', 'cajero'];
+      allow write: if false;
+    }
 
     /* ── DENY BY DEFAULT: cualquier otra ruta queda bloqueada ── */
     match /{document=**} {

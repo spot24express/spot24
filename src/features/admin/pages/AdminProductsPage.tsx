@@ -8,9 +8,7 @@ import { Input, Select, Textarea } from '@/shared/components/ui/Input';
 import { Modal } from '@/shared/components/ui/Modal';
 import {
   adminListProducts, adminSaveProduct, adminDeleteProduct,
-  adminGetVariants, adminSetProductImages, adminImportInventory,
-  adminCountAllProducts,
-  type ImportInventarioResult, type ModoImportacion,
+  adminGetVariants, adminSetProductImages, adminCountAllProducts,
 } from '../services/admin.service';
 import { filtrarProductosAdmin } from '../lib/listaAdmin';
 import { adminUploadImage } from '../services/imageUpload.service';
@@ -20,7 +18,7 @@ import { listCategories } from '@/features/catalog/services/catalog.service';
 import { sortAdminCategoryList } from '@/shared/lib/categoryTree';
 import { alFallarFoto } from '@/shared/lib/imgFallback';
 import type { CategoryDef } from '@/shared/constants/categories';
-import { userMessage, AppError } from '@/shared/lib/errors';
+import { userMessage } from '@/shared/lib/errors';
 
 /**
  * Gestión de productos: precio y stock DIRECTOS, sin variantes ni SKU a la vista.
@@ -34,8 +32,10 @@ export default function AdminProductsPage() {
   const [error, setError] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [creating, setCreating] = useState(false);
-  // 5.87 · importar inventario desde el PDF del POS.
-  const [importing, setImporting] = useState(false);
+  /* 5.153 · El «Importar PDF» y su modal de 3 modos se QUITARON de aquí (el
+     dueño: «ya no quiero las opciones de importar pdf»). La única vía de
+     actualización de inventario es la página «Actualizar inventario»
+     (/admin/inventario) con el Excel del ERP: cajero, gerente y admin. */
   // 5.96 · cantidad TOTAL de productos (colección completa, activos e
   // inactivos). La búsqueda no la cambia: «M encontrados de N».
   const [total, setTotal] = useState<number | null>(null);
@@ -95,7 +95,6 @@ export default function AdminProductsPage() {
           <p className="spot-subtitle mt-1">Catálogo con precio y stock directos.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={() => setImporting(true)}>Importar PDF</Button>
           <Button onClick={() => setCreating(true)}>Nuevo producto</Button>
         </div>
       </div>
@@ -157,15 +156,6 @@ export default function AdminProductsPage() {
           </ul>
         )}
       </div>
-
-      <ImportarInventarioModal
-        open={importing}
-        onClose={() => setImporting(false)}
-        onImported={() => {
-          load();
-          refreshTotal();
-        }}
-      />
 
       <ProductModal
         // 5.75 · FIX: paréntesis. Antes `editing?.id ?? creating ? 'nuevo' :
@@ -593,335 +583,6 @@ function ProductModal({
           <Button variant="secondary" onClick={onClose}>Cancelar</Button>
           <Button className="flex-1" loading={busy} disabled={!metaReady} onClick={() => void save()}>
             Guardar producto
-          </Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-/**
- * 5.87/5.92 · Importar inventario (PDF) — 5.137/5.138 · TRES MODOS + ENSAYO:
- *  · «Actualizar todo» (completo, default): crea los que falten y actualiza
- *    stock + precio de los existentes (comportamiento de siempre).
- *  · «Solo stock» (stock): actualiza SOLO las existencias de los que existen
- *    (entero, sin decimales); los códigos nuevos se crean INACTIVOS, sin
- *    categoría ni precio.
- *  · «Solo precios» (precios): con la LISTA DE PRECIOS del ERP — fija el
- *    precio de la columna «Precio REF c/Imp» CON sus decimales a los códigos
- *    que YA existen (5.141: 125.81 → 125.81); no crea nada ni toca el stock;
- *    los que traen precio 0 o ilegible en el PDF NO se tocan y quedan listados.
- *  · MODO ENSAYO (marcado por defecto): calcula TODO y NO guarda nada — el
- *    dueño revisa el resumen y después importa de verdad.
- * Mapeo fijo: código ← Codigo/Código · nombre ← Descripcion/Descripción ·
- * precio ← Costo (POS) / Precio USD sin impuesto (lista) / Precio REF c/Imp
- * (lista de precios) · stock ← Existencia.
- */
-const MODOS_IMPORTACION: Array<{ valor: ModoImportacion; titulo: string; detalle: string }> = [
-  {
-    valor: 'completo',
-    titulo: 'Actualizar todo',
-    detalle: 'Crea los que falten y actualiza stock + precio de los existentes (como siempre).',
-  },
-  {
-    valor: 'stock',
-    titulo: 'Solo stock',
-    detalle: 'Actualiza SOLO las existencias de los que existen; los nuevos nacen INACTIVOS, sin categoría ni precio.',
-  },
-  {
-    valor: 'precios',
-    titulo: 'Solo precios (lista de precios)',
-    detalle: 'Fija el precio de la columna «Precio REF c/Imp» CON sus decimales a los códigos que YA existen. No crea nada ni toca stock.',
-  },
-];
-
-function formatoLegibleImport(f: string): string {
-  return f === 'lista-precios'
-    ? 'lista de precios (REF c/Imp)'
-    : f === 'lista-limpia'
-      ? 'lista con doble precio'
-      : f === 'existencias'
-        ? 'reporte de existencias de inventario (solo stock)'
-        : 'reporte del POS';
-}
-
-function ImportarInventarioModal({
-  open, onClose, onImported,
-}: {
-  open: boolean;
-  onClose: () => void;
-  onImported: () => void;
-}) {
-  const [categorias, setCategorias] = useState<CategoryDef[]>([]);
-  const [catId, setCatId] = useState('');
-  const [archivo, setArchivo] = useState<File | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [resultado, setResultado] = useState<ImportInventarioResult | null>(null);
-  // 5.137/5.138 · Modo de la importación y bandera de ensayo (ENSAYO por
-  // defecto: el dueño revisa el plan ANTES de que se escriba algo).
-  const [modo, setModo] = useState<ModoImportacion>('completo');
-  const [ensayo, setEnsayo] = useState(true);
-  // 5.87b · Motivo REAL del servidor en el último intento fallido: los
-  // mensajes del backend son estáticos y en español (sin PII) — mostrarlos
-  // aquí le dice al dueño QUÉ corregir (PDF ilegible, categoría, tamaño…)
-  // sin depender de la consola.
-  const [errorServidor, setErrorServidor] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setResultado(null);
-    setArchivo(null);
-    setErrorServidor('');
-    setEnsayo(true); // cada apertura vuelve al ensayo (no se escribe nada)
-    void listCategories()
-      .then((c) => setCategorias(sortAdminCategoryList(c)))
-      .catch(() => setCategorias([]));
-  }, [open]);
-
-  const importar = async (): Promise<void> => {
-    if (!archivo || busy) return;
-    if (modo === 'completo' && !catId) return;
-    if (archivo.size > 4 * 1024 * 1024) {
-      toast.error('El PDF pesa más de 4 MB. Exporta el reporte con menos páginas.');
-      return;
-    }
-    setBusy(true);
-    setErrorServidor('');
-    try {
-      const pdfBase64 = await new Promise<string>((resolve, reject) => {
-        const r = new FileReader();
-        r.onload = () => resolve(String(r.result ?? '').split(',')[1] ?? '');
-        r.onerror = () => reject(new Error('No se pudo leer el archivo.'));
-        r.readAsDataURL(archivo);
-      });
-      const res = await adminImportInventory(pdfBase64, catId, { modo, ensayo });
-      setResultado(res);
-      if (res.ensayo) {
-        toast.success(`Ensayo listo: ${res.filas} filas leídas. NADA se guardó.`);
-      } else {
-        toast.success(`Importación lista: ${res.creados} nuevos · ${res.actualizados} actualizados.`);
-        onImported();
-      }
-    } catch (e) {
-      // El motivo técnico del servidor solo se muestra en flujos de admin
-      // (patrón de AdminPaymentsPage): el toast sigue siendo el genérico.
-      const tecnico = e instanceof AppError && e.message !== userMessage(e) ? e.message : '';
-      setErrorServidor(tecnico);
-      toast.error(userMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title="Importar inventario (PDF)">
-      <div className="space-y-4">
-        <p className="text-sm text-muted">
-          Sube tu PDF: sirve el reporte «Inventario disponible» del POS, las listas con doble precio
-          (se usa el SIN impuesto) y la LISTA DE PRECIOS del sistema (se usa «Precio REF c/Imp»).
-          Primero corre el ENSAYO: calcula todo y no guarda nada.
-        </p>
-
-        {/* 5.137/5.138 · Selector de modo (radio simple, una decisión clara). */}
-        <div role="radiogroup" aria-label="Qué hace la importación" className="space-y-2">
-          {MODOS_IMPORTACION.map((m) => (
-            <label
-              key={m.valor}
-              className={`flex cursor-pointer gap-3 rounded-brand border-2 p-3 transition-colors ${
-                modo === m.valor ? 'border-signal bg-signal/5' : 'border-line hover:border-line-strong'
-              }`}
-            >
-              <input
-                type="radio"
-                name="modo-importacion"
-                className="mt-1 accent-signal"
-                checked={modo === m.valor}
-                onChange={() => setModo(m.valor)}
-              />
-              <span>
-                <span className="block font-semibold text-paper">{m.titulo}</span>
-                <span className="mt-0.5 block text-xs text-muted">{m.detalle}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-
-        {modo === 'precios' && (
-          <p className="rounded-brand border-2 border-line bg-ink p-3 text-xs text-muted">
-            Este modo NO crea productos y NO toca el stock: solo fija precios de los códigos que ya
-            están en la tienda. Los códigos que falten en la tienda quedan fuera (verás cuáles en el
-            resumen) y los que traigan precio 0 o ilegible en el PDF NO se tocan: un precio 0 sería un producto gratis.
-          </p>
-        )}
-
-        {/* La categoría solo hace falta en «Actualizar todo» (los nuevos caen ahí). */}
-        {modo === 'completo' ? (
-          <Select label="Categoría donde caerán los productos NUEVOS" value={catId} onChange={(e) => setCatId(e.target.value)} required>
-            <option value="">Selecciona…</option>
-            {sortAdminCategoryList(categorias).map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.parentId ? `↳ ${c.name}` : c.name}
-              </option>
-            ))}
-          </Select>
-        ) : (
-          <p className="text-xs text-muted">
-            {modo === 'stock'
-              ? 'Sin categoría: los productos nuevos nacen INACTIVOS y sin categoría; los activas desde el panel cuando les pongas precio.'
-              : 'No se crean productos: la categoría no hace falta.'}
-          </p>
-        )}
-
-        <div>
-          <p className="mb-2 spot-label">Reporte en PDF (hasta 4 MB)</p>
-          <input
-            ref={inputRef}
-            type="file"
-            accept=".pdf,application/pdf"
-            className="hidden"
-            onChange={(e) => {
-              setArchivo(e.target.files?.[0] ?? null);
-              setResultado(null);
-              setErrorServidor('');
-            }}
-          />
-          <div className="flex items-center gap-2">
-            <Button variant="secondary" size="sm" onClick={() => inputRef.current?.click()}>
-              {archivo ? 'Cambiar archivo…' : 'Elegir PDF…'}
-            </Button>
-            {archivo && (
-              <span className="min-w-0 truncate text-sm text-paper">
-                {archivo.name} · {(archivo.size / 1024).toFixed(0)} KB
-              </span>
-            )}
-          </div>
-        </div>
-
-        {/* 5.137 · MODO ENSAYO (marcado por defecto): nada se escribe. */}
-        <label className="flex cursor-pointer items-start gap-3 rounded-brand border-2 border-line p-3">
-          <input
-            type="checkbox"
-            className="mt-1 accent-signal"
-            checked={ensayo}
-            onChange={(e) => setEnsayo(e.target.checked)}
-          />
-          <span className="text-sm text-paper">
-            Modo ensayo — calcula todo y <span className="font-semibold">NO guarda nada</span>{' '}
-            <span className="block text-xs text-muted">Recomendado la primera vez: revisa el resumen y luego desmárcalo para importar de verdad.</span>
-          </span>
-        </label>
-
-        {errorServidor && (
-          <div role="alert" className="rounded-brand border-2 border-line bg-ink p-3 text-sm">
-            <p className="font-semibold text-paper">El servidor no pudo importar</p>
-            <p className="mt-1 text-xs text-muted">Motivo: {errorServidor}</p>
-          </div>
-        )}
-
-        {resultado && (
-          <div className="rounded-brand border-2 border-line bg-ink p-4 text-sm">
-            <p className="font-semibold text-paper">
-              {resultado.ensayo && <span className="text-signal">ENSAYO — NADA SE GUARDÓ · </span>}
-              {resultado.filas} filas leídas · formato: {formatoLegibleImport(resultado.formato)}
-            </p>
-            <p className="mt-1 text-xs text-muted">
-              Modo: {MODOS_IMPORTACION.find((m) => m.valor === resultado.modo)?.titulo ?? resultado.modo}
-              {' · '}{resultado.creados} nuevos · {resultado.actualizados} actualizados
-              {resultado.omitidasHuerfanas ? ` · ${resultado.omitidasHuerfanas} referencias huérfanas omitidas` : ''}
-            </p>
-
-            {/* 5.138 · modo precios: tabla de cambios antes → después. */}
-            {(resultado.cambiosPrecio?.length ?? 0) > 0 && (
-              <div className="mt-3">
-                <p className="spot-label">Precios {resultado.ensayo ? 'que se fijarían' : 'fijados'} (antes → después)</p>
-                <ul className="mt-1 list-inside list-disc space-y-1 text-xs text-muted">
-                  {resultado.cambiosPrecio!.map((c) => (
-                    <li key={c.codigo}>
-                      <span className="text-paper">{c.codigo}</span> · {c.nombre.slice(0, 42)} · ${c.antes.toFixed(2)} →{' '}
-                      <span className="font-semibold text-signal">${c.despues.toFixed(2)}</span>
-                    </li>
-                  ))}
-                </ul>
-                {(resultado.sinCambio ?? 0) > 0 && (
-                  <p className="mt-1 text-xs text-muted">{resultado.sinCambio} producto(s) ya tenían ese precio (no se tocan).</p>
-                )}
-              </div>
-            )}
-
-            {/* 5.138 · modo precios: los que traen precio 0 o ilegible (blindaje). */}
-            {(resultado.sinPrecio?.length ?? 0) > 0 && (
-              <p className="mt-2 text-xs text-muted">
-                <span className="font-semibold text-paper">{resultado.sinPrecio!.length} artículo(s) NO se tocan</span> (su precio en el
-                PDF es 0 o ilegible): {resultado.sinPrecio!.slice(0, 12).join(', ')}
-                {resultado.sinPrecio!.length > 12 ? '…' : ''}.
-              </p>
-            )}
-
-            {/* 5.138 · modo precios: códigos que no están en la tienda. */}
-            {(resultado.sinMatch?.length ?? 0) > 0 && (
-              <p className="mt-2 text-xs text-muted">
-                <span className="font-semibold text-paper">{resultado.sinMatch!.length} código(s) del PDF no están en la tienda</span> (no se
-                crean en este modo): {resultado.sinMatch!.slice(0, 12).join(', ')}
-                {resultado.sinMatch!.length > 12 ? '…' : ''}.
-              </p>
-            )}
-
-            {/* 5.137 · modo stock: altas y cambios de existencia. */}
-            {(resultado.cambiosStock?.length ?? 0) > 0 && (
-              <div className="mt-3">
-                <p className="spot-label">Existencias {resultado.ensayo ? 'que se actualizarían' : 'actualizadas'} (antes → después)</p>
-                <ul className="mt-1 list-inside list-disc space-y-1 text-xs text-muted">
-                  {resultado.cambiosStock!.map((c) => (
-                    <li key={c.codigo}>
-                      <span className="text-paper">{c.codigo}</span> · {c.nombre.slice(0, 42)} · {c.antes} →{' '}
-                      <span className="font-semibold text-signal">{c.despues}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {(resultado.altas?.length ?? 0) > 0 && (
-              <div className="mt-2">
-                <p className="spot-label">
-                  {resultado.ensayo ? 'Productos que se crearían' : 'Productos creados'} (inactivos, sin categoría ni precio)
-                </p>
-                <ul className="mt-1 list-inside list-disc space-y-1 text-xs text-muted">
-                  {resultado.altas!.map((a) => (
-                    <li key={a.codigo}>
-                      <span className="text-paper">{a.codigo}</span> · {a.nombre} · stock {a.stock}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {resultado.problemas.length > 0 && (
-              <ul className="mt-2 list-inside list-disc space-y-1 text-xs text-muted">
-                {resultado.problemas.map((p) => (
-                  <li key={p}>{p}</li>
-                ))}
-              </ul>
-            )}
-
-            {resultado.ensayo && (
-              <p className="mt-3 rounded-brand border-2 border-signal/40 bg-signal/5 p-2 text-xs text-paper">
-                Si el resumen te cuadra: desmarca «Modo ensayo» y pulsa «Importar de verdad».
-              </p>
-            )}
-          </div>
-        )}
-
-        <div className="flex justify-end gap-3 pt-2">
-          <Button variant="secondary" onClick={onClose}>
-            {resultado && !resultado.ensayo ? 'Listo' : 'Cancelar'}
-          </Button>
-          <Button
-            loading={busy}
-            disabled={!archivo || (modo === 'completo' && !catId)}
-            onClick={() => void importar()}
-          >
-            {ensayo ? 'Probar ensayo (no guarda)' : 'Importar de verdad'}
           </Button>
         </div>
       </div>
