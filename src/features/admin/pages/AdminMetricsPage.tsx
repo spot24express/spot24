@@ -10,7 +10,9 @@ import {
 } from '../services/admin.service';
 import { loadFirebase } from '@/shared/lib/firebase';
 import { STATUS_LABELS, ORDER_STATUSES, type OrderStatus } from '@/shared/constants/orders';
-import { formatUsd } from '@/shared/lib/format';
+/* 5.155 · rateText y fmtFechaValor son COMPARTIDAS (antes eran locales): las
+   usa también la tarjeta compacta «Tasa vigente» de la cabecera del panel. */
+import { formatUsd, rateText, fmtFechaValor } from '@/shared/lib/format';
 
 /**
  * Métricas básicas de ventas y pedidos (5.6), calculadas en el backend.
@@ -483,21 +485,6 @@ export default function AdminMetricsPage() {
       )}
     </div>
   );
-}
-
-/** Formatea la tasa al estilo venezolano: 36,58 */
-function rateText(usdToVes: number): string {
-  if (!(usdToVes > 0)) return '—';
-  return usdToVes.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-/** «2026-09-29» → «Martes, 29 de septiembre de 2026» (— si viene vacía). */
-function fmtFechaValor(iso: string): string {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '—';
-  const s = new Date(`${iso}T12:00:00`).toLocaleDateString('es-VE', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-  });
-  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** Milisegundos → «3 h 24 min» / «47 min» (edad del último intento del cron). */

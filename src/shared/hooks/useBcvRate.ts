@@ -22,6 +22,9 @@ export interface BcvRate {
   source: string;
   /** Marca de tiempo del último cambio REAL de tasa (escrito por el backend). */
   updatedAt: number;
+  /** 5.155 · Fecha valor oficial del BCV (YYYY-MM-DD) que acompaña a la tasa.
+      El cajero la muestra en la cabecera del panel junto a la cifra. */
+  fechaValor: string;
 }
 
 let cached: BcvRate | null = null;
@@ -29,7 +32,18 @@ const listeners = new Set<() => void>();
 let started = false;
 
 function notifyIfChanged(next: BcvRate): void {
-  if (cached && cached.rate === next.rate && cached.source === next.source) return;
+  /* fechaValor entra en la comparación (5.155): si el BCV publica la MISMA
+     tasa para un día nuevo, la fecha valor cambia y la tarjeta del panel debe
+     repintar aunque la cifra no se mueva. El toque horario del cron (mismos
+     rate/source/fechaValor, solo lastAttemptAt) sigue sin provocar renders. */
+  if (
+    cached &&
+    cached.rate === next.rate &&
+    cached.source === next.source &&
+    cached.fechaValor === next.fechaValor
+  ) {
+    return;
+  }
   cached = next;
   listeners.forEach((notify) => notify());
 }
@@ -51,6 +65,7 @@ function ensureRateWatcher(): void {
           rate,
           source: String(d?.['source'] ?? 'fallback'),
           updatedAt: Number(d?.['updatedAt'] ?? 0),
+          fechaValor: String(d?.['fechaValor'] ?? ''),
         });
       },
       (err) => logger.warn('vigía tasa BCV detenida', err),

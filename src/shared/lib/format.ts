@@ -97,3 +97,22 @@ export function cleanAmountBs(amount: number): string {
   const safe = Number.isFinite(amount) ? amount : 0;
   return safe.toFixed(2).replace('.', ',');
 }
+
+/* ── 5.155 · Presentación de la tasa BCV ──
+   Antes vivían solo dentro de AdminMetricsPage; ahora también las usa la
+   tarjeta compacta «Tasa vigente» de la cabecera del panel (cajero incluido). */
+
+/** Formatea la tasa al estilo venezolano: 916,65 (— si no es válida). */
+export function rateText(usdToVes: number): string {
+  if (!(usdToVes > 0)) return '—';
+  return vesFmt.format(usdToVes);
+}
+
+/** «2026-11-18» → «Miércoles, 18 de noviembre de 2026» (— si viene vacía). */
+export function fmtFechaValor(iso: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '—';
+  const s = new Date(`${iso}T12:00:00`).toLocaleDateString('es-VE', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
