@@ -55,7 +55,14 @@ const db = () => admin.firestore(getAdminApp());
 export const BACKUP_FORMAT = 'spot24-catalog-backup';
 export const BACKUP_VERSION = 1;
 export const MAX_CATEGORIAS = 200;
-export const MAX_PRODUCTOS = 1000;
+/**
+ * 5.156 · 1000 → 1500: el catálogo real cruzó 1017 productos y el tope viejo
+ * dejaba el backup nocturno EN 400 PERPETUO (lee ~2.2K lecturas del catálogo
+ * completo para recién entonces rechazar la copia). Con 1500 el respaldo
+ * vuelve a funcionar sin tocar nada más. El snapshot de 1500 productos ronda
+ * los ~5 MB: muy por debajo de MAX_SNAPSHOT_BYTES (20 MB).
+ */
+export const MAX_PRODUCTOS = 1500;
 export const MAX_VARIANTES_POR_PRODUCTO = 100;
 /** Tamaño máximo de UNA copia (57 productos ≈ 0,2 MB; tope 20 MB = catálogo enorme). */
 export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;

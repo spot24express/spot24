@@ -114,13 +114,27 @@ describe('validateBackupFile (lista blanca y coerción del archivo)', () => {
     if (r1.ok === false) expect(r1.motivo).toContain('variante sin identificador');
 
     const copia = copiaValida();
-    const productos = Array.from({ length: 1001 }, (_, i) => ({
+    // 5.156 · tope 1000 → 1500: la prueba empuja 1501 (uno por encima del
+    // nuevo tope) — 1001 ya sería una copia VÁLIDA.
+    const productos = Array.from({ length: 1501 }, (_, i) => ({
       ...copia.catalog.products[0]!,
       id: `p${i}`,
     }));
     const r2 = validateBackupFile({ ...copia, catalog: { categories: copia.catalog.categories, products: productos } });
     expect(r2.ok).toBe(false);
-    if (r2.ok === false) expect(r2.motivo).toContain('(tope 1000)');
+    if (r2.ok === false) expect(r2.motivo).toContain('(tope 1500)');
+  });
+
+  it('5.156 · una copia de 1017 productos (catálogo real de hoy) ES válida', () => {
+    const copia = copiaValida();
+    const productos = Array.from({ length: 1017 }, (_, i) => ({
+      ...copia.catalog.products[0]!,
+      id: `p${i}`,
+    }));
+    const r = validateBackupFile({ ...copia, catalog: { categories: copia.catalog.categories, products: productos } });
+    // Solo afirmamos que el tope NO es el motivo del rechazo (otros topes
+    // —variantes por producto, bytes— quedan cubiertos por sus propias pruebas).
+    if (r.ok === false) expect(r.motivo).not.toContain('productos');
   });
 });
 

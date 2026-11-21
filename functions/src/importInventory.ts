@@ -259,6 +259,50 @@ export function filtrarPidsVivos(
   return omitidas;
 }
 
+/**
+ * 5.157 · Semilla de vivos SIN re-lectura para los emparejados por CÓDIGO.
+ *
+ * La consulta por 'code' corre sobre la COLECCIÓN products: un documento que
+ * una consulta devuelve EXISTE por definición (Firestore jamás devuelve un
+ * doc borrado), y llega con name y createdAt a bordo. Re-leer esos mismos
+ * pids por documentId era la pasada «blindaje de vivos» (5.92b) — correcta
+ * pero redundante para ellos: ~1 lectura extra por producto del catálogo en
+ * CADA corrida (ensayo o real).
+ *
+ * Única excepción real: los pids emparejados por SKU de variante — esos sí
+ * pueden ser huérfanos (collectionGroup('variants') sigue listando variantes
+ * de productos ya borrados), así que se devuelven en pidsPorVerificar para
+ * que el llamador los re-lea por documentId en tandas de 30 como siempre.
+ *
+ * Pura: mismo input → mismo output. El comportamiento OBSERVABLE de
+ * filtrarPidsVivos queda intacto (pidsVivos contiene exactamente los pids
+ * vivos de antes).
+ */
+export interface DocMinimo {
+  id: string;
+  data(): Record<string, unknown>;
+}
+
+export function sembrarVivosDeLecturas(
+  docsCode: readonly DocMinimo[],
+  pidsPorSku: Iterable<string>,
+): {
+  pidsVivos: Set<string>;
+  nombrePorPid: Map<string, string>;
+  pidsPorVerificar: string[];
+} {
+  const pidsVivos = new Set<string>();
+  const nombrePorPid = new Map<string, string>();
+  docsCode.forEach((d) => {
+    pidsVivos.add(d.id);
+    nombrePorPid.set(d.id, String(d.data()['name'] ?? ''));
+  });
+  // Dedup de sku-pids y fuera los que ya nacieron vivos por código: la
+  // consulta documentId solo verá los pids que realmente la necesitan.
+  const pidsPorVerificar = [...new Set([...pidsPorSku])].filter((pid) => !pidsVivos.has(pid));
+  return { pidsVivos, nombrePorPid, pidsPorVerificar };
+}
+
 /* ── 5.137/5.138 · Modos, ensayo y planes (lógica PURA, testeable sin Firestore) ── */
 
 export type ModoImportacion = 'completo' | 'stock' | 'precios' | 'actualizar';
@@ -748,12 +792,18 @@ async function coreActualizar(ctx: CoreCtx, datos: CtxActualizar): Promise<unkno
     });
   }
 
-  const pidsCandidatos = [...new Set([...productoPorCode.values(), ...productoPorSku.values()])];
-  const pidsVivos = new Set<string>();
-  const nombrePorPid = new Map<string, string>();
+  // 5.157 · Vivos sin re-lectura para los emparejados por código: la consulta
+  // por 'code' corre sobre la colección products, y un doc que una consulta
+  // devuelve EXISTE por definición — llega con name a bordo. La pasada vieja
+  // (documentId en tandas de 30 sobre TODOS los candidatos) re-leía el mismo
+  // catálogo una segunda vez: ~1 lectura extra por producto en cada corrida.
+  // Ahora la re-lectura queda SOLO para los pids emparejados por SKU de
+  // variante (esos sí pueden ser huérfanos de productos borrados, blindaje
+  // 5.92b intacto) — en el flujo real del Excel suelen ser cero o una tanda.
+  const { pidsVivos, nombrePorPid, pidsPorVerificar } = sembrarVivosDeLecturas(docs, productoPorSku.values());
   const tandasVivos: Array<Promise<admin.firestore.QuerySnapshot>> = [];
-  for (let i = 0; i < pidsCandidatos.length; i += EN_CONSULTA) {
-    const tanda = pidsCandidatos.slice(i, i + EN_CONSULTA);
+  for (let i = 0; i < pidsPorVerificar.length; i += EN_CONSULTA) {
+    const tanda = pidsPorVerificar.slice(i, i + EN_CONSULTA);
     if (!tanda.length) continue;
     tandasVivos.push(
       db().collection('products')

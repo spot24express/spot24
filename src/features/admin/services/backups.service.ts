@@ -78,8 +78,12 @@ export interface CatalogBackupMeta {
 /** Versión de formato que este panel entiende (debe coincidir con el backend). */
 export const BACKUP_FORMAT = 'spot24-catalog-backup';
 export const BACKUP_VERSION = 1;
-/** Tope defensivo igual al del backend: el panel avisa ANTES de subir. */
-export const MAX_PRODUCTOS_COPIA = 1000;
+/**
+ * Tope defensivo igual al del backend (5.156: 1000 → 1500): el panel avisa
+ * ANTES de subir. El catálogo real ya tiene 1017 productos — con el tope viejo
+ * el backup nocturno quedaba en 400 perpetuo.
+ */
+export const MAX_PRODUCTOS_COPIA = 1500;
 
 /* ── Acciones de servidor ── */
 

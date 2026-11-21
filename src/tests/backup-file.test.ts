@@ -95,9 +95,11 @@ describe('parseBackupFile (archivo subido por el dueño)', () => {
     expect(r.motivo).toContain('incompleta');
   });
 
-  it('rechaza copias por encima del tope defensivo de productos (1000)', () => {
+  it('rechaza copias por encima del tope defensivo de productos (5.156: 1500)', () => {
     const copia = copiaValida();
-    const productos = Array.from({ length: 1001 }, (_, i) => ({
+    // 5.156 · tope 1000 → 1500 (el catálogo real ya tiene 1017): la prueba
+    // empuja 1501, uno por encima del tope nuevo.
+    const productos = Array.from({ length: 1501 }, (_, i) => ({
       ...copia.catalog.products[0],
       id: `p${i}`,
       variants: [],
@@ -105,7 +107,7 @@ describe('parseBackupFile (archivo subido por el dueño)', () => {
     const r = parseBackupFile(JSON.stringify({ ...copia, catalog: { categories: copia.catalog.categories, products: productos } }));
     expect(r.ok).toBe(false);
     if (r.ok) return;
-    expect(r.motivo).toContain('1001');
+    expect(r.motivo).toContain('1501');
   });
 });
 

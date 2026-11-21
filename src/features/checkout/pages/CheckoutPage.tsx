@@ -56,6 +56,8 @@ import {
   usesVeForm, EMPTY_PAYMENT_FORM, type PaymentFormState,
 } from '@/shared/lib/paymentMethods';
 import { getGeneralSettings, getPaymentAccounts } from '@/shared/services/settings.service';
+import { SelectorZona } from '../components/SelectorZona';
+import type { Zone } from '@/features/delivery/types';
 import {
   deliveryAbierto, esHHMM, hhmmBonito, minutosAhoraCaracas,
   type FranjaDelivery,
@@ -117,6 +119,11 @@ export default function CheckoutPage() {
   const { data: zones } = useZones();
   // Tasa BCV en vivo: para mostrar el envío por zona en Bs en el selector.
   const liveRate = useBcvRate();
+  // 5.158 · Ficha de cada zona del SelectorZona — el MISMO texto que pintaban
+  // las options del <select> viejo (nombre va aparte, en la fila de la zona):
+  // «Envío Bs X · N-M min», con liveRate y formatBs de siempre.
+  const feeTextoZona = (z: Zone): string =>
+    `Envío ${liveRate ? formatBs(usdToBs(z.feeUsd, liveRate.rate)) : 'por zona'} · ${z.etaMinMinutes}-${z.etaMaxMinutes} min`;
 
   const [step, setStep] = useState(0);
   const [fulfillment, setFulfillment] = useState<FulfillmentMode>('delivery');
@@ -996,21 +1003,29 @@ export default function CheckoutPage() {
                       comprador (decisión 3); la tarifa sale de la zona del
                       destinatario (decisión 1) y su teléfono llega al panel
                       para llamar/WhatsApp (decisión 2). */}
-                  <button
-                    type="button"
-                    aria-pressed={envioTercero}
-                    onClick={() => setEnvioTercero((v) => !v)}
-                    className={`rounded-brand border-2 p-4 text-left transition ${envioTercero ? 'border-signal bg-signal/10' : 'border-line hover:border-muted'}`}
-                  >
-                    <p className={`font-display text-sm font-bold italic uppercase ${envioTercero ? 'text-signal' : 'text-paper'}`}>
-                      Enviar a otra persona
-                    </p>
-                    <p className="mt-1 text-xs text-muted">
-                      {envioTercero
-                        ? 'Llenas los datos de quien recibe: SU zona define el costo de envío y tú pagas todo como siempre.'
-                        : '¿Es un regalo o va a otra dirección? Entregamos donde tú digas; tú pagas como siempre.'}
-                    </p>
-                  </button>
+                  {/* 5.159 · La tarjeta vive en una rejilla de 2 columnas IGUAL
+                      a la de Retiro/Envío: en PC ocupa UNA columna y se ve del
+                      mismo tamaño que las otras dos (antes se estiraba a todo
+                      el ancho y se veía el doble de grande). En móvil nada
+                      cambia: 1 columna, como siempre. Sigue FUERA del
+                      radiogroup porque es un suiche (aria-pressed), no un radio. */}
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      aria-pressed={envioTercero}
+                      onClick={() => setEnvioTercero((v) => !v)}
+                      className={`rounded-brand border-2 p-4 text-left transition ${envioTercero ? 'border-signal bg-signal/10' : 'border-line hover:border-muted'}`}
+                    >
+                      <p className={`font-display text-sm font-bold italic uppercase ${envioTercero ? 'text-signal' : 'text-paper'}`}>
+                        Enviar a otra persona
+                      </p>
+                      <p className="mt-1 text-xs text-muted">
+                        {envioTercero
+                          ? 'Llenas los datos de quien recibe: SU zona define el costo de envío y tú pagas todo como siempre.'
+                          : '¿Es un regalo o va a otra dirección? Entregamos donde tú digas; tú pagas como siempre.'}
+                      </p>
+                    </button>
+                  </div>
 
                   {terceroActivo ? (
                     <>
@@ -1035,20 +1050,14 @@ export default function CheckoutPage() {
                         error={errors['terceroTelefono']}
                         required
                       />
-                      <Select
+                      <SelectorZona
                         label="Zona de entrega del destinatario"
+                        zonas={zones?.filter((z) => z.active)}
                         value={tercero.zoneId}
-                        onChange={(e) => setTercero((t) => ({ ...t, zoneId: e.target.value }))}
+                        onChange={(zoneId) => setTercero((t) => ({ ...t, zoneId }))}
+                        feeTexto={feeTextoZona}
                         error={errors['terceroZoneId']}
-                        required
-                      >
-                        <option value="">Selecciona su zona…</option>
-                        {zones?.filter((z) => z.active).map((z) => (
-                          <option key={z.id} value={z.id}>
-                            {z.name} · Envío {liveRate ? formatBs(usdToBs(z.feeUsd, liveRate.rate)) : 'por zona'} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
-                          </option>
-                        ))}
-                      </Select>
+                      />
                       <Textarea
                         label="Dirección completa del destinatario"
                         value={tercero.details}
@@ -1126,20 +1135,14 @@ export default function CheckoutPage() {
                     </>
                   ) : (
                     <>
-                      <Select
+                      <SelectorZona
                         label="Zona de cobertura"
+                        zonas={zones?.filter((z) => z.active)}
                         value={address.zoneId}
-                        onChange={(e) => setAddress((a) => ({ ...a, zoneId: e.target.value }))}
+                        onChange={(zoneId) => setAddress((a) => ({ ...a, zoneId }))}
+                        feeTexto={feeTextoZona}
                         error={errors['zoneId']}
-                        required
-                      >
-                        <option value="">Selecciona tu zona…</option>
-                        {zones?.filter((z) => z.active).map((z) => (
-                          <option key={z.id} value={z.id}>
-                            {z.name} · Envío {liveRate ? formatBs(usdToBs(z.feeUsd, liveRate.rate)) : 'por zona'} · {z.etaMinMinutes}-{z.etaMaxMinutes} min
-                          </option>
-                        ))}
-                      </Select>
+                      />
                       <Textarea
                         label="Dirección completa"
                         value={address.details}
