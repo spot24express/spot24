@@ -43,11 +43,12 @@
  * no se entienda queda en `problemas` (jamás se inventa un producto).
  *
  * Este módulo es PURO (solo SheetJS + numeroVe): lo testea el frontend con
- * vitest y lo usa el core del importador (misma arquitectura que
- * lib/inventarioPdf).
+ * vitest y lo usa el core del importador. 5.161 · El tipo FilaInventario y
+ * numeroVe viven en lib/filasInventario (antes en lib/inventarioPdf, el
+ * import por PDF que se retiró con la pendiente 5.154).
  */
 import * as XLSX from 'xlsx';
-import { numeroVe, type FilaInventario } from './inventarioPdf';
+import { numeroVe, type FilaInventario } from './filasInventario';
 
 /** Etiquetas de encabezado que definen los grupos de columnas del reporte. */
 const ETIQUETAS = [

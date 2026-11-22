@@ -226,10 +226,11 @@ export async function adminAdjustStock(
   );
 }
 
-/* ── 5.87 · Importar inventario desde el PDF del POS ── */
+/* ── 5.87 → 5.161 · Importar inventario (hoy: solo el Excel del ERP) ── */
 
-/** 5.137/5.138 · Modo de la importación (el default «completo» es el de siempre). */
-export type ModoImportacion = 'completo' | 'stock' | 'precios' | 'actualizar';
+/** 5.161 · Único modo: «actualizar» (Excel del ERP). Los modos del import
+ *  por PDF («completo»/«stock»/«precios») se retiraron con la pendiente 5.154. */
+export type ModoImportacion = 'actualizar';
 
 export interface ImportInventarioCambioPrecio {
   codigo: string;
@@ -256,16 +257,16 @@ export interface ImportInventarioAlta {
 }
 
 export interface ImportInventarioResult {
-  /** Filas reconocidas en el PDF. */
+  /** Filas reconocidas en el archivo Excel. */
   filas: number;
-  /** Productos NUEVOS creados (código no existía) — modos completo/stock. */
+  /** Productos NUEVOS creados (código no existía) — altas del modo actualizar. */
   creados: number;
   /** Productos existentes actualizados. */
   actualizados: number;
-  /** 5.92/5.138 · Formato detectado: «pos» (Inventario disponible), «lista-limpia»
-   *  (doble precio), «lista-precios» (REPORTE LISTA DE PRECIOS del ERP) o
-   *  «xlsx» (5.152 · el mismo reporte en Excel, modo «actualizar»). */
-  formato: 'pos' | 'lista-limpia' | 'lista-precios' | 'xlsx';
+  /** Formato detectado. 5.161 · solo queda «xlsx» (5.152 · el «REPORTE LISTA
+   *  DE PRECIOS» del ERP en Excel): los formatos PDF («pos», «lista-limpia»,
+   *  «lista-precios») se retiraron. */
+  formato: 'xlsx';
   /** Filas descartadas con motivo (ilegibles, códigos repetidos renombrados…). */
   problemas: string[];
   /** 5.137/5.138 · Modo de la importación. */
@@ -274,9 +275,7 @@ export interface ImportInventarioResult {
   ensayo: boolean;
   /** Referencias muertas omitidas (blindaje 5.92b). */
   omitidasHuerfanas?: number;
-  /** 5.138 modo precios: códigos del PDF que NO están en la tienda (no se tocan). */
-  sinMatch?: string[];
-  /** 5.141 modo precios: precio 0 o ilegible en el PDF → se conserva el precio actual. */
+  /** Precio 0 o ilegible en el archivo → se conserva el precio actual (Regla 3). */
   sinPrecio?: string[];
   /** 5.138 modo precios: el precio ya era ese (nada que escribir). */
   sinCambio?: number;
@@ -290,32 +289,6 @@ export interface ImportInventarioResult {
   archivo?: string;
   /** 5.152 modo actualizar: meta del lector XLSX (bloques, basura, trampas). */
   metaXlsx?: { bloques: number; basura: number; descartadasResumen: number };
-}
-
-/**
- * Sube el PDF de inventario (base64) a fn-importInventory. 5.137/5.138:
- *  · modo 'completo' (default): crea los que falten y actualiza stock+precio
- *    de los existentes (comportamiento de siempre, intacto).
- *  · modo 'stock': SOLO existencias — a los existentes se les actualiza el
- *    stock entero; los códigos nuevos se crean INACTIVOS, sin categoría ni
- *    precio (el dueño los completa desde el panel antes de activarlos).
- *  · modo 'precios' (LISTA DE PRECIOS del ERP): fija el precio de la columna
- *    «Precio REF c/Imp» CON sus decimales (5.141: 125.81 → 125.81) a los
- *    códigos que YA existen; no crea nada y no toca el stock. Los que
- *    traen precio 0 o ilegible no se tocan.
- *  · ensayo: true → NO guarda nada, solo devuelve el resumen de lo que haría.
- */
-export async function adminImportInventory(
-  pdfBase64: string,
-  categoryId: string,
-  opts?: { modo?: ModoImportacion; ensayo?: boolean },
-): Promise<ImportInventarioResult> {
-  return callFunction<ImportInventarioResult>('fn-importInventory', {
-    pdfBase64,
-    categoryId,
-    modo: opts?.modo ?? 'completo',
-    ensayo: opts?.ensayo === true,
-  });
 }
 
 /* ── 5.151/5.152 · ACTUALIZAR INVENTARIO con el Excel del ERP ── */

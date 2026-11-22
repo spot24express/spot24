@@ -37,13 +37,18 @@ export default defineConfig({
       registerType: 'autoUpdate',
       injectRegister: 'script-defer',
       manifest: false, // usamos public/manifest.webmanifest con theme_color #000000
+      // 5.160 · img/**/* SALIÓ del precache: eran ~1 MB de fotos del local
+      // descargadas en la primera visita por clientes que quizá nunca bajan
+      // hasta ahí, y además DUPLICABAN la regla CacheFirst de /img/* de abajo
+      // (que las sirve del teléfono a partir de la primera vista, 30 días).
+      // Los favicon e iconos SÍ quedan: la PWA instalada los necesita para
+      // pintarse sin red. Redes venezolanas: cada MB de la primera visita cuenta.
       includeAssets: [
         'favicon.ico',
         'favicon-16.png',
         'favicon-32.png',
         'favicon-48.png',
         'icons/*.png',
-        'img/**/*',
       ],
       workbox: {
         // Precachea el bundle y las fuentes autoalojadas (woff2) para modo offline.
@@ -52,7 +57,13 @@ export default defineConfig({
         // en línea (el export necesita leer Firestore). Sin este ignore, cada
         // cliente de la tienda bajaría ~370 KB al instalarse el SW por algo
         // que jamás abrirá. Redes venezolanas: cada KB cuenta.
-        globIgnores: ['**/jspdf-vendor-*.js'],
+        // 5.160 · firebase-storage-vendor NO se precachea: mismo caso. Solo
+        // existe en dist si el entorno define VITE_FIREBASE_STORAGE_BUCKET;
+        // sin bucket (plan Lite, producción hoy) ni se genera. Y si algún día
+        // hay bucket, el chunk se baja SOLO al primer loadFirebase (no en la
+        // primera visita de todo el mundo). El browser HTTP cache lo guarda
+        // igual (Netlify manda immutable en /assets/).
+        globIgnores: ['**/jspdf-vendor-*.js', '**/firebase-storage-vendor-*.js'],
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//, /^\/\.netlify\//],
         clientsClaim: true,
@@ -97,6 +108,22 @@ export default defineConfig({
             handler: 'CacheFirst',
             options: {
               cacheName: 'spot24-imgbb-images',
+              expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 30 },
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
+            // 5.160 · HOSTS DE RESPALDO (ronda 5.115): las fotos que aterrizaron
+            // en freeimage.host / iili.io, Cloudinary o catbox.moe (las noches
+            // de caída de imgbb — comprobantes y fotos de producto) NO tenían
+            // el trato CacheFirst que imgbb sí tiene desde 5.75: se
+            // re-descargaban en cada visita y jamás aparecían offline. Todas
+            // usan nombre con hash = inmutables → CacheFirst idéntico al resto.
+            // img-src de la CSP ya permite cualquier https (sin cambio).
+            urlPattern: /^https:\/\/(iili\.io|freeimage\.host|res\.cloudinary\.com|files\.catbox\.moe)\/.*/i,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'spot24-respaldo-imagenes',
               expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 30 },
               cacheableResponse: { statuses: [0, 200] },
             },
@@ -169,7 +196,20 @@ export default defineConfig({
         // al arranque. @babel/runtime sí queda en vendor (lo comparte todo).
         manualChunks(id) {
           if (!id.includes('node_modules')) return;
-          if (id.includes('firebase')) return 'firebase-vendor';
+          if (id.includes('firebase')) {
+            // 5.160 · Storage en chunk PROPIO: así el «solo si hay bucket» de
+            // firebase.ts baja menos bytes SIEMPRE, con o sin la variable de
+            // entorno. Dependencia UNIDIRECCIONAL (storage → vendor), mismo
+            // patrón de jspdf-vendor: sin ciclo posible vendor↔storage.
+            if (
+              /[\\/]node_modules[\\/](?:@firebase[\\/](?:storage(?:-compat)?|storage-internal)|firebase[\\/]storage)[\\/]/.test(
+                id,
+              )
+            ) {
+              return 'firebase-storage-vendor';
+            }
+            return 'firebase-vendor';
+          }
           if (/[\\/]node_modules[\\/](jspdf|jspdf-autotable|fflate|fast-png)[\\/]/.test(id)) {
             return 'jspdf-vendor';
           }

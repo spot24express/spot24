@@ -24,9 +24,19 @@ const queryClient = new QueryClient({
 function SessionBootstrap() {
   useAuthObserver();
 
-  // App Check obligatorio (6.2): se registra al arrancar (no-op sin llaves).
+  // App Check obligatorio (6.2). 5.160 · WARMUP EN REPOSO: antes arrancaba
+  // junto al primer render y la primera consulta de Firestore ESPERABA el
+  // token de reCAPTCHA (invisible, pero real) en redes lentas → parte de la
+  // lentitud que reportó el dueño. Ahora se calienta 3 s después de abrir,
+  // con la tienda ya pintada. Si el cliente llega a una función de servidor
+  // antes de esos 3 s, backend.ts → appCheck.ts se auto-inicializa en el
+  // momento (mismo resultado que antes; APPCHECK_ENFORCE=false hoy).
+  // No-op sin llaves de reCAPTCHA configuradas, como siempre.
   useEffect(() => {
-    void initAppCheck().catch((e) => logger.error('App Check no iniciado', e));
+    const t = setTimeout(() => {
+      void initAppCheck().catch((e) => logger.error('App Check no iniciado', e));
+    }, 3000);
+    return () => clearTimeout(t);
   }, []);
 
   return null;

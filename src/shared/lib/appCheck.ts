@@ -53,9 +53,18 @@ export async function initAppCheck(): Promise<void> {
   }
 }
 
-/** Token App Check actual; null si no hay proveedor activo (no bloquea). */
+/**
+ * Token App Check actual; null si no hay proveedor activo (no bloquea).
+ * 5.160 · AUTO-INICIALIZACIÓN BAJO DEMANDA: si aún no se inicializó (el warmup
+ * de providers.tsx corre 3 s después de abrir y quizá no llegó), la primera
+ * llamada al backend inicializa App Check AQUÍ y obtiene su token en el
+ * momento — mismo resultado que antes, sin estorbar el arranque de la tienda.
+ * Con APPCHECK_ENFORCE=false la petición viaja sin header si no hay token,
+ * como siempre; si algún día se activa enforce, el token ya existe al llamar.
+ */
 export async function getAppCheckToken(): Promise<string | null> {
   try {
+    if (!initialized) await initAppCheck();
     if (!instance) return null;
     const { getToken } = await import('firebase/app-check');
     const res = await getToken(instance, false);

@@ -1,7 +1,8 @@
 /**
  * SPOT 24 · POST /.netlify/functions/fn-importInventory
- * Importar inventario desde el PDF del POS (5.87): crea productos nuevos y
- * actualiza stock+precio de los existentes (admin/gerencia).
+ * Importar inventario (5.87 → 5.161): HOY solo el modo «actualizar» con el
+ * Excel del ERP (5.151/5.152) — upsert precio+stock y borradores inactivos.
+ * El import por PDF se retiró (pendiente 5.154 cerrada en la 5.161).
  */
 import { coreImportInventory } from '../../functions/src/importInventory';
 import { handle } from './_backend';

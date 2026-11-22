@@ -49,7 +49,7 @@ export function SelectorZona({ zonas, value, onChange, label, feeTexto, error }:
         type="text"
         value={busqueda}
         onChange={(e) => setBusqueda(e.target.value)}
-        placeholder="Escribe para filtrar (ej. Ibatis)…"
+        placeholder="Escribe para filtrar (ej. San Jacinto)…"
         autoComplete="off"
         aria-label={label}
         error={error}

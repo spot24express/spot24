@@ -10,7 +10,7 @@
  * puedeImportarInventario / modoDe) sin Firestore.
  */
 import { describe, expect, it } from 'vitest';
-import type { FilaInventario } from '../lib/inventarioPdf';
+import type { FilaInventario } from '../lib/filasInventario';
 import {
   datosProductoNuevoActualizar,
   modoDe,
@@ -37,18 +37,18 @@ const existentesDe = (filas: Array<[string, number, number]>) => new Map(
   }]),
 );
 
-describe('modoDe (5.152 · modo «actualizar» en el body)', () => {
+describe('modoDe (5.161 · único modo «actualizar»; los del PDF se retiraron)', () => {
   it('acepta actualizar', () => {
     expect(modoDe({ modo: 'actualizar' })).toBe('actualizar');
   });
-  it('los modos viejos siguen igual', () => {
-    expect(modoDe({ modo: 'stock' })).toBe('stock');
-    expect(modoDe({ modo: 'precios' })).toBe('precios');
-    expect(modoDe({ modo: 'completo' })).toBe('completo');
+  it('los modos del PDF son un error EXPLÍCITO (pendiente 5.154 cerrada)', () => {
+    for (const modo of ['stock', 'precios', 'completo']) {
+      expect(() => modoDe({ modo })).toThrow(/El import por PDF se retiró/);
+    }
   });
-  it('un modo raro cae en completo (comportamiento de siempre)', () => {
-    expect(modoDe({ modo: 'xyz' })).toBe('completo');
-    expect(modoDe(undefined)).toBe('completo');
+  it('un modo raro o ausente también es error explícito', () => {
+    expect(() => modoDe({ modo: 'xyz' })).toThrow(/El import por PDF se retiró/);
+    expect(() => modoDe(undefined)).toThrow(/El import por PDF se retiró/);
   });
 });
 
@@ -60,14 +60,6 @@ describe('puedeImportarInventario (5.152 · roles por modo, decisión del dueño
   });
   it('actualizar: delivery NO puede', () => {
     expect(puedeImportarInventario('actualizar', 'delivery')).toBe(false);
-  });
-  it('los otros modos quedan admin/gerente (cajero fuera)', () => {
-    for (const modo of ['completo', 'stock', 'precios'] as const) {
-      expect(puedeImportarInventario(modo, 'admin')).toBe(true);
-      expect(puedeImportarInventario(modo, 'gerente')).toBe(true);
-      expect(puedeImportarInventario(modo, 'cajero')).toBe(false);
-      expect(puedeImportarInventario(modo, 'delivery')).toBe(false);
-    }
   });
   it('sin rol no pasa nada', () => {
     expect(puedeImportarInventario('actualizar', undefined)).toBe(false);
