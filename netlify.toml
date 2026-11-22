@@ -217,10 +217,25 @@
 #   de Storage ya existía en el SW (vite.config); era una mina latente con la
 #   misma mecánica. Hoy no hay imágenes de producto en Storage; si algún día
 #   las hay, ya quedan cubiertas.
+# 5.162 · FIX «Connecting to https://iili.io/….jpg violates connect-src» en la
+#   consola del dueño: la 5.160 añadió al SW la ruta CacheFirst de las
+#   hospederías de respaldo (iili.io, freeimage.host, Cloudinary, catbox — las
+#   fotos de producto y comprobantes que aterrizaron allí en las noches de
+#   caída de imgbb, ronda 5.115). Misma mecánica documentada arriba: el fetch
+#   del SW lo gobierna connect-src de ESTA cabecera (viaja con sw.js), no el
+#   img-src de la página. Las 4 hospederías no estaban → CSP rechazaba el
+#   fetch → no-response → la foto jamás entraba al cache del SW, en cada
+#   visita tocaba red de nuevo (y ruido en consola; el respaldo en Storage
+#   la salvaba solo si existía). Las imágenes verificadas vivas (200).
+#   → connect-src += las 4 hospederías del urlPattern de vite.config.
+#   Guardián nuevo (csp-runtime-hosts-5162.test.ts): TODO host https de un
+#   urlPattern debe vivir en connect-src — la desincronización CSP↔SW ya
+#   costó dos minas latentes (Storage en 5.90.2, hospederías en 5.162) y no
+#   puede volver a pasar.
 [[headers]]
   for = "/*"
   [headers.values]
-    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY=' 'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk=' 'sha256-BkKP2XO6WOEc3kXOiLr2ZoY83hamalKjPY9xBcbXVuw='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: ws://localhost:3000 ws://127.0.0.1:3000 https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com https://i.ibb.co https://firebasestorage.googleapis.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' https://apis.google.com https://www.gstatic.com https://www.google.com https://www.recaptcha.net 'sha256-Ob/z7smzKJGFdMGHiYHvik0pzOqdUCQ9Qa2zSrkvshs=' 'sha256-mTJ4cJaTm2Gw95GeXEpZdvEEY9ybh6FZu1bwcNE7QlY=' 'sha256-Z2/iFzh9VMlVkEOar1f/oSHWwQk3ve1qk/C2WdsC4Xk=' 'sha256-BkKP2XO6WOEc3kXOiLr2ZoY83hamalKjPY9xBcbXVuw='; frame-src 'self' https://*.firebaseapp.com https://www.google.com https://www.recaptcha.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self'; connect-src 'self' blob: ws://localhost:3000 ws://127.0.0.1:3000 https://firestore.googleapis.com https://firebaseinstallations.googleapis.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firebaselogging-pa.googleapis.com https://firebasemessaging.googleapis.com https://firebaseappcheck.googleapis.com https://www.google.com https://www.recaptcha.net https://apis.google.com https://fcmregistrations.googleapis.com https://i.ibb.co https://firebasestorage.googleapis.com https://iili.io https://freeimage.host https://res.cloudinary.com https://files.catbox.moe; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests"
     Strict-Transport-Security = "max-age=63072000; includeSubDomains; preload"
     X-Frame-Options = "DENY"
     X-Content-Type-Options = "nosniff"

@@ -10,7 +10,7 @@ import {
   adminListProducts, adminSaveProduct, adminDeleteProduct,
   adminGetVariants, adminSetProductImages, adminCountAllProducts,
 } from '../services/admin.service';
-import { filtrarProductosAdmin } from '../lib/listaAdmin';
+import { contarPorEstado, filtrarEstadoProductosAdmin, filtrarProductosAdmin, type FiltroEstado } from '../lib/listaAdmin';
 import { adminUploadImage } from '../services/imageUpload.service';
 import { ResenasAdmin } from '../components/ResenasAdmin';
 import type { Product, ProductVariant } from '@/features/catalog/types';
@@ -19,6 +19,15 @@ import { sortAdminCategoryList } from '@/shared/lib/categoryTree';
 import { alFallarFoto } from '@/shared/lib/imgFallback';
 import type { CategoryDef } from '@/shared/constants/categories';
 import { userMessage } from '@/shared/lib/errors';
+
+/** 5.163 · Botones del filtro de estado, en este orden fijo. */
+const FILTROS_ESTADO = ['todos', 'activos', 'inactivos'] as const;
+
+const ETIQUETAS_ESTADO: Record<FiltroEstado, string> = {
+  todos: 'Todos',
+  activos: 'Activos',
+  inactivos: 'Inactivos',
+};
 
 /**
  * Gestión de productos: precio y stock DIRECTOS, sin variantes ni SKU a la vista.
@@ -39,6 +48,9 @@ export default function AdminProductsPage() {
   // 5.96 · cantidad TOTAL de productos (colección completa, activos e
   // inactivos). La búsqueda no la cambia: «M encontrados de N».
   const [total, setTotal] = useState<number | null>(null);
+  // 5.163 · Filtro por estado pedido por el dueño: la lista muestra todos,
+  // solo activos o solo inactivos. Por defecto «todos» = como siempre.
+  const [filtroEstado, setFiltroEstado] = useState<FiltroEstado>('todos');
 
   const refreshTotal = () => {
     void adminCountAllProducts()
@@ -70,10 +82,14 @@ export default function AdminProductsPage() {
 
   // 5.102 · Visibles = filtro LOCAL del texto de búsqueda sobre la lista
   // completa (mismo criterio de siempre: nombre, marca o código).
+  // 5.163 · + filtro por estado (todos / activos / inactivos); se aplican
+  // ambos: son independientes, el orden da igual.
   const visibles = useMemo(
-    () => filtrarProductosAdmin(products, search),
-    [products, search],
+    () => filtrarEstadoProductosAdmin(filtrarProductosAdmin(products, search), filtroEstado),
+    [products, search, filtroEstado],
   );
+  // 5.163 · Conteos de los botones (sobre la lista CARGADA, sin búsqueda).
+  const conteos = useMemo(() => contarPorEstado(products), [products]);
 
   const remove = async (p: Product) => {
     if (!window.confirm(`¿Eliminar «${p.name}»? Esta acción no se puede deshacer.`)) return;
@@ -114,18 +130,43 @@ export default function AdminProductsPage() {
           <p className="spot-label text-muted" aria-live="polite">
             {search.trim()
               ? `${visibles.length} encontrados de ${total ?? '…'}`
-              : products.length === (total ?? products.length)
-                ? `${total ?? products.length} productos en total`
-                : `${products.length} en lista de ${total ?? '…'}`}
+              : filtroEstado !== 'todos'
+                ? `${visibles.length} ${filtroEstado === 'activos' ? 'activos' : 'inactivos'} de ${conteos.todos}`
+                : products.length === (total ?? products.length)
+                  ? `${total ?? products.length} productos en total`
+                  : `${products.length} en lista de ${total ?? '…'}`}
           </p>
         )}
       </div>
+
+      {/* 5.163 · Filtro por estado (pedido del dueño). Los conteos viven en los
+          propios botones: así se ve cuántos activos e inactivos hay sin tocar
+          nada. Son de la lista CARGADA, no cambian con la búsqueda. */}
+      {!loading && !error && (
+        <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label="Filtrar productos por estado">
+          {FILTROS_ESTADO.map((f) => (
+            <Chip key={f} active={filtroEstado === f} onClick={() => setFiltroEstado(f)}>
+              {ETIQUETAS_ESTADO[f]} · {conteos[f]}
+            </Chip>
+          ))}
+        </div>
+      )}
 
       <div className="mt-6">
         {error ? (
           <ErrorState onRetry={load} />
         ) : loading ? (
           <ListSkeleton rows={5} />
+        ) : visibles.length === 0 ? (
+          <p className="rounded-brand-lg border-2 border-dashed border-line bg-surface-1 p-6 text-muted">
+            {search.trim()
+              ? 'Ningún producto coincide con esa búsqueda.'
+              : filtroEstado === 'activos'
+                ? 'No hay productos activos: todos están inactivos.'
+                : filtroEstado === 'inactivos'
+                  ? 'No hay productos inactivos: todos están activos.'
+                  : 'Aún no hay productos.'}
+          </p>
         ) : (
           <ul className="space-y-3">
             {visibles.map((p) => (
